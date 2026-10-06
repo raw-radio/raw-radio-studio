@@ -1,0 +1,69 @@
+raw-radio-studio
+Copyright (C) 2026 raw-radio-studio contributors
+
+================================================================================
+LICENSING COMPOSITION
+================================================================================
+
+This project (raw-radio-studio) is licensed as a whole under the GNU Affero
+General Public License, version 3 (AGPLv3). See the top-level LICENSE file.
+
+The combined work links the following third-party components:
+
+  * Tracktion Engine — licensed GPLv3-or-later (free tier) / commercial dual.
+    Used as the core multitrack audio engine. It provides no UI.
+    Combined with this AGPLv3 work under the terms of GPLv3 Section 13 and
+    AGPLv3 Section 13; the resulting combined work is distributed under AGPLv3.
+
+  * JUCE — licensed AGPLv3 (free tier) / commercial dual.
+    Used as the application framework (GUI, audio device I/O, plugin hosting).
+    Combined with Tracktion Engine and this project under GPLv3 Section 13 /
+    AGPLv3 Section 13; the resulting combined work is distributed under AGPLv3.
+
+Rationale: GPLv3 Section 13 permits linking with AGPLv3-covered works and
+requires the combined work to offer Corresponding Source under AGPLv3 terms.
+The top-level license of this project is therefore AGPLv3 (not GPLv3).
+
+================================================================================
+THIRD-PARTY INVENTORY
+================================================================================
+
+!!! PLACEHOLDER — TO BE FILLED WHEN DEPENDENCIES ARE PINNED !!!
+
+No third-party dependencies are pinned yet: Epic 0 has no engine wiring, and the
+placeholder executable builds with plain CMake only. When JUCE and Tracktion
+Engine are added as pinned git submodules (Epic 0, C++ specialist), this
+inventory MUST be completed. For each component record:
+
+  - component name
+  - exact version / pinned commit SHA
+  - license (SPDX identifier)
+  - role in this project
+  - obligations (attribution, source availability, dynamic-linking notes)
+
+Planned components (NOT YET VENDORED):
+
+  | Component           | Expected license             | Role                        | Status     |
+  |---------------------|------------------------------|-----------------------------|------------|
+  | Tracktion Engine    | GPLv3-or-later / commercial  | Core DAW engine             | NOT PINNED |
+  | JUCE                | AGPLv3 / commercial          | Framework / GUI / audio I/O | NOT PINNED |
+  | Signalsmith Stretch | free — verify exact terms    | Time-stretch (Epic 4)       | DEFERRED   |
+  | SoundTouch          | LGPL                         | Time-stretch alternative    | DEFERRED   |
+
+Explicitly EXCLUDED (do not add):
+  - RubberBand (GPLv2+ — AGPL compatibility concern)
+  - Elastique (commercial)
+  - CLAP (out of scope for this project)
+
+Every dependency addition requires a license review and an update to this file.
+A qualified lawyer must sign off on the linking model and on this inventory
+before the public v1 release (see STUDIO_SPEC section 7.6).
+
+================================================================================
+CORRESPONDING SOURCE
+================================================================================
+
+For each released tag, the Corresponding Source is the public GitHub repository
+at that tag, including pinned submodule commits and build scripts:
+
+  https://github.com/raw-radio/raw-radio-studio

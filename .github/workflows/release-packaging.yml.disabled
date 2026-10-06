@@ -1,0 +1,66 @@
+# =============================================================================
+# DISABLED — release packaging stub (Epic 6). DO NOT ENABLE YET.
+# =============================================================================
+#
+# This workflow is intentionally disabled. It is stored with a `.disabled`
+# suffix so GitHub Actions does not load or run it. Epic 0 must not produce or
+# publish release artifacts, and code-signing / notarization / auto-update are
+# explicitly out of scope (see STUDIO_SPEC sections 8.4-8.5).
+#
+# When it is time to enable it (Epic 6, after stable artifacts exist):
+#   1. Rename this file to `release-packaging.yml`.
+#   2. Pin and vendor the engine deps (JUCE + Tracktion) via submodules.
+#   3. Follow the spec's release checklist and lawyer sign-off gate
+#      (STUDIO_SPEC section 7.6) before any public release.
+#
+# Target artifacts (per STUDIO_SPEC section 8.3):
+#   - macOS: unsigned `.dmg` (+ install instructions; notarization deferred)
+#   - Linux: `.deb` and `.AppImage`
+#
+# Sketch of the future workflow (commented out):
+#
+# name: Release packaging (disabled)
+#
+# on:
+#   push:
+#     tags:
+#       - 'v*'
+#   workflow_dispatch:
+#
+# permissions:
+#   contents: write
+#
+# jobs:
+#   package-macos:
+#     name: macOS (.dmg)
+#     runs-on: macos-latest
+#     steps:
+#       - uses: actions/checkout@v4
+#         with: { submodules: recursive }
+#       - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+#       - run: cmake --build build --config Release --parallel
+#       # TODO: package an UNSIGNED .dmg (notarization deferred).
+#       # - run: <dmgbuild | hdiutil> ...
+#       - uses: actions/upload-artifact@v4
+#         with:
+#           name: raw-radio-studio-macos-dmg
+#           path: build/*.dmg
+#
+#   package-linux:
+#     name: Linux (.deb + AppImage)
+#     runs-on: ubuntu-24.04
+#     steps:
+#       - uses: actions/checkout@v4
+#         with: { submodules: recursive }
+#       - run: sudo apt-get update && sudo apt-get install -y cmake build-essential
+#       - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+#       - run: cmake --build build --config Release --parallel
+#       # TODO: build .deb (CPack DEB) and .AppImage (linuxdeploy/appimagetool).
+#       - uses: actions/upload-artifact@v4
+#         with:
+#           name: raw-radio-studio-linux
+#           path: |
+#             build/*.deb
+#             build/*.AppImage
+#
+# =============================================================================

@@ -1,0 +1,58 @@
+# Normalize line endings: store LF in the repository, checkout native.
+* text=auto eol=lf
+
+# Explicit text types
+*.cmake text eol=lf
+CMakeLists.txt text eol=lf
+*.sh text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+NOTICE text eol=lf
+LICENSE text eol=lf
+DCO text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf
+
+# Source
+*.c text eol=lf
+*.cc text eol=lf
+*.cpp text eol=lf
+*.cxx text eol=lf
+*.h text eol=lf
+*.hh text eol=lf
+*.hpp text eol=lf
+*.hxx text eol=lf
+*.in text eol=lf
+
+# Binary — never diff/merge textually
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.bmp binary
+*.ico binary
+*.icns binary
+*.pdf binary
+*.dmg binary
+*.pkg binary
+*.AppImage binary
+*.appimage binary
+*.deb binary
+*.rpm binary
+*.wav binary
+*.aif binary
+*.aiff binary
+*.flac binary
+*.mp3 binary
+*.ogg binary
+*.zip binary
+*.gz binary
+*.7z binary
+
+# Language / diff detection
+*.cpp linguist-language=C++
+*.cc linguist-language=C++
+*.h linguist-language=C++
+*.hpp linguist-language=C++

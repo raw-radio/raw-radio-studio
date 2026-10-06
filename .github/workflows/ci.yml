@@ -1,0 +1,60 @@
+name: CI
+
+# Epic 0: configure + build the placeholder skeleton on macOS and Ubuntu.
+# No engine dependencies yet — this must stay green without JUCE/Tracktion.
+# Release packaging (.dmg / AppImage / deb) is intentionally NOT enabled here;
+# see release-packaging.yml.disabled.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-latest
+          - ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # No submodules are used at Epic 0. When JUCE + Tracktion Engine are
+          # added as pinned submodules, switch this to `recursive` and check out
+          # the exact pinned commits.
+          submodules: false
+
+      - name: Install build tools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake build-essential
+
+      - name: Show toolchain versions
+        run: |
+          cmake --version
+          c++ --version
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Smoke test (placeholder banner)
+        run: ./build/raw_radio_studio

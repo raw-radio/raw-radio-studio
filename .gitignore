@@ -1,0 +1,123 @@
+# ---------------------------------------------------------------------------
+# raw-radio-studio — C++ / CMake / JUCE build & IDE artifacts
+# ---------------------------------------------------------------------------
+
+# Build directories / CMake output
+build/
+build-*/
+cmake-build-*/
+out/
+bin/
+lib/
+.cache/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+CMakeUserPresets.json
+cmake_install.cmake
+CTestTestfile.cmake
+CTestTestfile.cmake.*
+compile_commands.json
+install_manifest.txt
+Makefile
+!CMakeLists.txt
+*.cmake.in
+
+# Compiled objects / libraries / binaries
+*.o
+*.obj
+*.lo
+*.a
+*.la
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.out
+*.app/
+*.mod
+
+# Dependency / package managers
+conan.lock
+vcpkg_installed/
+_vcpkg/
+
+# ---------------------------------------------------------------------------
+# JUCE (populated once JUCE is added as a submodule / generated)
+# ---------------------------------------------------------------------------
+# NOTE: the pinned upstream submodule lives under third_party/JUCE and must be
+# committed as a submodule pointer — do NOT ignore third_party/.
+JuceLibraryCode/
+juce_*.h
+juce_*.cpp
+
+# ---------------------------------------------------------------------------
+# IDEs / editors
+# ---------------------------------------------------------------------------
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+!.vscode/settings.json.example
+.vs/
+# CLion
+cmake-build-debug/
+cmake-build-release/
+cmake-build-relwithdebinfo/
+cmake-build-minsizerel/
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+!*.xcworkspace/contents.xcworkspacedata
+xcuserdata/
+*.xcuserstate
+DerivedData/
+*.moved-aside
+# Visual Studio (future)
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# ---------------------------------------------------------------------------
+# Packaging outputs (dmg / AppImage / deb etc.)
+# ---------------------------------------------------------------------------
+*.dmg
+*.pkg
+*.mpkg
+*.AppImage
+*.appimage
+*.AppImage.zsync
+*.deb
+*.rpm
+*.flatpak
+*.snap
+
+# ---------------------------------------------------------------------------
+# Caches / misc
+# ---------------------------------------------------------------------------
+.ccache/
+*.gcda
+*.gcno
+*.gcov
+Testing/
+
+# OS noise
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Logs / env (never commit secrets)
+*.log
+.env
+.env.*
+!.env.example
