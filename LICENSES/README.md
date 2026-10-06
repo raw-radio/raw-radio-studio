@@ -1,12 +1,23 @@
 # Licenses
 
-- `../LICENSE` — the project's top-level license: **GNU AGPLv3**.
-- `../NOTICE` — licensing composition and the third-party inventory.
+Verbatim license texts for the pinned third-party dependencies live in this
+directory:
 
-This directory is reserved for verbatim dependency license texts (JUCE, Tracktion
-Engine, and any future dependencies). It is intentionally empty at Epic 0
-bootstrap because no dependencies are vendored or pinned yet.
+- `JUCE.txt` — JUCE Framework (`third_party/JUCE`, pinned to tag **9.0.3**).
+- `tracktion_engine.txt` — Tracktion Engine (`third_party/tracktion_engine`,
+  pinned to `develop` commit **2d2d452f**).
 
-When dependencies are pinned (Epic 0, C++ specialist), add their license texts
-here and complete the inventory in `../NOTICE`. Every dependency addition
-requires a license review.
+## Licensing composition
+
+- The project itself (`raw-radio-studio`) is licensed under the **GNU AGPLv3**
+  — see the top-level [`../LICENSE`](../LICENSE).
+- **JUCE** is used under its free **AGPLv3** tier (dual-licensed with a
+  commercial option we do not use).
+- **Tracktion Engine** is used under its free **GPLv3-or-later** tier
+  (dual-licensed with a commercial option we do not use).
+
+These texts are collected here for the AGPL Corresponding Source obligation.
+The full composition, rationale (GPLv3 §13 / AGPLv3 §13), and the pinned-source
+inventory are maintained in [`../NOTICE`](../NOTICE).
+
+Every dependency addition requires a license review and an update to `NOTICE`.
