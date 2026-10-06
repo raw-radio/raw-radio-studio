@@ -51,9 +51,10 @@ Prerequisites:
 
   ```bash
   sudo apt-get install -y \
-      libasound2-dev libfreetype6-dev libfontconfig1-dev libgl1-mesa-dev \
-      libx11-dev libxext-dev libxinerama-dev libxrandr-dev libxcursor-dev \
-      libxcomposite-dev libwebkit2gtk-4.1-dev
+      build-essential libasound2-dev libfreetype6-dev libfontconfig1-dev \
+      libgl1-mesa-dev libx11-dev libx11-xcb-dev libxext-dev libxinerama-dev \
+      libxrandr-dev libxcursor-dev libxcomposite-dev libxi-dev libxfixes-dev \
+      libwebkit2gtk-4.1-dev dpkg-dev fakeroot
   ```
 
 Clone the pinned dependencies, then build:

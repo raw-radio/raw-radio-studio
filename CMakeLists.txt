@@ -75,8 +75,19 @@ set(TE_ADD_EXAMPLES OFF CACHE BOOL "Add the Tracktion Engine example targets" FO
 
 # Tracktion Engine's runtime Engine::getVersion() string is stale upstream, so
 # read the authoritative module version from its VERSION.md for the banner.
-file(READ "${RAW_RADIO_STUDIO_TRACKTION_DIR}/VERSION.md" RAW_RADIO_STUDIO_TRACKTION_VERSION)
-string(STRIP "${RAW_RADIO_STUDIO_TRACKTION_VERSION}" RAW_RADIO_STUDIO_TRACKTION_VERSION)
+set(RAW_RADIO_STUDIO_TRACKTION_VERSION_FILE
+    "${RAW_RADIO_STUDIO_TRACKTION_DIR}/VERSION.md")
+if(EXISTS "${RAW_RADIO_STUDIO_TRACKTION_VERSION_FILE}")
+    file(READ "${RAW_RADIO_STUDIO_TRACKTION_VERSION_FILE}"
+        RAW_RADIO_STUDIO_TRACKTION_VERSION)
+    string(STRIP "${RAW_RADIO_STUDIO_TRACKTION_VERSION}"
+        RAW_RADIO_STUDIO_TRACKTION_VERSION)
+else()
+    message(FATAL_ERROR
+        "Tracktion Engine version file not found: "
+        "${RAW_RADIO_STUDIO_TRACKTION_VERSION_FILE}\n"
+        "The submodule looks incomplete — run:  git submodule update --init")
+endif()
 
 # 1) Register the pinned JUCE first (defines juce::juce_core, so Tracktion uses it).
 add_subdirectory("${RAW_RADIO_STUDIO_JUCE_DIR}"     "${CMAKE_BINARY_DIR}/_deps/JUCE")
@@ -86,6 +97,14 @@ add_subdirectory("${RAW_RADIO_STUDIO_TRACKTION_DIR}" "${CMAKE_BINARY_DIR}/_deps/
 # -----------------------------------------------------------------------------
 # Application target: opens an empty JUCE window; links JUCE + Tracktion Engine.
 # -----------------------------------------------------------------------------
+# AU hosting is macOS-only. Pass PLUGINHOST_AU with an explicit value only on
+# Apple: an empty `${APPLE}` expansion on Linux would leave a bare
+# `PLUGINHOST_AU` keyword, which JUCE parses as TRUE.
+set(_raw_radio_juce_app_options)
+if(APPLE)
+    list(APPEND _raw_radio_juce_app_options PLUGINHOST_AU 1)
+endif()
+
 juce_add_gui_app(raw_radio_studio
     PRODUCT_NAME "raw-radio-studio"
     COMPANY_NAME "raw-radio"
@@ -95,7 +114,7 @@ juce_add_gui_app(raw_radio_studio
     MICROPHONE_PERMISSION_TEXT "raw-radio-studio requires audio input access to record."
     NEEDS_CURL FALSE
     NEEDS_WEB_BROWSER FALSE
-    PLUGINHOST_AU ${APPLE})
+    ${_raw_radio_juce_app_options})
 
 target_sources(raw_radio_studio PRIVATE src/main.cpp)
 

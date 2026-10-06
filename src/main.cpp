@@ -87,7 +87,9 @@ public:
         std::cout << versionBanner() << std::endl;
 
         // Headless smoke path: print and exit without creating a window.
-        if (commandLine.contains ("--version"))
+        // Exact argument match (not a substring): `--versionfoo` must NOT trigger it.
+        const auto args = juce::StringArray::fromTokens (commandLine, true);
+        if (args.contains ("--version"))
         {
             quit();
             return;
