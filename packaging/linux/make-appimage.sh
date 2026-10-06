@@ -20,6 +20,8 @@
 # Env overrides:
 #   LINUXDEPLOY_VERSION  (default: 1-alpha-20251107-1)
 #   LINUXDEPLOY_URL      (default: derived from the pinned version)
+#   LINUXDEPLOY_SHA256   (default: pinned checksum for the version/arch above;
+#                         only override together with VERSION/URL)
 # -----------------------------------------------------------------------------
 set -euo pipefail
 
@@ -37,13 +39,24 @@ fi
 
 ARCH="$(uname -m)"
 case "${ARCH}" in
-    x86_64)          LD_ASSET="linuxdeploy-x86_64.AppImage" ;;
-    aarch64|arm64)   LD_ASSET="linuxdeploy-aarch64.AppImage" ;;
+    x86_64)
+        LD_ASSET="linuxdeploy-x86_64.AppImage"
+        # sha256 of linuxdeploy-x86_64.AppImage @ 1-alpha-20251107-1
+        LD_SHA256="c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d"
+        ;;
+    aarch64|arm64)
+        LD_ASSET="linuxdeploy-aarch64.AppImage"
+        # sha256 of linuxdeploy-aarch64.AppImage @ 1-alpha-20251107-1
+        LD_SHA256="620095110d693282b8ebeb244a95b5e911cf8f65f76c88b4b47d16ae6346fcff"
+        ;;
     *) echo "error: unsupported architecture: ${ARCH}" >&2; exit 1 ;;
 esac
 
 LINUXDEPLOY_VERSION="${LINUXDEPLOY_VERSION:-1-alpha-20251107-1}"
 LINUXDEPLOY_URL="${LINUXDEPLOY_URL:-https://github.com/linuxdeploy/linuxdeploy/releases/download/${LINUXDEPLOY_VERSION}/${LD_ASSET}}"
+# Pinned integrity checksum. If you override LINUXDEPLOY_VERSION/URL you MUST
+# also supply a matching LINUXDEPLOY_SHA256, otherwise verification fails.
+LINUXDEPLOY_SHA256="${LINUXDEPLOY_SHA256:-${LD_SHA256}}"
 
 WORK="$(mktemp -d)"
 cleanup() { rm -rf "${WORK}"; }
@@ -56,6 +69,18 @@ OUTDIR="$(cd "${OUTDIR}" && pwd)"
 
 LINUXDEPLOY="${TOOLS}/linuxdeploy"
 curl -fsSL -o "${LINUXDEPLOY}" "${LINUXDEPLOY_URL}"
+
+# Verify integrity BEFORE making it executable or running it. `sha256sum -c -`
+# reads "<hash>  <file>" pairs; a mismatch exits non-zero and (with `set -e`)
+# aborts the build. This guards against a tampered/spoofed release asset.
+if ! echo "${LINUXDEPLOY_SHA256}  ${LINUXDEPLOY}" | sha256sum -c -; then
+    echo "error: linuxdeploy checksum verification FAILED" >&2
+    echo "       url:      ${LINUXDEPLOY_URL}" >&2
+    echo "       expected: ${LINUXDEPLOY_SHA256}" >&2
+    echo "       actual:   $(sha256sum "${LINUXDEPLOY}" | awk '{print $1}')" >&2
+    exit 1
+fi
+
 chmod +x "${LINUXDEPLOY}"
 
 # Run the linuxdeploy AppImage without FUSE.
