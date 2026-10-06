@@ -28,36 +28,52 @@ The top-level license of this project is therefore AGPLv3 (not GPLv3).
 THIRD-PARTY INVENTORY
 ================================================================================
 
-!!! PLACEHOLDER — TO BE FILLED WHEN DEPENDENCIES ARE PINNED !!!
+Pinned source dependencies (git submodules — exact commits; see DEPENDENCIES.md):
 
-No third-party dependencies are pinned yet: Epic 0 has no engine wiring, and the
-placeholder executable builds with plain CMake only. When JUCE and Tracktion
-Engine are added as pinned git submodules (Epic 0, C++ specialist), this
-inventory MUST be completed. For each component record:
+  | Component         | Pinned commit SHA                          | Version | License (SPDX)                | Role                                  |
+  |-------------------|--------------------------------------------|---------|-------------------------------|---------------------------------------|
+  | Tracktion Engine  | 2d2d452fd0336805cadb78268436e83b4a9f68e6   | 3.5.0   | GPL-3.0-or-later / commercial | Core multitrack audio engine (no UI)  |
+  | JUCE              | be29c81492b6151c8ea8d14c840e1311963b3a83   | 9.0.3   | AGPL-3.0-or-later / commercial| Framework: GUI, audio device I/O, plugins |
 
-  - component name
-  - exact version / pinned commit SHA
-  - license (SPDX identifier)
-  - role in this project
-  - obligations (attribution, source availability, dynamic-linking notes)
+  * Tracktion Engine — https://github.com/Tracktion/tracktion_engine
+    License: GNU General Public License v3.0 or later (free tier), or a
+    commercial license from Tracktion. This project uses the free (GPLv3)
+    tier only; it is not used in a closed-source paid build (STUDIO_SPEC NG3).
+    Source availability: the pinned commit above plus this repository's build
+    scripts constitute the Corresponding Source needed to build it.
 
-Planned components (NOT YET VENDORED):
+  * JUCE — https://github.com/juce-framework/JUCE
+    License: GNU Affero General Public License v3.0 (free tier), or a commercial
+    license from Raw Material Software. This project uses the free (AGPLv3)
+    tier only; it is not used in a closed-source paid build (STUDIO_SPEC NG3).
+    Source availability: the pinned commit above plus this repository's build
+    scripts constitute the Corresponding Source needed to build it.
 
-  | Component           | Expected license             | Role                        | Status     |
-  |---------------------|------------------------------|-----------------------------|------------|
-  | Tracktion Engine    | GPLv3-or-later / commercial  | Core DAW engine             | NOT PINNED |
-  | JUCE                | AGPLv3 / commercial          | Framework / GUI / audio I/O | NOT PINNED |
-  | Signalsmith Stretch | free — verify exact terms    | Time-stretch (Epic 4)       | DEFERRED   |
-  | SoundTouch          | LGPL                         | Time-stretch alternative    | DEFERRED   |
+  JUCE is registered before Tracktion Engine in the build, so Tracktion Engine
+  is compiled against the pinned JUCE above (its own bundled `modules/juce`
+  submodule is intentionally not used). See DEPENDENCIES.md.
+
+Not yet vendored (future epics — pinned similarly when adopted):
+
+  | Component           | Expected license          | Role                        | Status     |
+  |---------------------|---------------------------|-----------------------------|------------|
+  | Signalsmith Stretch | free — verify exact terms | Time-stretch (Epic 4)       | DEFERRED   |
+  | SoundTouch          | LGPL                      | Time-stretch alternative    | DEFERRED   |
 
 Explicitly EXCLUDED (do not add):
-  - RubberBand (GPLv2+ — AGPL compatibility concern)
-  - Elastique (commercial)
-  - CLAP (out of scope for this project)
+
+  * RubberBand (GPLv2+ — AGPL compatibility concern)
+  * Elastique (commercial)
+  * CLAP (out of scope for this project)
+  * VST2 (not shipped — decision D24)
 
 Every dependency addition requires a license review and an update to this file.
 A qualified lawyer must sign off on the linking model and on this inventory
 before the public v1 release (see STUDIO_SPEC section 7.6).
+
+Regenerate the pinned SHAs with:
+
+  git submodule status
 
 ================================================================================
 CORRESPONDING SOURCE

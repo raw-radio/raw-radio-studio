@@ -9,11 +9,12 @@ It is **tracking-first**: the engineer's workflow — arm → record → overdub
 rough mix → export — is the product. It is not a beat-making environment.
 
 > **Status: pre-alpha — Epic 0 (bootstrap).**
-> This repository is a buildable, licensed, CI-driven skeleton. The audio engine
-> (JUCE / Tracktion Engine) is **not wired yet**; that integration is deferred to
-> the C++ specialist. The current `raw_radio_studio` target is a placeholder that
-> prints a version banner. Epic 1 (the walking-skeleton MVP) is pending the
-> engine integration.
+> The repository now builds a real JUCE application linked against Tracktion
+> Engine: it opens an empty window and prints a version banner. There is no audio
+> graph, device I/O, or transport yet — those arrive in Epic 1 (the
+> walking-skeleton MVP). The JUCE ↔ Tracktion compatibility question (OQ-3) is
+> resolved: **JUCE 9.0.3 builds and links with Tracktion Engine 3.5.0** on macOS
+> and Ubuntu (see [`DEPENDENCIES.md`](DEPENDENCIES.md)).
 
 ## Scope (target)
 
@@ -23,7 +24,7 @@ rough mix → export — is the product. It is not a beat-making environment.
 - Device-agnostic audio I/O: **CoreAudio** (macOS), **ALSA `hw` directly**
   (Linux, no fallback).
 - Plugin hosting: **VST3** (default), **LV2** (opt-in), **AU** (macOS only).
-  No CLAP.
+  No CLAP, no VST2.
 - Free/libre dependencies only — no commercial or GPLv2+-only components.
 
 ## Specification
@@ -34,30 +35,56 @@ roadmap. It currently lives in the `raw_radio` monorepo and will be vendored int
 this repository's `docs/`. See [`docs/README.md`](docs/README.md) for the
 pointer.
 
+## Dependencies
+
+JUCE and Tracktion Engine are pinned **git submodules** (exact commits under
+`third_party/`). Exact SHAs, the JUCE↔Tracktion compatibility verdict, and the
+pin/upgrade strategy are documented in [`DEPENDENCIES.md`](DEPENDENCIES.md).
+
 ## Build
 
 Prerequisites:
 
 - **CMake ≥ 3.22**
 - A **C++20** compiler (Apple Clang / Clang / GCC)
+- **Linux only:** JUCE build dependencies, e.g. (Ubuntu 24.04):
+
+  ```bash
+  sudo apt-get install -y \
+      libasound2-dev libfreetype6-dev libfontconfig1-dev libgl1-mesa-dev \
+      libx11-dev libxext-dev libxinerama-dev libxrandr-dev libxcursor-dev \
+      libxcomposite-dev libwebkit2gtk-4.1-dev
+  ```
+
+Clone the pinned dependencies, then build:
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --parallel
-./build/raw_radio_studio
+git submodule update --init
+cmake -B build
+cmake --build build
 ```
 
-Expected output:
+Run:
 
-```
-raw-radio-studio <version>
-AGPLv3 — Epic 0 bootstrap skeleton (engine not wired yet)
-https://github.com/raw-radio/raw-radio-studio
+```bash
+# macOS (app bundle)
+build/raw_radio_studio_artefacts/Release/raw-radio-studio.app/Contents/MacOS/raw-radio-studio
+# Linux (executable)
+build/raw_radio_studio_artefacts/Release/raw-radio-studio
 ```
 
-> The build currently produces the Epic 0 placeholder only. JUCE + Tracktion
-> Engine integration (pinned commit SHAs) is a TODO for the C++ specialist; see
-> the comments in [`CMakeLists.txt`](CMakeLists.txt).
+Headless version check (no window is created):
+
+```bash
+raw-radio-studio --version
+# raw-radio-studio 0.0.0  (JUCE 9.0.3, Tracktion Engine 3.5.0)
+```
+
+When launched without arguments, the app opens an empty JUCE window.
+
+> **Note on submodules:** initialisation is non-recursive on purpose. Tracktion
+> Engine's nested `modules/juce` submodule is not used (we pin JUCE ourselves).
+> See [`DEPENDENCIES.md`](DEPENDENCIES.md).
 
 ## Contributing
 
@@ -72,5 +99,5 @@ see [`LICENSE`](LICENSE).
 
 This project combines Tracktion Engine (GPLv3-or-later, free tier) and JUCE
 (AGPLv3, free tier). The combined work is distributed under **AGPLv3** via GPLv3
-§13 / AGPLv3 §13. Third-party licensing composition and the (placeholder)
-inventory are documented in [`NOTICE`](NOTICE).
+§13 / AGPLv3 §13. Third-party licensing composition and the pinned inventory are
+documented in [`NOTICE`](NOTICE).

@@ -1,9 +1,10 @@
 name: CI
 
-# Epic 0: configure + build the placeholder skeleton on macOS and Ubuntu.
-# No engine dependencies yet — this must stay green without JUCE/Tracktion.
+# Epic 0: configure + build the JUCE + Tracktion Engine application on macOS and
+# Ubuntu. Pinned dependencies are checked out as git submodules at exact commits
+# (see DEPENDENCIES.md).
 # Release packaging (.dmg / AppImage / deb) is intentionally NOT enabled here;
-# see release-packaging.yml.disabled.
+# a separate task handles packaging.
 
 on:
   push:
@@ -31,19 +32,33 @@ jobs:
           - ubuntu-24.04
 
     steps:
-      - name: Checkout
+      - name: Checkout (with pinned submodules)
         uses: actions/checkout@v4
         with:
-          # No submodules are used at Epic 0. When JUCE + Tracktion Engine are
-          # added as pinned submodules, switch this to `recursive` and check out
-          # the exact pinned commits.
-          submodules: false
+          # Non-recursive on purpose: Tracktion Engine's nested `modules/juce`
+          # submodule uses an SSH URL and is deliberately NOT used — we pin JUCE
+          # ourselves as a separate top-level submodule. See DEPENDENCIES.md.
+          submodules: true
 
-      - name: Install build tools (Linux)
+      - name: Install JUCE build dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends cmake build-essential
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev \
+            libfreetype6-dev \
+            libfontconfig1-dev \
+            libgl1-mesa-dev \
+            libx11-dev \
+            libxext-dev \
+            libxinerama-dev \
+            libxrandr-dev \
+            libxcursor-dev \
+            libxcomposite-dev \
+            libwebkit2gtk-4.1-dev
+
+      - name: Show pinned dependency revisions
+        run: git submodule status
 
       - name: Show toolchain versions
         run: |
@@ -54,7 +69,15 @@ jobs:
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
-        run: cmake --build build --config Release --parallel
+        # Bound parallelism: the amalgamated Tracktion Engine and JUCE translation
+        # units are large and have been observed to OOM with unbounded `--parallel`
+        # on resource-limited runners.
+        run: cmake --build build --config Release --parallel 2
 
-      - name: Smoke test (placeholder banner)
-        run: ./build/raw_radio_studio
+      - name: Smoke test (macOS)
+        if: runner.os == 'macOS'
+        run: '"build/raw_radio_studio_artefacts/Release/raw-radio-studio.app/Contents/MacOS/raw-radio-studio" --version'
+
+      - name: Smoke test (Linux)
+        if: runner.os == 'Linux'
+        run: build/raw_radio_studio_artefacts/Release/raw-radio-studio --version
