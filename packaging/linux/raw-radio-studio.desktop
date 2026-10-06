@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=raw-radio-studio
+GenericName=Digital Audio Workstation
+Comment=Free, open-source tracking-first DAW (JUCE + Tracktion Engine)
+Exec=raw-radio-studio
+Icon=raw-radio-studio
+Terminal=false
+Categories=AudioVideo;Audio;Music;
+Keywords=audio;music;recording;daw;

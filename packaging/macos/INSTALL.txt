@@ -1,0 +1,30 @@
+raw-radio-studio — macOS install notes (UNSIGNED build)
+======================================================
+
+This build is NOT code-signed or notarized (notarization is deferred, see
+STUDIO_SPEC §8.5). macOS Gatekeeper will therefore refuse to open it on the
+first launch. This is expected, not a sign of a corrupt download.
+
+Install
+-------
+1. Open the .dmg and drag "raw-radio-studio.app" into your Applications folder.
+
+First launch (Gatekeeper bypass)
+--------------------------------
+Option A — right-click to open (no Terminal):
+  1. In Finder, open Applications.
+  2. Right-click (or Control-click) "raw-radio-studio.app" and choose "Open".
+  3. Click "Open" again in the dialog. macOS remembers this choice.
+
+Option B — Terminal (remove the quarantine flag):
+    xattr -dr com.apple.quarantine /Applications/raw-radio-studio.app
+
+Requirements
+------------
+  * macOS 12 (Monterey) or newer.
+  * Microphone access is requested on first audio use.
+
+License
+-------
+raw-radio-studio is free software under the GNU AGPLv3. See LICENSE in the
+source repository: https://github.com/raw-radio/raw-radio-studio

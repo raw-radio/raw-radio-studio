@@ -1,10 +1,14 @@
 name: CI
 
 # Epic 0: configure + build the JUCE + Tracktion Engine application on macOS and
-# Ubuntu. Pinned dependencies are checked out as git submodules at exact commits
-# (see DEPENDENCIES.md).
-# Release packaging (.dmg / AppImage / deb) is intentionally NOT enabled here;
-# a separate task handles packaging.
+# Ubuntu, then produce UNSIGNED release artifacts (STUDIO_SPEC §8.2/§8.3):
+#   * macOS  -> raw-radio-studio-<version>-macos.dmg
+#   * Linux  -> raw-radio-studio-<version>-x86_64.AppImage
+#               raw-radio-studio-<version>-amd64.deb
+# Pinned dependencies are checked out as git submodules at exact commits
+# (non-recursive, see DEPENDENCIES.md). Artifacts are uploaded with
+# actions/upload-artifact — this workflow does NOT create a GitHub Release
+# (release automation is Epic 6).
 
 on:
   push:
@@ -22,7 +26,7 @@ permissions:
 
 jobs:
   build:
-    name: build (${{ matrix.os }})
+    name: build + package (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -45,17 +49,23 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
+            build-essential \
             libasound2-dev \
             libfreetype6-dev \
             libfontconfig1-dev \
             libgl1-mesa-dev \
             libx11-dev \
+            libx11-xcb-dev \
             libxext-dev \
             libxinerama-dev \
             libxrandr-dev \
             libxcursor-dev \
             libxcomposite-dev \
-            libwebkit2gtk-4.1-dev
+            libxi-dev \
+            libxfixes-dev \
+            libwebkit2gtk-4.1-dev \
+            dpkg-dev \
+            fakeroot
 
       - name: Show pinned dependency revisions
         run: git submodule status
@@ -64,6 +74,21 @@ jobs:
         run: |
           cmake --version
           c++ --version
+
+      - name: Determine version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="$(grep -m1 -E '^[[:space:]]*VERSION[[:space:]]+[0-9]' CMakeLists.txt | awk '{print $2}')"
+          fi
+          if [[ -z "${VERSION}" ]]; then
+            echo "error: could not determine project version" >&2
+            exit 1
+          fi
+          echo "STUDIO_VERSION=${VERSION}" >> "${GITHUB_ENV}"
+          echo "Packaging version: ${VERSION}"
 
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -81,3 +106,46 @@ jobs:
       - name: Smoke test (Linux)
         if: runner.os == 'Linux'
         run: build/raw_radio_studio_artefacts/Release/raw-radio-studio --version
+
+      # --- Packaging --------------------------------------------------------
+      # Unsigned artifacts only (notarization/code-signing deferred, §8.5).
+
+      - name: Package macOS .dmg (unsigned)
+        if: runner.os == 'macOS'
+        run: |
+          bash packaging/macos/make-dmg.sh \
+            "build/raw_radio_studio_artefacts/Release/raw-radio-studio.app" \
+            "${STUDIO_VERSION}" \
+            dist
+
+      - name: Package Linux .deb (dpkg-deb, unsigned)
+        if: runner.os == 'Linux'
+        run: bash packaging/linux/make-deb.sh build "${STUDIO_VERSION}" dist
+
+      - name: Package Linux AppImage (linuxdeploy, unsigned)
+        if: runner.os == 'Linux'
+        run: |
+          bash packaging/linux/make-appimage.sh \
+            "build/raw_radio_studio_artefacts/Release/raw-radio-studio" \
+            "${STUDIO_VERSION}" \
+            dist
+
+      - name: Upload macOS artifact
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: raw-radio-studio-${{ env.STUDIO_VERSION }}-macos
+          path: dist/*.dmg
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Linux artifacts
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: raw-radio-studio-${{ env.STUDIO_VERSION }}-linux
+          path: |
+            dist/*.AppImage
+            dist/*.deb
+          if-no-files-found: error
+          retention-days: 14

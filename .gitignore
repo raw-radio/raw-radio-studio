@@ -9,6 +9,7 @@ cmake-build-*/
 out/
 bin/
 lib/
+dist/
 .cache/
 
 # CMake generated files
