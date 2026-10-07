@@ -1,20 +1,26 @@
 # Documentation
 
-The canonical project specification is **`STUDIO_SPEC.md`** (document version
-1.1.0). It defines the product vision, functional and non-functional
-requirements, architecture, licensing, build/CI/release plan, and the Epic 0–7
-roadmap with acceptance criteria.
+This directory holds the project documentation for `raw-radio-studio`.
 
-**Where it lives today:** `docs/STUDIO_SPEC.md` in the `raw_radio` monorepo
-(a sibling repository). It is a living document, versioned in git and changed via
-PR only.
+## Specification
 
-**Planned:** once Epic 0 lands, the spec will be vendored/moved into this
-repository's `docs/` directory so that the Corresponding Source per released tag
-is self-contained (see the spec's licensing/corresponding-source section).
+The canonical specification is **`STUDIO_SPEC.md`** (document version 1.2.1). It
+defines the product vision, functional and non-functional requirements,
+architecture, licensing, build/CI/release plan, and the Epic 0–7 roadmap with
+acceptance criteria.
 
-Additional documentation — build runbook, JUCE 9 / Tracktion Engine compatibility
-notes, CI/release notes — will be added as later epics land.
+It is a living document, versioned in git and changed via PR only. It lives in
+this repository at [`STUDIO_SPEC.md`](STUDIO_SPEC.md) so that the Corresponding
+Source for each released tag is self-contained (see the spec's
+licensing/corresponding-source section).
 
-At bootstrap (Epic 0) this repository intentionally contains only the spec
-pointer; no engine code or dependency inventory is vendored yet.
+## Other documentation
+
+- [`../README.md`](../README.md) — project overview, build, run, and license.
+- [`../DEPENDENCIES.md`](../DEPENDENCIES.md) — pinned submodules, exact SHAs, and
+  the JUCE 9 ↔ Tracktion Engine compatibility verdict.
+- [`../CONTRIBUTING.md`](../CONTRIBUTING.md) — DCO sign-off and PR flow.
+- [`../NOTICE`](../NOTICE) — third-party inventory and licensing composition.
+
+Build runbook, compatibility notes, and CI/release notes will be expanded as
+later epics land.
