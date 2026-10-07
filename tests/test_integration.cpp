@@ -934,16 +934,34 @@ namespace
         MonitorBufferProbe probe;
         instance->addConsumer (&probe);
 
+        // The configuration may reference a device channel that the (deliberately
+        // truncated) hardware list does not provide — e.g. a stereo config fed a
+        // one-channel device in the old-routing regression further down.
+        // Tracktion's `WaveInputDeviceInstance::copyIncomingDataIntoBuffer`
+        // *bounds-checks* `indexInDevice` and silently skips the copy for a
+        // missing channel, leaving that channel at whatever stale memory the
+        // instance's `inputBuffer` happened to hold (`AudioBuffer::setSize` does
+        // not clear). Reading it is therefore non-deterministic (a flaky test:
+        // 0.0 on one run, 5.7e34 on the next). Zero-pad the pointer table up to
+        // every referenced device channel so an absent channel deterministically
+        // reads as silence instead of out-of-range/stale memory.
         constexpr int numSamples = 4;
-        std::vector<std::vector<float>> channelData (hardwareAmplitudes.size(),
-                                                     std::vector<float> (numSamples));
+
+        int requiredChannels = (int) hardwareAmplitudes.size();
+
+        for (const auto& ci : cfg)
+            requiredChannels = juce::jmax (requiredChannels, ci.indexInDevice + 1);
+
+        std::vector<std::vector<float>> channelData ((size_t) requiredChannels,
+                                                     std::vector<float> (numSamples, 0.0f));
         std::vector<const float*> channelPtrs;
+        channelPtrs.reserve ((size_t) requiredChannels);
 
         for (size_t c = 0; c < hardwareAmplitudes.size(); ++c)
-        {
             std::fill (channelData[c].begin(), channelData[c].end(), hardwareAmplitudes[c]);
-            channelPtrs.push_back (channelData[c].data());
-        }
+
+        for (auto& channel : channelData)
+            channelPtrs.push_back (channel.data());
 
         waveIn->consumeNextAudioBlock (channelPtrs.data(), (int) channelPtrs.size(), numSamples, 0.0);
 
