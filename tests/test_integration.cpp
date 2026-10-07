@@ -38,9 +38,10 @@ namespace
 {
     //==========================================================================
     /** Engine behaviour that never opens a real audio device, keeping the tests
-        hermetic. `getDeviceManager().getSampleRate()` then reports Tracktion's
-        no-device default (44100 Hz in this Engine version), which is the exact
-        "device closed at export time" case WavExport has to handle. */
+        hermetic. With no device open, Tracktion's
+        `DeviceManager::getSampleRate()` reports a 44100 Hz placeholder (never
+        0), which is exactly the "device closed at export time" case WavExport
+        has to detect explicitly so it uses the 48 kHz Epic 1 default. */
     class HeadlessBehaviour final : public te::EngineBehaviour
     {
     public:
@@ -150,7 +151,7 @@ namespace
 }
 
 //==============================================================================
-TEST_CASE ("WavExport renders a synthetic edit to 24-bit WAV at the session sample rate")
+TEST_CASE ("WavExport renders a synthetic edit to 24-bit WAV at the default rate when no device is open")
 {
     auto dir = scratchDirectory ("export");
     auto editFile = dir.getChildFile ("Export Source.tracktionedit");
@@ -195,17 +196,21 @@ TEST_CASE ("WavExport renders a synthetic edit to 24-bit WAV at the session samp
     CHECK ((int) reader->bitsPerSample == WavExport::bitDepth);
     CHECK (reader->bitsPerSample == 24u);
 
-    // FR-EXP-1: export at the session sample rate. WavExport uses the engine's
-    // DeviceManager rate; with no device open this Engine version reports 44100
-    // (DeviceManager::getSampleRate), so we assert the code faithfully follows
-    // the session rate rather than a hard-coded value.
-    const auto sessionRate = edit->engine.getDeviceManager().getSampleRate();
-    CHECK (sessionRate > 0.0);
-    CHECK (reader->sampleRate == doctest::Approx (sessionRate));
+    // FR-EXP-1 / NFR-A-4: with a device open the export runs at the session
+    // sample rate; headless (no device) it must use the Epic 1 default (48 kHz).
+    // Tracktion's DeviceManager::getSampleRate() returns a 44100 Hz placeholder
+    // when no device is open (it never returns 0), which is exactly why
+    // WavExport must detect the no-device case via getCurrentAudioDevice()
+    // rather than relying on a `<= 0` guard. This test is the regression guard
+    // for that fix.
+    CHECK (edit->engine.getDeviceManager().deviceManager.getCurrentAudioDevice() == nullptr);
 
-    // Documents the headless behaviour: WavExport's `<= 0 -> 48 kHz` fallback is
-    // unreachable with Tracktion 3.5.0 because getSampleRate() never returns 0.
-    CHECK (reader->sampleRate == doctest::Approx (44100.0));
+    // The placeholder that used to leak through into the exported file:
+    CHECK (edit->engine.getDeviceManager().getSampleRate() == doctest::Approx (44100.0));
+
+    // ...while the export itself is the corrected 48 kHz default (NFR-A-4).
+    CHECK (reader->sampleRate == doctest::Approx (AudioEngine::defaultSampleRate));
+    CHECK (reader->sampleRate == doctest::Approx (48000.0));
 
     CHECK (reader->numChannels == 2u);
     CHECK (reader->lengthInSamples > 0);

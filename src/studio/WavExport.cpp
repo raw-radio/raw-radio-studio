@@ -40,12 +40,17 @@ namespace rrs
         params.audioFormat        = edit.engine.getAudioFileFormatManager().getWavFormat();
         params.bitDepth           = bitDepth;
 
-        // The device may be closed (or not yet opened) when exporting; the
-        // device manager then reports 0 Hz. Fall back to the Epic 1 default
-        // (48 kHz, NFR-A-4) so the render never runs at 0 Hz.
-        auto sampleRate = edit.engine.getDeviceManager().getSampleRate();
+        // When no audio device is open (export can be triggered headless or after
+        // the device was closed) Tracktion's DeviceManager::getSampleRate() does
+        // NOT return 0 — it returns a 44100 Hz placeholder — so a `<= 0` test
+        // alone let the render silently run at 44.1 kHz. Detect the no-device
+        // case explicitly and use the Epic 1 default (48 kHz, NFR-A-4). When a
+        // device IS open, keep its session sample rate.
+        auto& deviceManager = edit.engine.getDeviceManager();
+        auto sampleRate = deviceManager.getSampleRate();
 
-        if (sampleRate <= 0.0)
+        if (deviceManager.deviceManager.getCurrentAudioDevice() == nullptr
+            || sampleRate <= 0.0)
             sampleRate = AudioEngine::defaultSampleRate;
 
         params.sampleRateForAudio = sampleRate;

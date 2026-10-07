@@ -1,7 +1,9 @@
 // raw-radio-studio — WAV export (Epic 1, FR-EXP-1).
 //
 // Renders the session to a **24-bit WAV at the session sample rate** using the
-// Tracktion `EditRenderer` (asynchronous, faster than real time).
+// Tracktion `EditRenderer` (asynchronous, faster than real time). When no audio
+// device is open at export time, the Epic 1 default session rate (48 kHz,
+// NFR-A-4) is used instead of Tracktion's 44.1 kHz no-device placeholder.
 
 #pragma once
 
