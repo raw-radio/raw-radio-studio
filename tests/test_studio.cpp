@@ -24,6 +24,22 @@
 using namespace rrs;
 
 //==============================================================================
+namespace
+{
+    int countNonTransparentPixels (const juce::Image& image)
+    {
+        int count = 0;
+        const juce::Image::BitmapData data (image, juce::Image::BitmapData::readOnly);
+
+        for (int y = 0; y < image.getHeight(); ++y)
+            for (int x = 0; x < image.getWidth(); ++x)
+                if (data.getPixelColour (x, y).getAlpha() > 0)
+                    ++count;
+
+        return count;
+    }
+}
+
 TEST_CASE ("brand icon cache parses and tints the vendored Lucide SVGs")
 {
     auto& cache = IconCache::getInstance();
@@ -34,12 +50,19 @@ TEST_CASE ("brand icon cache parses and tints the vendored Lucide SVGs")
     CHECK (icon.getWidth() == 32);
     CHECK (icon.getHeight() == 32);
 
+    // ...and actually contains drawn (tinted) pixels, not an empty raster.
+    CHECK (countNonTransparentPixels (icon) > 0);
+
     // Every vendored resource must resolve — guards against a renamed file
     // silently yielding a blank button.
     for (const auto* name : { "file-plus", "folder-open", "save", "save-all", "file-input",
                               "file-output", "x", "settings", "info", "circle-dot", "headphones",
                               "circle", "play", "pause", "square", "refresh-cw" })
-        CHECK (cache.getIconImage (name, juce::Colours::white, 16).isValid());
+    {
+        const auto rendered = cache.getIconImage (name, juce::Colours::white, 16);
+        CHECK (rendered.isValid());
+        CHECK (countNonTransparentPixels (rendered) > 0);
+    }
 
     // Unknown names are handled gracefully (no crash, null image).
     CHECK_FALSE (cache.getIconImage ("not-a-real-icon", juce::Colours::white, 16).isValid());
