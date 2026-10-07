@@ -78,6 +78,17 @@ namespace rrs
         params.audioFormat        = edit.engine.getAudioFileFormatManager().getWavFormat();
         params.bitDepth           = bitDepth;
 
+        // FR-EXP-1 / FR-MIX-1: the exported WAV must match what the engineer
+        // hears in playback, i.e. the *full* mixer state. Track plugins
+        // (per-track fader/pan/mute) are on by default, but the master plugin
+        // chain — the master volume plugin (fader/pan/mute) and its master-bus
+        // plugins — is OFF by default in Renderer::Parameters
+        // (`useMasterPlugins = false`). Without this the offline render ignored
+        // the master fader/mute entirely, so a mix balanced against a loud
+        // backing track exported at full level and buried the voice.
+        params.usePlugins         = true;
+        params.useMasterPlugins   = true;
+
         // When no audio device is open (export can be triggered headless or after
         // the device was closed) Tracktion's DeviceManager::getSampleRate() does
         // NOT return 0 — it returns a 44100 Hz placeholder — so a `<= 0` test

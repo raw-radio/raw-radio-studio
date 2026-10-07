@@ -340,6 +340,98 @@ TEST_CASE ("WavExport keeps the metronome out of the export and restores it (FR-
 }
 
 //==============================================================================
+// BUG (Epic 2 GUI retest) — the export must reflect the full mixer.
+//
+// Renderer::Parameters defaults to `useMasterPlugins = false`, so the offline
+// render silently omitted the whole master plugin chain — including the master
+// volume plugin (fader/pan/mute). The engine therefore exported the mix at the
+// pre-master level: lowering the master fader was audible in playback but the
+// WAV came out loud (and a loud backing track buried the voice). This measures
+// the rendered peak for a known tone with the track fader, the master fader and
+// mute — the values must drop exactly by the set dB, and a muted render must be
+// silent.
+TEST_CASE ("WavExport reflects the mixer: track fader, master gain and mute (measured)")
+{
+    auto dir = scratchDirectory ("export-mixer");
+    auto editFile = dir.getChildFile ("Mixer Export.tracktionedit");
+
+    // 0.5-amplitude tone -> -6.02 dBFS at unity.
+    auto wavFile = writeSineWav (dir.getChildFile ("tone.wav"), 48000.0, 1.0);
+    REQUIRE (wavFile.existsAsFile());
+
+    auto edit = makeEditWithClip (editFile, wavFile, 1.0);
+    REQUIRE (edit != nullptr);
+
+    auto tracks = te::getAudioTracks (*edit);
+    REQUIRE (tracks.size() == 1);
+    REQUIRE (tracks[0] != nullptr);
+
+    auto* trackVolume = tracks[0]->getVolumePlugin();
+    REQUIRE (trackVolume != nullptr);
+
+    auto masterVolume = edit->getMasterVolumePlugin();
+    REQUIRE (masterVolume != nullptr);
+
+    auto renderPeak = [&] (const juce::File& dest)
+    {
+        dest.deleteFile();
+
+        std::atomic<bool> finished { false };
+        bool succeeded = false;
+        juce::String error;
+
+        auto handle = WavExport::start (*edit, dest,
+                                        [&] (bool success, juce::File, juce::String message)
+                                        {
+                                            succeeded = success;
+                                            error = message;
+                                            finished = true;
+                                        });
+
+        REQUIRE (handle != nullptr);
+
+        for (int i = 0; i < 400 && ! finished.load(); ++i)
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (25);
+
+        REQUIRE (finished.load());
+        INFO ("render error: " << error);
+        REQUIRE (succeeded);
+        return readWavPeak (dest);
+    };
+
+    // Unity reference.
+    trackVolume->setVolumeDb (0.0f);
+    masterVolume->setVolumeDb (0.0f);
+    const auto unityPeak = renderPeak (dir.getChildFile ("unity.wav"));
+    REQUIRE (unityPeak > 0.1f);
+
+    // Track fader -20 dB AND master -6 dB => the rendered peak must drop by the
+    // combined 26 dB. This is the exact "minus fader ignored in export" case.
+    trackVolume->setVolumeDb (-20.0f);
+    masterVolume->setVolumeDb (-6.0f);
+    const auto reducedPeak = renderPeak (dir.getChildFile ("reduced.wav"));
+
+    const auto expectedRatio = juce::Decibels::decibelsToGain (-26.0f);
+    INFO ("unity " << unityPeak << ", reduced " << reducedPeak
+                   << ", ratio " << (reducedPeak / unityPeak) << ", expected " << expectedRatio);
+    CHECK (reducedPeak / unityPeak == doctest::Approx (expectedRatio).epsilon (0.05));
+
+    // Reset the faders; a muted master must render silence.
+    trackVolume->setVolumeDb (0.0f);
+    masterVolume->setVolumeDb (-100.0f);
+    const auto masterMutedPeak = renderPeak (dir.getChildFile ("master-muted.wav"));
+    INFO ("master-muted peak " << masterMutedPeak);
+    CHECK (masterMutedPeak < 0.001f);
+
+    // A muted track must render silence too (track mute is part of the export).
+    masterVolume->setVolumeDb (0.0f);
+    tracks[0]->setMute (true);
+    const auto trackMutedPeak = renderPeak (dir.getChildFile ("track-muted.wav"));
+    INFO ("track-muted peak " << trackMutedPeak);
+    CHECK (trackMutedPeak < 0.001f);
+}
+
+//==============================================================================
 // FR-EXP-1 regression: a deferred metronome restore must not fire after the
 // export handle (and the component that owns it) has been torn down. Closing
 // the window during an export used to let WavExport's queued restore re-disable
