@@ -1089,12 +1089,13 @@ namespace rrs
             return false;
         }
 
-        edit->getTransport().record (false);
-
-        // A new take on the same track must not play the previous take back to
-        // the performer. Mute the armed record tracks' existing clips for the
-        // duration of the pass; other (backing/minus) tracks keep playing.
+        // Mute the armed record tracks' existing clips BEFORE the transport
+        // rolls: a new take must not play the previous take back to the
+        // performer, and muting first also keeps the old-take audio out of the
+        // first block of monitoring. Other (backing/minus) tracks keep playing.
         beginRecordPassMutes();
+
+        edit->getTransport().record (false);
         return true;
     }
 
@@ -1121,16 +1122,19 @@ namespace rrs
                     continue; // already muted: leave it (and don't restore it)
 
                 clip->setMuted (true);
-                recordPassClips.push_back ({ tracktion::Clip::Ptr (clip), false });
+                recordPassClips.push_back ({ tracktion::Clip::Ptr (clip) });
             }
         }
     }
 
     void Session::endRecordPassMutes()
     {
+        // Only clips that were unmuted at the start of the pass are collected,
+        // so restoring to unmuted is exact (a clip the user had already muted is
+        // never touched).
         for (auto& entry : recordPassClips)
             if (entry.clip != nullptr)
-                entry.clip->setMuted (entry.wasMuted);
+                entry.clip->setMuted (false);
 
         recordPassClips.clear();
         recordPassActive = false;
@@ -1388,7 +1392,10 @@ namespace rrs
             return false;
 
         te::EditFileOperations ops (*edit);
-        ops.save (true, true, false);
+
+        // A transient record-pass clip mute must never reach the file: lift it
+        // for the write and reinstate it after (see withRecordPassMutesLifted).
+        withRecordPassMutesLifted ([&] { ops.save (true, true, false); });
 
         if (! editFile.existsAsFile())
         {
@@ -1412,7 +1419,7 @@ namespace rrs
         }
 
         te::EditFileOperations ops (*edit);
-        ops.saveAs (file, true, nullptr);
+        withRecordPassMutesLifted ([&] { ops.saveAs (file, true, nullptr); });
 
         if (! file.existsAsFile())
         {
@@ -1880,7 +1887,10 @@ namespace rrs
                 if (edit->hasChangedSinceSaved())
                 {
                     te::EditFileOperations ops (*edit);
-                    ops.saveTempVersion (true);
+
+                    // Autosave can fire during a record pass: lift the transient
+                    // pass mutes so the recovered `.tmp_` edit has audible takes.
+                    withRecordPassMutesLifted ([&] { ops.saveTempVersion (true); });
                 }
             }
         }

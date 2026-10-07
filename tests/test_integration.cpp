@@ -1731,6 +1731,102 @@ TEST_CASE ("recording mutes the record track's existing clips for the pass (owne
 }
 
 //==============================================================================
+// Blocker (review): the record-pass clip mute is transient and must never be
+// serialised. Autosave (`saveTempVersion`) and `save()` routinely run during a
+// pass (a trim mouse-up, a routing fix-up). Without lifting the mute around the
+// write, a crash mid-pass recovers an edit whose takes are silently muted — and
+// there is no clip-unmute UI, so the session would be unusable.
+TEST_CASE ("a persist during a record pass never serialises the transient clip mute")
+{
+    auto dir = scratchDirectory ("record-pass-persist");
+    auto editFile = dir.getChildFile ("Take.tracktionedit");
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (editFile));
+
+    auto take = writeSineWav (dir.getChildFile ("take.wav"), 48000.0, 0.5);
+    REQUIRE (take.existsAsFile());
+
+    auto* recordTrack = session.getTrack (0);
+    REQUIRE (recordTrack != nullptr);
+    REQUIRE (recordTrack->insertWaveClip ("take", take,
+                                          { { te::TimePosition(), te::TimeDuration::fromSeconds (0.5) }, {} },
+                                          false) != nullptr);
+    REQUIRE (recordTrack->getClips().size() == 1);
+    auto* existingTake = recordTrack->getClips()[0];
+    CHECK_FALSE (existingTake->isMuted());
+
+    te::HostedAudioDeviceInterface::Parameters params;
+    params.sampleRate = 48000.0;
+    params.blockSize = 256;
+    params.inputChannels = 2;
+    params.outputChannels = 2;
+
+    auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+
+    for (int i = 0; i < 200; ++i)
+    {
+        audio.deviceManager().dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+        if (session.isInputConfigured())
+            break;
+
+        session.reconfigureInputs();
+    }
+
+    REQUIRE (session.isInputConfigured());
+    REQUIRE (session.setTrackArmed (0, true));
+
+    session.getEdit()->getTransport().setPosition (te::TimePosition {});
+    REQUIRE (session.record());
+
+    // The pass mute is live...
+    REQUIRE (existingTake->isMuted());
+
+    // ...but a save during the pass must persist the take UNMUTED. This is the
+    // same lift-write-reinstate path the autosave `.tmp_` write uses.
+    REQUIRE (session.save());
+
+    // The live pass is undisturbed: the clip is muted again after the write.
+    CHECK (existingTake->isMuted());
+
+    auto reopened = te::loadEditFromFile (testEngine(), editFile);
+    REQUIRE (reopened != nullptr);
+
+    auto tracks = te::getAudioTracks (*reopened);
+    REQUIRE_EQ (tracks.size(), 1);
+    REQUIRE (tracks[0] != nullptr);
+    REQUIRE (tracks[0]->getClips().size() == 1);
+    CHECK_FALSE (tracks[0]->getClips()[0]->isMuted());
+
+    // Autosave during a pass: let the session timer fire, then check the
+    // recovery `.tmp_` edit Tracktion would prompt to restore is unmuted too.
+    const auto tempFile = paths::tempEditFileFor (editFile);
+    tempFile.deleteFile();
+    session.setAutosaveIntervalSeconds (1);
+
+    for (int i = 0; i < 60 && ! tempFile.existsAsFile(); ++i)
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (100);
+
+    REQUIRE (tempFile.existsAsFile());
+
+    auto recovered = te::loadEditFromFile (testEngine(), tempFile);
+    REQUIRE (recovered != nullptr);
+    auto recoveredTracks = te::getAudioTracks (*recovered);
+    REQUIRE_EQ (recoveredTracks.size(), 1);
+    REQUIRE (recoveredTracks[0] != nullptr);
+    REQUIRE (recoveredTracks[0]->getClips().size() == 1);
+    CHECK_FALSE (recoveredTracks[0]->getClips()[0]->isMuted());
+
+    session.stop();
+    CHECK_FALSE (existingTake->isMuted());
+
+    session.close();
+}
+
+//==============================================================================
 // FR-REC-4 (Epic 2 GUI retest): the per-input-track record trim must scale the
 // signal written to disk (it is applied to the input buffer on the record path,
 // before monitoring and recording). Two tracks, two trims, one pass.

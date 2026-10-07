@@ -339,6 +339,27 @@ namespace rrs
         void beginRecordPassMutes();
         void endRecordPassMutes();
 
+        /** Runs `write` (a persist) with any transient record-pass clip mutes
+            lifted, then reinstates them. This guarantees a pass mute is never
+            serialised into the edit or the autosave `.tmp_` file: a crash
+            mid-pass would otherwise recover an edit whose takes are silently
+            muted, and there is no clip-unmute UI to fix it. Every persist that
+            can run during a pass (save, saveAs, autosave saveTempVersion) goes
+            through this. */
+        template <typename WriteFn>
+        void withRecordPassMutesLifted (WriteFn&& write)
+        {
+            const auto resumeMutes = recordPassActive;
+
+            if (resumeMutes)
+                endRecordPassMutes();
+
+            write();
+
+            if (resumeMutes)
+                beginRecordPassMutes();
+        }
+
         // Per-track and master level metering (FR-MIX-3).
         void attachMeters();
         void detachMeters();
@@ -387,13 +408,13 @@ namespace rrs
 
         bool lastPlaying = false, lastRecording = false, lastArmed = false;
 
-        /** Existing clips muted for the current record pass, with the mute state
-            to restore. Holds a ref-counted pointer so the clip cannot be freed
-            under us before the pass ends. */
+        /** Clips on the armed record tracks that this pass muted. Only clips
+            that were *unmuted* when the pass began are collected, so ending the
+            pass simply unmutes them again. The ref-counted pointer keeps the
+            clip alive until the pass ends. */
         struct RecordPassClip
         {
             tracktion::Clip::Ptr clip;
-            bool wasMuted = false;
         };
 
         std::vector<RecordPassClip> recordPassClips;
