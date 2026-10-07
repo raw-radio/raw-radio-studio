@@ -39,11 +39,13 @@ namespace rrs
         addAndMakeVisible (titleLabel);
         addAndMakeVisible (devicePanel);
         addAndMakeVisible (inputMeter);
+        addAndMakeVisible (mixerPanel);
         addAndMakeVisible (transportLabel);
         addAndMakeVisible (statusLabel);
 
         for (auto* button : { &newButton, &openButton, &closeButton, &saveButton, &saveAsButton,
-                              &importButton, &exportButton, &settingsButton, &aboutButton,
+                              &importButton, &exportButton, &addTrackButton, &removeTrackButton,
+                              &settingsButton, &aboutButton,
                               &armButton, &recordButton, &playButton, &stopButton, &monitorButton })
             addAndMakeVisible (*button);
 
@@ -62,6 +64,10 @@ namespace rrs
         closeButton.setIconName ("x");
         importButton.setIconName ("file-input");
         exportButton.setIconName ("file-output");
+        addTrackButton.setIconName ("file-plus");
+        addTrackButton.setTooltip ("Add an input track (maps to the next free input)");
+        removeTrackButton.setIconName ("x");
+        removeTrackButton.setTooltip ("Remove the last track");
 
         settingsButton.setIconName ("settings");
         settingsButton.setIconOnly (true);
@@ -88,6 +94,33 @@ namespace rrs
         saveAsButton.onClick    = [this] { saveSessionAs(); };
         importButton.onClick    = [this] { importAudioFile(); };
         exportButton.onClick    = [this] { exportSession(); };
+        addTrackButton.onClick  = [this]
+        {
+            if (exportInProgress)
+                return;
+
+            const auto index = session.addAudioTrack();
+
+            if (index < 0)
+                showStatus (session.getLastError(), true);
+            else
+                showStatus ("Added " + session.getTrackName (index) + " ("
+                            + juce::String (session.getNumAudioTracks()) + " tracks)");
+
+            refreshTransportUi();
+        };
+        removeTrackButton.onClick = [this]
+        {
+            if (exportInProgress)
+                return;
+
+            const auto last = session.getNumAudioTracks() - 1;
+
+            if (! session.removeAudioTrack (last))
+                showStatus (session.getLastError(), true);
+
+            refreshTransportUi();
+        };
         settingsButton.onClick  = [this] { showSettings(); };
         aboutButton.onClick     = [this] { showAbout(); };
 
@@ -104,7 +137,7 @@ namespace rrs
 
         session.addChangeListener (this);
 
-        setSize (1100, 700);
+        setSize (1200, 900);
         startTimerHz (10);
 
         refreshTransportUi();
@@ -208,6 +241,10 @@ namespace rrs
         for (auto* button : { &saveButton, &saveAsButton, &importButton, &exportButton,
                               &armButton, &recordButton, &playButton, &stopButton, &monitorButton })
             button->setEnabled (hasEdit && ! busy);
+
+        addTrackButton.setEnabled (hasEdit && ! busy);
+        removeTrackButton.setEnabled (hasEdit && ! busy && session.getNumAudioTracks() > 1);
+        mixerPanel.setEnabled (! busy);
 
         newButton.setEnabled (! busy);
         openButton.setEnabled (! busy);
@@ -773,7 +810,7 @@ namespace rrs
                         break;
 
                     auto lane = lanes.removeFromTop (juce::jmin (46, lanes.getHeight()));
-                    const auto armed = track == session.getTrack() && session.isTrackArmed();
+                    const auto armed = session.isTrackArmed (index);
 
                     // Neutral zebra: never encode "armed" as a blue tint. Armed
                     // lanes use laneArmed plus a 3 px left accent stripe.
@@ -867,6 +904,18 @@ namespace rrs
         bottom.removeFromBottom (actionHeight);
         bottom.removeFromBottom (8);
 
+        // Mixer strip below the arrangement lanes.
+        if (bottom.getHeight() > MixerPanel::preferredHeight + 80)
+        {
+            mixerPanel.setVisible (true);
+            mixerPanel.setBounds (bottom.removeFromBottom (MixerPanel::preferredHeight));
+            bottom.removeFromBottom (8);
+        }
+        else
+        {
+            mixerPanel.setVisible (false);
+        }
+
         auto middle = bottom;
         inputMeter.setBounds (middle.removeFromRight (180).reduced (2));
         middle.removeFromRight (6);
@@ -888,11 +937,13 @@ namespace rrs
             int width = 0;
         };
 
-        // [New][Open][Save][Save As] · [Close][Import][Export WAV] · [Settings][About]
+        // [New][Open][Save][Save As] · [Close][Import][Export WAV][Add track][Remove track]
+        // · [Settings][About]
         BrandButton* const buttons[] = { &newButton, &openButton, &saveButton, &saveAsButton,
                                          &closeButton, &importButton, &exportButton,
+                                         &addTrackButton, &removeTrackButton,
                                          &settingsButton, &aboutButton };
-        const int groups[] = { 0, 0, 0, 0, 1, 1, 1, 2, 2 };
+        const int groups[] = { 0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2 };
         constexpr int numButtons = (int) std::size (buttons);
 
         std::vector<Item> items;

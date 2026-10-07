@@ -468,8 +468,10 @@ private:
             setUsingNativeTitleBar (true);
             setContentOwned (new rrs::MainComponent(), true);
             setResizable (true, false);
-            setResizeLimits (1100, 700, 10000, 10000);
-            centreWithSize (1200, 780);
+            // Taller minimum so the arrangement lanes AND the mixer strip both
+            // fit below the device panel (Epic 2).
+            setResizeLimits (1100, 820, 10000, 10000);
+            centreWithSize (1240, 900);
             setVisible (true);
         }
 

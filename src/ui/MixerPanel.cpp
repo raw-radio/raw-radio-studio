@@ -1,0 +1,393 @@
+// raw-radio-studio — multitrack mixer UI (see MixerPanel.h).
+
+#include "MixerPanel.h"
+
+#include "BrandColours.h"
+#include "BrandFonts.h"
+
+namespace rrs
+{
+    namespace
+    {
+        constexpr float minGainDb = -60.0f;
+        constexpr float maxGainDb = 6.0f;
+    }
+
+    MixerPanel::MixerPanel (Session& sessionRef)
+        : session (sessionRef)
+    {
+        session.addChangeListener (this);
+        rebuildStrips();
+        startTimerHz (30);
+    }
+
+    MixerPanel::~MixerPanel()
+    {
+        stopTimer();
+        session.removeChangeListener (this);
+    }
+
+    //==============================================================================
+    void MixerPanel::rebuildStrips()
+    {
+        strips.clear();
+
+        const int numTracks = session.getNumAudioTracks();
+
+        if (numTracks <= 0 && session.getEdit() == nullptr)
+        {
+            stripCount = 0;
+            meters.clear();
+            return;
+        }
+
+        auto area = getLocalBounds().reduced (10);
+        area.removeFromTop (16); // title
+
+        const int totalStrips = numTracks + 1; // + master
+        const int gap = 6;
+        const int masterWidth = juce::jlimit (56, 84, area.getWidth() / 8);
+        const int trackSpace = area.getWidth() - masterWidth - gap * totalStrips;
+        const int trackWidth = juce::jlimit (46, 88, trackSpace / juce::jmax (1, numTracks));
+
+        int x = area.getX();
+
+        auto makeStrip = [&] (bool isMaster, int trackIndex, int width)
+        {
+            StripControls c;
+            c.isMaster = isMaster;
+            c.trackIndex = trackIndex;
+            c.strip = juce::Rectangle<int> (x, area.getY(), width, area.getHeight());
+            x += width + gap;
+
+            auto inner = c.strip.reduced (4, 4);
+            c.name = inner.removeFromTop (16);
+            c.meter = inner.removeFromRight (12);
+            inner.removeFromRight (4);
+
+            if (isMaster)
+            {
+                c.fader = inner;
+            }
+            else
+            {
+                auto buttons = inner.removeFromBottom (20);
+                c.mute = buttons.removeFromLeft (buttons.getWidth() / 2).reduced (1);
+                buttons.removeFromLeft (2);
+                c.solo = buttons.reduced (1);
+
+                auto panRow = inner.removeFromBottom (18);
+                inner.removeFromBottom (4);
+                c.pan = panRow;
+                c.fader = inner;
+            }
+
+            return c;
+        };
+
+        for (int i = 0; i < numTracks; ++i)
+            strips.push_back (makeStrip (false, i, trackWidth));
+
+        x += gap; // visual separation before the master strip
+        strips.push_back (makeStrip (true, -1, juce::jmax (56, masterWidth - gap)));
+
+        meters.assign (strips.size(), MeterVisual {});
+        stripCount = numTracks;
+    }
+
+    //==============================================================================
+    float MixerPanel::normaliseDb (float db) noexcept
+    {
+        return juce::jlimit (0.0f, 1.0f, (db - minGainDb) / (maxGainDb - minGainDb));
+    }
+
+    void MixerPanel::updateMeters()
+    {
+        if ((int) meters.size() != (int) strips.size())
+            meters.assign (strips.size(), MeterVisual {});
+
+        for (size_t i = 0; i < strips.size(); ++i)
+        {
+            const auto& strip = strips[i];
+            const auto reading = strip.isMaster ? session.readMasterMeter()
+                                                : session.readTrackMeter (strip.trackIndex);
+            const auto peakDb = juce::jmax (reading.peakDb[0], reading.peakDb[1]);
+            const auto level = normaliseDb (peakDb);
+
+            auto& visual = meters[i];
+            visual.level = juce::jmax (level, visual.level * 0.80f);
+
+            if (level >= visual.hold)
+            {
+                visual.hold = level;
+                visual.holdCountdown = 30;
+            }
+            else if (visual.holdCountdown > 0)
+            {
+                --visual.holdCountdown;
+            }
+            else
+            {
+                visual.hold *= 0.94f;
+            }
+
+            if (reading.clipped)
+                visual.clipHold = 60;
+
+            visual.clipped = visual.clipHold > 0;
+
+            if (visual.clipHold > 0)
+                --visual.clipHold;
+        }
+    }
+
+    void MixerPanel::timerCallback()
+    {
+        if (session.getNumAudioTracks() != stripCount)
+            rebuildStrips();
+
+        updateMeters();
+        repaint();
+    }
+
+    void MixerPanel::changeListenerCallback (juce::ChangeBroadcaster*)
+    {
+        rebuildStrips();
+        repaint();
+    }
+
+    //==============================================================================
+    void MixerPanel::paint (juce::Graphics& g)
+    {
+        g.setColour (brand::bgPanel);
+        g.fillRoundedRectangle (getLocalBounds().toFloat(), 8.0f);
+
+        auto title = getLocalBounds().reduced (12).removeFromTop (16);
+        g.setColour (brand::textSecondary);
+        g.setFont (brand::uiMedium (12.0f));
+        g.drawText ("Mixer", title, juce::Justification::centredLeft);
+
+        if (strips.empty())
+        {
+            g.setColour (brand::textTertiary);
+            g.setFont (brand::uiRegular (12.0f));
+            g.drawText ("No tracks", getLocalBounds().reduced (12), juce::Justification::centred);
+            return;
+        }
+
+        for (size_t i = 0; i < strips.size(); ++i)
+        {
+            const auto& strip = strips[i];
+            const auto gainDb = strip.isMaster ? session.getMasterGainDb()
+                                               : session.getTrackGainDb (strip.trackIndex);
+            const auto pan = strip.isMaster ? 0.0f : session.getTrackPan (strip.trackIndex);
+            const auto muted = ! strip.isMaster && session.isTrackMuted (strip.trackIndex);
+            const auto soloed = ! strip.isMaster && session.isTrackSolo (strip.trackIndex);
+
+            drawStrip (g, strip, meters[i], gainDb, pan, muted, soloed);
+        }
+    }
+
+    void MixerPanel::drawStrip (juce::Graphics& g, const StripControls& strip, const MeterVisual& meter,
+                                float gainDb, float pan, bool muted, bool soloed)
+    {
+        // Card background.
+        g.setColour (strip.isMaster ? brand::bgElevated : brand::bgTertiary);
+        g.fillRoundedRectangle (strip.strip.toFloat().reduced (1.0f), 6.0f);
+
+        // Name.
+        g.setColour (brand::textPrimary);
+        g.setFont (brand::uiMedium (11.0f));
+        g.drawText (strip.isMaster ? "Master" : session.getTrackName (strip.trackIndex),
+                    strip.name, juce::Justification::centred, true);
+
+        drawMeter (g, strip.meter, meter);
+
+        // Fader.
+        const auto& f = strip.fader;
+        const auto cx = (float) f.getCentreX();
+        const auto top = (float) f.getY() + 4.0f;
+        const auto bottom = (float) f.getBottom() - 4.0f;
+        const auto t = normaliseDb (juce::jlimit (minGainDb, maxGainDb, gainDb));
+        const auto thumbY = bottom - t * (bottom - top);
+
+        g.setColour (brand::meterTrough);
+        g.fillRoundedRectangle (juce::Rectangle<float> (cx - 2.0f, top, 4.0f, bottom - top), 2.0f);
+
+        g.setColour (muted ? brand::textDisabled : brand::accent);
+        g.fillRoundedRectangle (juce::Rectangle<float> (cx - 2.0f, thumbY, 4.0f, bottom - thumbY), 2.0f);
+
+        g.setColour (brand::textPrimary);
+        g.fillRoundedRectangle (juce::Rectangle<float> (cx - 9.0f, thumbY - 3.0f, 18.0f, 6.0f), 3.0f);
+
+        g.setColour (brand::textTertiary);
+        g.setFont (brand::monoRegular (10.0f));
+        g.drawText (juce::String (gainDb, 1), juce::Rectangle<int> (f.getX(), (int) top - 2, f.getWidth(), 12),
+                    juce::Justification::centred);
+
+        if (strip.isMaster)
+            return;
+
+        // Pan.
+        const auto& p = strip.pan;
+        const auto pcx = (float) p.getCentreY();
+        g.setColour (brand::meterTrough);
+        g.fillRoundedRectangle (juce::Rectangle<float> ((float) p.getX() + 6.0f, pcx - 1.5f,
+                                                        (float) p.getWidth() - 12.0f, 3.0f), 1.5f);
+        const auto panX = (float) juce::jmap (juce::jlimit (-1.0f, 1.0f, pan), -1.0f, 1.0f,
+                                              (float) p.getX() + 6.0f, (float) p.getRight() - 6.0f);
+        g.setColour (brand::textPrimary);
+        g.fillEllipse (panX - 3.5f, pcx - 3.5f, 7.0f, 7.0f);
+
+        // Mute / Solo chips.
+        auto drawChip = [&] (juce::Rectangle<int> area, const juce::String& label, bool on,
+                             juce::Colour onColour)
+        {
+            const auto colour = on ? onColour : brand::textSecondary;
+            g.setColour (on ? onColour.withAlpha (0.22f) : brand::bgPanel);
+            g.fillRoundedRectangle (area.toFloat(), 4.0f);
+            g.setColour (on ? onColour : brand::border);
+            g.drawRoundedRectangle (area.toFloat().reduced (0.5f), 4.0f, 1.0f);
+            g.setColour (colour);
+            g.setFont (brand::uiSemiBold (11.0f));
+            g.drawText (label, area, juce::Justification::centred);
+        };
+
+        drawChip (strip.mute, "M", muted, brand::record);
+        drawChip (strip.solo, "S", soloed, brand::warning);
+    }
+
+    void MixerPanel::drawMeter (juce::Graphics& g, juce::Rectangle<int> area, const MeterVisual& meter)
+    {
+        auto bar = area.reduced (2, 0).toFloat();
+        g.setColour (brand::meterTrough);
+        g.fillRoundedRectangle (bar, 2.0f);
+
+        const auto fill = bar.getHeight() * meter.level;
+        g.setColour (brand::vuGreen);
+        g.fillRoundedRectangle (bar.withTrimmedTop (bar.getHeight() - fill), 2.0f);
+
+        const auto holdY = bar.getY() + bar.getHeight() * (1.0f - meter.hold);
+
+        if (meter.hold > 0.0f)
+        {
+            g.setColour (brand::vuYellow);
+            g.fillRect (juce::Rectangle<float> (bar.getX(), holdY - 1.0f, bar.getWidth(), 2.0f));
+        }
+
+        if (meter.clipped)
+        {
+            g.setColour (brand::vuRed);
+            g.fillRoundedRectangle (bar.withHeight (3.0f), 1.5f);
+        }
+    }
+
+    //==============================================================================
+    void MixerPanel::resized()
+    {
+        rebuildStrips();
+    }
+
+    //==============================================================================
+    void MixerPanel::mouseDown (const juce::MouseEvent& e)
+    {
+        dragTarget = DragTarget::None;
+        dragIndex = -1;
+
+        for (size_t i = 0; i < strips.size(); ++i)
+        {
+            const auto& strip = strips[i];
+
+            if (strip.mute.contains (e.getPosition()))
+            {
+                if (! strip.isMaster)
+                    session.setTrackMute (strip.trackIndex, ! session.isTrackMuted (strip.trackIndex));
+
+                return;
+            }
+
+            if (strip.solo.contains (e.getPosition()))
+            {
+                if (! strip.isMaster)
+                    session.setTrackSolo (strip.trackIndex, ! session.isTrackSolo (strip.trackIndex));
+
+                return;
+            }
+
+            if (strip.fader.contains (e.getPosition()))
+            {
+                dragTarget = DragTarget::Fader;
+                dragIndex = (int) i;
+                mouseDrag (e);
+                return;
+            }
+
+            if (! strip.isMaster && strip.pan.contains (e.getPosition()))
+            {
+                dragTarget = DragTarget::Pan;
+                dragIndex = (int) i;
+                mouseDrag (e);
+                return;
+            }
+        }
+    }
+
+    void MixerPanel::mouseDrag (const juce::MouseEvent& e)
+    {
+        if (dragTarget == DragTarget::None || ! juce::isPositiveAndBelow (dragIndex, (int) strips.size()))
+            return;
+
+        const auto& strip = strips[(size_t) dragIndex];
+        const auto pos = e.getPosition();
+
+        if (dragTarget == DragTarget::Fader)
+        {
+            const auto top = (float) strip.fader.getY() + 4.0f;
+            const auto bottom = (float) strip.fader.getBottom() - 4.0f;
+            const auto t = juce::jlimit (0.0f, 1.0f, (bottom - (float) pos.y) / juce::jmax (1.0f, bottom - top));
+            const auto db = minGainDb + t * (maxGainDb - minGainDb);
+
+            if (strip.isMaster)
+                session.setMasterGainDb (db);
+            else
+                session.setTrackGainDb (strip.trackIndex, db);
+        }
+        else if (dragTarget == DragTarget::Pan && ! strip.isMaster)
+        {
+            const auto left = (float) strip.pan.getX() + 6.0f;
+            const auto right = (float) strip.pan.getRight() - 6.0f;
+            const auto t = juce::jlimit (0.0f, 1.0f, ((float) pos.x - left) / juce::jmax (1.0f, right - left));
+            session.setTrackPan (strip.trackIndex, -1.0f + 2.0f * t);
+        }
+
+        repaint();
+    }
+
+    void MixerPanel::mouseUp (const juce::MouseEvent&)
+    {
+        dragTarget = DragTarget::None;
+        dragIndex = -1;
+    }
+
+    void MixerPanel::mouseDoubleClick (const juce::MouseEvent& e)
+    {
+        for (const auto& strip : strips)
+        {
+            if (strip.fader.contains (e.getPosition()))
+            {
+                if (strip.isMaster)
+                    session.setMasterGainDb (0.0f);
+                else
+                    session.setTrackGainDb (strip.trackIndex, 0.0f);
+
+                return;
+            }
+
+            if (! strip.isMaster && strip.pan.contains (e.getPosition()))
+            {
+                session.setTrackPan (strip.trackIndex, 0.0f);
+                return;
+            }
+        }
+    }
+}

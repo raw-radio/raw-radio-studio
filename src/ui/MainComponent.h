@@ -19,6 +19,7 @@
 #include "ui/BrandButton.h"
 #include "ui/DevicePanel.h"
 #include "ui/InputMeter.h"
+#include "ui/MixerPanel.h"
 
 #include <vector>
 
@@ -72,12 +73,14 @@ namespace rrs
         DevicePanel devicePanel { audio };
         InputMeter inputMeter { session.getInputLevels(),
                                 [this] { return audio.getNumActiveInputChannels(); } };
+        MixerPanel mixerPanel { session };
 
         BrandButton newButton { "New" }, openButton { "Open" };
         BrandButton closeButton { "Close" };
         BrandButton saveButton { "Save" }, saveAsButton { "Save As" };
         BrandButton importButton { "Import" };
         BrandButton exportButton { "Export WAV", BrandButton::Style::Primary };
+        BrandButton addTrackButton { "Add track" }, removeTrackButton { "Remove track" };
         BrandButton settingsButton { "Settings" }, aboutButton { "About" };
 
         BrandButton armButton { "Arm", BrandButton::Style::Chip };
