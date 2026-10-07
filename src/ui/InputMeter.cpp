@@ -10,8 +10,11 @@ namespace rrs
 {
     namespace
     {
-        constexpr float minDb = -60.0f;
-        constexpr float maxDb = 6.0f;
+        // Shared display scale: -60..0 dBFS, linear in dB (see MeterBallistics).
+        // The bar's "full" is 0 dBFS and "half" is therefore -30 dBFS. Only the
+        // floor is referenced directly (peak-hold suppression); the mapping lives
+        // in MeterBallistics::normaliseMeterDb.
+        constexpr float minDb = MeterBallistics::meterFloorDb;
     }
 
     InputMeter::InputMeter (const InputLevels& levels, std::function<int()> channelCountProvider)
@@ -24,7 +27,8 @@ namespace rrs
 
     float InputMeter::normaliseDb (float db) noexcept
     {
-        return juce::jlimit (0.0f, 1.0f, (db - minDb) / (maxDb - minDb));
+        // Single, documented scale shared with the mixer meters (MeterBallistics).
+        return MeterBallistics::normaliseMeterDb (db);
     }
 
     void InputMeter::timerCallback()

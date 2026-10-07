@@ -10,11 +10,13 @@ namespace rrs
 {
     namespace
     {
-        // Meter scale only (dBFS -> 0..1 for the level bars). The faders have
-        // their own, documented taper in FaderTaper.h — keep them independent so
-        // changing the fader law never silently rescales the meters.
-        constexpr float meterFloorDb = -60.0f;
-        constexpr float meterCeilDb  = 6.0f;
+        // Meter scale only (dBFS -> 0..1 for the level bars): the shared
+        // -60..0 dBFS display scale from MeterBallistics (half = -30 dBFS). The
+        // faders have their own, documented taper in FaderTaper.h — keep them
+        // independent so changing the fader law never silently rescales the
+        // meters.
+        constexpr float meterFloorDb = MeterBallistics::meterFloorDb;
+        constexpr float meterCeilDb  = MeterBallistics::meterCeilDb;
     }
 
     MixerPanel::MixerPanel (Session& sessionRef)

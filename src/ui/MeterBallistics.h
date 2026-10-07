@@ -30,6 +30,25 @@ namespace rrs
         /** Floor used for "silence" and the very first frame. */
         static constexpr float floorDb = -100.0f;
 
+        //==========================================================================
+        // Shared display scale (input meter + mixer strips).
+        //
+        // The bar is linear in dBFS from -60 to 0, where 0 dBFS is full scale, so
+        // the halfway mark is exactly -30 dBFS and a normal mic level sits around
+        // the middle instead of pinning high. The old scale ran -60..+6, which
+        // wasted ~9% of the bar on headroom above 0 dBFS (so even a full-scale
+        // signal never reached the top) while compressing the useful range and
+        // making moderate levels read "above half". Ballistics are unchanged.
+        static constexpr float meterFloorDb = -60.0f;
+        static constexpr float meterCeilDb  = 0.0f;
+
+        /** Maps a level (dBFS) to the [0,1] bar position on the shared scale. */
+        static float normaliseMeterDb (float db) noexcept
+        {
+            return juce::jlimit (0.0f, 1.0f,
+                                 (db - meterFloorDb) / (meterCeilDb - meterFloorDb));
+        }
+
         /** Fast rise; ~0.5 s to climb 250 dB, so transients register at once. */
         static constexpr float attackDbPerSec = 500.0f;
 

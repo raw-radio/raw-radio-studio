@@ -536,6 +536,45 @@ TEST_CASE ("meter ballistics are frame-rate independent (same duration, same res
 }
 
 //==============================================================================
+// Owner request: the input / mixer level bars must use a sensible dB scale so a
+// normal mic level does not read "above half". The shared display scale is
+// -60..0 dBFS, linear in dB, with 0 dBFS at full scale — so half the bar is
+// exactly -30 dBFS (the old -60..+6 scale put moderate levels high and left 0
+// dBFS short of the top).
+TEST_CASE ("meter display scale is -60..0 dBFS with -30 dBFS at half")
+{
+    const auto normaliseMeterDb = [] (float db) { return MeterBallistics::normaliseMeterDb (db); };
+
+    CHECK (normaliseMeterDb (-60.0f) == doctest::Approx (0.0f));
+    CHECK (normaliseMeterDb (-30.0f) == doctest::Approx (0.5f));
+    CHECK (normaliseMeterDb (0.0f)   == doctest::Approx (1.0f));
+
+    // A typical well-set mic level (-30..-18 dBFS) sits around the middle to
+    // three-quarters, never pinned at the top.
+    CHECK (normaliseMeterDb (-18.0f) < 0.75f);
+    CHECK (normaliseMeterDb (-18.0f) > 0.5f);
+
+    // Out-of-range values clamp at both ends (silence -> empty, >0 dBFS -> full).
+    CHECK (normaliseMeterDb (-100.0f) == doctest::Approx (0.0f));
+    CHECK (normaliseMeterDb (6.0f)    == doctest::Approx (1.0f));
+
+    // Monotonic in dB (a louder signal never draws a shorter bar).
+    float previous = normaliseMeterDb (-60.0f);
+
+    for (int db = -59; db <= 0; ++db)
+    {
+        const auto current = normaliseMeterDb ((float) db);
+        CHECK (current >= previous);
+        previous = current;
+    }
+
+    // The scale endpoints are exposed for the meters to share; faders use a
+    // separate taper (see FaderTaper.h) and must not be tied to this.
+    CHECK (MeterBallistics::meterFloorDb == -60.0f);
+    CHECK (MeterBallistics::meterCeilDb == 0.0f);
+}
+
+//==============================================================================
 // Fader taper (owner request): the level travel maps linearly to decibels,
 // while the record trim is shaped by a tanh S-curve. The owner found the level
 // useful range compressed into the top of a -60..+6 travel, so it was narrowed
