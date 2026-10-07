@@ -90,6 +90,28 @@ ships — and record the deviation here.
 **Upgrade path:** when upstream updates its `modules/juce` submodule to JUCE 9,
 re-verify, update both pins deliberately, and re-run CI. Never auto-bump.
 
+## Plugin hosting (Epic 3 — host only)
+
+Plugin hosting uses JUCE's facilities (surfaced by Tracktion Engine); **no new
+third-party SDK is vendored or downloaded**. The hosted formats are selected by
+compile-time JUCE flags, set in `CMakeLists.txt`:
+
+| Flag | Value | Notes |
+|------|-------|-------|
+| `JUCE_PLUGINHOST_VST3` | `1` | Default format (D11). VST3 bindings ship inside JUCE's pinned tree. |
+| `JUCE_PLUGINHOST_LV2` | `RAW_RADIO_STUDIO_ENABLE_LV2` (default `0`) | Opt-in via `-DRAW_RADIO_STUDIO_ENABLE_LV2=ON`. |
+| `JUCE_PLUGINHOST_AU` | `1` on Apple only | macOS Audio Units; empty elsewhere (graceful absence). |
+| `JUCE_PLUGINHOST_VST` | **never set** | VST2 is not shipped (D24). |
+
+Scanning is **out-of-process** (FR-MIX-7): `PluginHost` drives JUCE's
+`PluginDirectoryScanner` over Tracktion's `knownPluginList`, whose
+`PluginScanHelpers::CustomScanner` performs each VST3/LADSPA probe in a child
+process. `StudioEngineBehaviour::canScanPluginsOutOfProcess()` opts in. Hosting
+itself runs in-process (D23). See [`NOTICE`](NOTICE) for the licensing position.
+
+`raw-radio-studio --selftest-plugin-scan` runs a scan headlessly and prints the
+hosted formats and the number of plugins found.
+
 ## Build
 
 Prerequisites: CMake ≥ 3.22 and a C++20 compiler. See

@@ -92,6 +92,30 @@ Vendored UI assets (compiled into the application binary — no runtime download
     TTFs are vendored and compiled into the binary. Full licence text:
     `LICENSES/JetBrainsMono-OFL.txt`. Provenance: `assets/fonts/README.md`.
 
+Plugin hosting (Epic 3 — host only; no plugins are bundled or shipped):
+
+  raw-radio-studio hosts third-party plugins at runtime through their public
+  plugin APIs. Hosting through these public APIs is not a derivative work of the
+  hosted plugins and does not subject the host to their licences — this follows
+  the reasoned precedent of the Ardour plugin clarification. The application
+  ships the host only and bundles no plugin binaries (STUDIO_SPEC NFR-L-5 / D20).
+
+  * VST3 (default) — the VST3 bindings are bundled with JUCE
+    (`JUCE_PLUGINHOST_VST3=1`), compiled from JUCE's pinned tree and distributed
+    under JUCE's AGPLv3-compatible terms as part of the combined work. No
+    separate Steinberg SDK is vendored or downloaded.
+  * LV2 (opt-in) — enabled only when built with `-DRAW_RADIO_STUDIO_ENABLE_LV2=ON`
+    (`JUCE_PLUGINHOST_LV2=1`). The LV2 headers bundled with JUCE are permissively
+    licensed (compatible with AGPLv3).
+  * Audio Unit (macOS only) — `JUCE_PLUGINHOST_AU=1`; uses Apple's system Audio
+    Unit framework. Not present, and gracefully absent, on Linux/other builds.
+  * VST2 — NOT enabled and NOT shipped (decision D24; `JUCE_PLUGINHOST_VST` is
+    never defined). CLAP — not supported (NG4).
+
+  Out-of-process plugin *scanning* (FR-MIX-7) uses Tracktion/JUCE child-process
+  machinery already present in the pinned dependencies; no new component is
+  added. Hosting itself runs in-process (decision D23).
+
 Not yet vendored (future epics — pinned similarly when adopted):
 
   | Component           | Expected license          | Role                        | Status     |
