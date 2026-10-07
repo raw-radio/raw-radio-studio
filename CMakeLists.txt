@@ -95,6 +95,23 @@ add_subdirectory("${RAW_RADIO_STUDIO_JUCE_DIR}"     "${CMAKE_BINARY_DIR}/_deps/J
 add_subdirectory("${RAW_RADIO_STUDIO_TRACKTION_DIR}" "${CMAKE_BINARY_DIR}/_deps/tracktion_engine")
 
 # -----------------------------------------------------------------------------
+# Brand assets — vendored, compiled into the binary (no runtime file I/O).
+#
+#   * assets/icons/*.svg — Lucide icons (ISC), stroke normalised to #FFFFFF
+#     because JUCE does not resolve SVG `currentColor`. Tinted at runtime by
+#     IconCache via Drawable::replaceColour.
+#
+# Fonts are added to this same target when vendored (Inter / JetBrains Mono).
+# -----------------------------------------------------------------------------
+file(GLOB RAW_RADIO_STUDIO_ICON_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons/*.svg")
+
+juce_add_binary_data(RawRadioStudioAssets
+    HEADER_NAME RawRadioStudioAssets.h
+    NAMESPACE RawRadioStudioAssets
+    SOURCES ${RAW_RADIO_STUDIO_ICON_SOURCES})
+
+# -----------------------------------------------------------------------------
 # Application target: opens an empty JUCE window; links JUCE + Tracktion Engine.
 # -----------------------------------------------------------------------------
 # AU hosting is macOS-only. Pass PLUGINHOST_AU with an explicit value only on
@@ -126,6 +143,7 @@ target_sources(raw_radio_studio PRIVATE
     src/ui/InputMeter.cpp
     src/ui/BrandButton.cpp
     src/ui/BrandLookAndFeel.cpp
+    src/ui/IconCache.cpp
     src/ui/MainComponent.cpp)
 
 juce_generate_juce_header(raw_radio_studio)
@@ -154,6 +172,7 @@ if(APPLE)
 endif()
 
 target_link_libraries(raw_radio_studio PRIVATE
+    RawRadioStudioAssets
     tracktion::tracktion_engine
     tracktion::tracktion_graph
     juce::juce_audio_devices
@@ -192,7 +211,9 @@ target_include_directories(raw_radio_studio_doctest INTERFACE
 juce_add_console_app(raw_radio_studio_tests
     PRODUCT_NAME "raw-radio-studio-tests")
 
-target_sources(raw_radio_studio_tests PRIVATE tests/test_studio.cpp)
+target_sources(raw_radio_studio_tests PRIVATE
+    tests/test_studio.cpp
+    src/ui/IconCache.cpp)
 
 target_include_directories(raw_radio_studio_tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -206,6 +227,7 @@ target_compile_definitions(raw_radio_studio_tests PRIVATE
 
 target_link_libraries(raw_radio_studio_tests PRIVATE
     raw_radio_studio_doctest
+    RawRadioStudioAssets
     juce::juce_audio_formats
     juce::juce_graphics
     juce::juce_core

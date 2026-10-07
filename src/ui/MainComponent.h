@@ -86,6 +86,7 @@ namespace rrs
         BrandButton monitorButton { "Monitor", BrandButton::Style::Chip };
 
         juce::Label titleLabel, transportLabel, statusLabel;
+        juce::TooltipWindow tooltipWindow { this, 700 };
 
         std::vector<juce::Rectangle<int>> actionDividers;
 

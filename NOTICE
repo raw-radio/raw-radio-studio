@@ -64,6 +64,19 @@ Vendored (test-only) dependencies:
     (no configure-time download). Used only by the `raw_radio_studio_tests`
     target; it is not linked into the shipped application.
 
+Vendored UI assets (compiled into the application binary — no runtime download):
+
+  | Component | Location / pinned revision                  | Version | License (SPDX)                          | Role                        |
+  |-----------|---------------------------------------------|---------|-----------------------------------------|-----------------------------|
+  | Lucide    | `assets/icons/*.svg` @ tag `1.21.0`         | 1.21.0  | ISC (MIT for Feather-derived icons)     | UI icon set                 |
+
+  * Lucide — https://github.com/lucide-icons/lucide
+    License: ISC, with an MIT section for the icons derived from Feather.
+    The SVGs are vendored (not fetched at build time) and compiled into the
+    binary via `juce_add_binary_data`; `currentColor` is normalised to
+    `#FFFFFF` because JUCE does not resolve SVG `currentColor`. Full licence
+    text: `LICENSES/Lucide.txt`. Provenance: `assets/icons/README.md`.
+
 Not yet vendored (future epics — pinned similarly when adopted):
 
   | Component           | Expected license          | Role                        | Status     |

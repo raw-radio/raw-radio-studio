@@ -6,6 +6,9 @@ directory:
 - `JUCE.txt` — JUCE Framework (`third_party/JUCE`, pinned to tag **9.0.3**).
 - `tracktion_engine.txt` — Tracktion Engine (`third_party/tracktion_engine`,
   pinned to `develop` commit **2d2d452f**).
+- `Lucide.txt` — Lucide icon set (`assets/icons/`, pinned to tag **1.21.0**):
+  ISC, with an MIT section for the Feather-derived icons. Vendored and compiled
+  into the binary via `juce_add_binary_data` (see `assets/icons/README.md`).
 
 ## Licensing composition
 

@@ -10,6 +10,7 @@
 #include <functional>
 
 #include "studio/AudioEngine.h"
+#include "ui/BrandButton.h"
 
 namespace rrs
 {
@@ -38,7 +39,8 @@ namespace rrs
         AudioEngine& audio;
 
         juce::ComboBox typeBox, deviceBox, rateBox, bufferBox;
-        juce::TextButton applyButton { "Apply" }, rescanButton { "Rescan" };
+        BrandButton applyButton { "Apply" };
+        BrandButton rescanButton { "Rescan" };
         juce::Label typeLabel, deviceLabel, rateLabel, bufferLabel;
         juce::Label statusLabel, errorLabel;
 

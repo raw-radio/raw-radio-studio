@@ -130,3 +130,20 @@ ctest --test-dir build --output-on-failure
 The test target (`raw_radio_studio_tests`) links only `juce_core` +
 `juce_audio_formats`; hardware-dependent behaviour (recording, monitoring) is
 verified manually.
+
+## Vendored UI assets
+
+The brand theme ships a small set of vendored, licence-reviewed UI assets that
+are compiled into the application binary (no runtime or build-time download):
+
+| Component | Location | Pinned revision | License (SPDX) | Role |
+|-----------|----------|-----------------|----------------|------|
+| **Lucide** | `assets/icons/*.svg` | tag `1.21.0` | ISC (MIT for Feather-derived icons) | UI icon set |
+
+* Lucide (<https://github.com/lucide-icons/lucide>) is pinned to the tag
+  matching the RAW Radio admin/app `lucide-react` family. The SVGs are normalised
+  at vendor time (`currentColor` → `#FFFFFF`, since JUCE does not resolve SVG
+  `currentColor`) and tinted at runtime by `src/ui/IconCache`.
+* Full licence text: [`LICENSES/Lucide.txt`](LICENSES/Lucide.txt); provenance and
+  refresh instructions: [`assets/icons/README.md`](assets/icons/README.md).
+

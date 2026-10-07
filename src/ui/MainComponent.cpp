@@ -51,6 +51,33 @@ namespace rrs
         armButton.setOnColours (brand::accentMuted, brand::accent, brand::accent);
         monitorButton.setOnColours (brand::success.withAlpha (0.25f), brand::success, brand::success);
 
+        // Lucide icons + tooltips.
+        newButton.setIconName ("file-plus");
+        openButton.setIconName ("folder-open");
+        saveButton.setIconName ("save");
+        saveAsButton.setIconName ("save-all");
+        closeButton.setIconName ("x");
+        importButton.setIconName ("file-input");
+        exportButton.setIconName ("file-output");
+
+        settingsButton.setIconName ("settings");
+        settingsButton.setIconOnly (true);
+        settingsButton.setTooltip ("Settings");
+        aboutButton.setIconName ("info");
+        aboutButton.setIconOnly (true);
+        aboutButton.setTooltip ("About raw-radio-studio");
+
+        armButton.setIconName ("circle-dot");
+        armButton.setTooltip ("Arm the track for recording");
+        recordButton.setIconName ("circle");
+        recordButton.setTooltip ("Record / stop recording");
+        playButton.setIconName ("play");
+        playButton.setTooltip ("Play / pause");
+        stopButton.setIconName ("square");
+        stopButton.setTooltip ("Stop");
+        monitorButton.setIconName ("headphones");
+        monitorButton.setTooltip ("Toggle input monitoring");
+
         newButton.onClick       = [this] { newSession(); };
         openButton.onClick      = [this] { openSession(); };
         closeButton.onClick     = [this] { closeSession(); };
@@ -185,6 +212,9 @@ namespace rrs
 
         recordButton.setButtonText (session.isRecording() ? "Stop rec" : "Record");
         playButton.setButtonText (session.isPlaying() ? "Pause" : "Play");
+        playButton.setIconName (session.isPlaying() ? "pause" : "play");
+        recordButton.setToggleState (session.isRecording(), juce::dontSendNotification);
+        playButton.setToggleState (session.isPlaying(), juce::dontSendNotification);
         armButton.setToggleState (session.isTrackArmed(), juce::dontSendNotification);
         monitorButton.setToggleState (session.isMonitoringEnabled(), juce::dontSendNotification);
 

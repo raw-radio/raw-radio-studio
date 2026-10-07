@@ -15,11 +15,34 @@
 #include "studio/DeviceError.h"
 #include "studio/AppPaths.h"
 #include "ui/DevicePanelLayout.h"
+#include "ui/IconCache.h"
 
 #include <cmath>
 #include <memory>
 
 using namespace rrs;
+
+//==============================================================================
+TEST_CASE ("brand icon cache parses and tints the vendored Lucide SVGs")
+{
+    auto& cache = IconCache::getInstance();
+
+    // A vendored icon parses, tints and rasterises at 2x the requested size.
+    const auto icon = cache.getIconImage ("file-plus", juce::Colours::red, 16);
+    CHECK (icon.isValid());
+    CHECK (icon.getWidth() == 32);
+    CHECK (icon.getHeight() == 32);
+
+    // Every vendored resource must resolve — guards against a renamed file
+    // silently yielding a blank button.
+    for (const auto* name : { "file-plus", "folder-open", "save", "save-all", "file-input",
+                              "file-output", "x", "settings", "info", "circle-dot", "headphones",
+                              "circle", "play", "pause", "square", "refresh-cw" })
+        CHECK (cache.getIconImage (name, juce::Colours::white, 16).isValid());
+
+    // Unknown names are handled gracefully (no crash, null image).
+    CHECK_FALSE (cache.getIconImage ("not-a-real-icon", juce::Colours::white, 16).isValid());
+}
 
 //==============================================================================
 TEST_CASE ("device error: busy / EBUSY is classified and actionable")

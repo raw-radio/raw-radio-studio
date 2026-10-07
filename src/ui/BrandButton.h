@@ -29,6 +29,12 @@ namespace rrs
 
         explicit BrandButton (const juce::String& buttonText, Style style = Style::Secondary);
 
+        /** Lucide icon name (e.g. "file-plus"); empty for a text-only button. */
+        void setIconName (const juce::String& name);
+        void setIconSize (int pixels) noexcept;
+        /** Renders as a square icon-only button of `squareSize` px (Settings/About). */
+        void setIconOnly (bool shouldBeIconOnly, int squareSize = 32);
+
         /** Overrides for the "on" appearance of a Chip. */
         void setOnColours (juce::Colour background, juce::Colour borderColour, juce::Colour textColour);
 
@@ -50,6 +56,10 @@ namespace rrs
         juce::Font getLabelFont() const;
 
         Style style;
+        juce::String iconName;
+        int iconSize = 16;
+        bool iconOnly = false;
+        int iconOnlySize = 32;
         float cornerRadius = 8.0f;
         juce::Font labelFont { juce::FontOptions { 14.0f } };
 

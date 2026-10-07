@@ -2,11 +2,37 @@
 
 #include "BrandButton.h"
 
+#include "IconCache.h"
+
 namespace rrs
 {
+    namespace
+    {
+        constexpr int iconLabelGap = 6;
+    }
+
     BrandButton::BrandButton (const juce::String& buttonText, Style buttonStyle)
         : juce::Button (buttonText), style (buttonStyle)
     {
+    }
+
+    void BrandButton::setIconName (const juce::String& name)
+    {
+        iconName = name;
+        repaint();
+    }
+
+    void BrandButton::setIconSize (int pixels) noexcept
+    {
+        iconSize = juce::jmax (0, pixels);
+        repaint();
+    }
+
+    void BrandButton::setIconOnly (bool shouldBeIconOnly, int squareSize)
+    {
+        iconOnly = shouldBeIconOnly;
+        iconOnlySize = juce::jmax (1, squareSize);
+        repaint();
     }
 
     void BrandButton::setOnColours (juce::Colour background, juce::Colour borderColour,
@@ -38,8 +64,12 @@ namespace rrs
 
     int BrandButton::getPreferredWidth() const
     {
+        if (iconOnly)
+            return iconOnlySize;
+
         const auto textWidth = juce::GlyphArrangement::getStringWidthInt (getLabelFont(), getButtonText());
-        return juce::jlimit (minWidth, maxWidth, 2 * padX + textWidth);
+        const auto iconPart = iconName.isNotEmpty() ? iconSize + iconLabelGap : 0;
+        return juce::jlimit (minWidth, maxWidth, 2 * padX + iconPart + textWidth);
     }
 
     void BrandButton::paintButton (juce::Graphics& g,
@@ -159,9 +189,31 @@ namespace rrs
             g.drawRoundedRectangle (bounds.reduced (1.5f), juce::jmax (1.0f, cornerRadius - 1.0f), 2.0f);
         }
 
+        // Content: optional icon + label, laid out and centred as a single unit.
+        if (iconOnly)
+        {
+            if (iconName.isNotEmpty())
+                IconCache::getInstance().drawIcon (g, iconName, textColour, getLocalBounds());
+
+            return;
+        }
+
+        const auto textWidth = juce::GlyphArrangement::getStringWidthInt (getLabelFont(), getButtonText());
+        const auto iconPart = iconName.isNotEmpty() ? iconSize + iconLabelGap : 0;
+        const auto totalWidth = iconPart + textWidth;
+
+        auto content = getLocalBounds().withWidth (juce::jmin (getWidth(), totalWidth))
+                                       .withX (getLocalBounds().getCentreX() - totalWidth / 2);
+
+        if (iconName.isNotEmpty())
+        {
+            auto iconArea = content.removeFromLeft (iconSize);
+            IconCache::getInstance().drawIcon (g, iconName, textColour, iconArea);
+            content.removeFromLeft (iconLabelGap);
+        }
+
         g.setColour (textColour);
         g.setFont (getLabelFont());
-        g.drawText (getButtonText(), getLocalBounds().reduced (padX, 0),
-                    juce::Justification::centred, false);
+        g.drawText (getButtonText(), content, juce::Justification::centredLeft, false);
     }
 }
