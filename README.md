@@ -8,13 +8,16 @@ by a sound engineer during in-person sessions.
 It is **tracking-first**: the engineer's workflow — arm → record → overdub →
 rough mix → export — is the product. It is not a beat-making environment.
 
-> **Status: pre-alpha — Epic 0 (bootstrap).**
-> The repository now builds a real JUCE application linked against Tracktion
-> Engine: it opens an empty window and prints a version banner. There is no audio
-> graph, device I/O, or transport yet — those arrive in Epic 1 (the
-> walking-skeleton MVP). The JUCE ↔ Tracktion compatibility question (OQ-3) is
-> resolved: **JUCE 9.0.3 builds and links with Tracktion Engine 3.5.0** on macOS
-> and Ubuntu (see [`DEPENDENCIES.md`](DEPENDENCIES.md)).
+> **Status: pre-alpha — Epic 1 (walking skeleton).**
+> The application records **one stereo track**, monitors it, and exports a
+> **24-bit WAV** — the full capture → monitor → export loop. It also supports
+> Tracktion-native project save/open, periodic non-destructive autosave, and
+> crash recovery of autosaved sessions / recorded takes. There are **no
+> plugins and no mixing**. Device selection (CoreAudio / ALSA `hw`), sample rate
+> and buffer size are configured from the device panel; device errors are shown
+> explicitly and never fall back silently. The JUCE ↔ Tracktion compatibility
+> question (OQ-3) is resolved: **JUCE 9.0.3 builds and links with Tracktion
+> Engine 3.5.0** on macOS and Ubuntu (see [`DEPENDENCIES.md`](DEPENDENCIES.md)).
 
 ## Scope (target)
 
@@ -81,7 +84,17 @@ raw-radio-studio --version
 # raw-radio-studio 0.0.0  (JUCE 9.0.3, Tracktion Engine 3.5.0)
 ```
 
-When launched without arguments, the app opens an empty JUCE window.
+Run the unit tests:
+
+```bash
+ctest --test-dir build --output-on-failure
+```
+
+When launched without arguments, the app opens the Epic 1 session window:
+select the audio device, arm the stereo track, record, monitor, and export a
+24-bit WAV. Sessions are saved as `.tracktionedit`; autosaved versions
+(`.tmp_<name>`) and recorded takes under `Recordings/` are offered for recovery
+if the previous run ended unexpectedly.
 
 > **Note on submodules:** initialisation is non-recursive on purpose. Tracktion
 > Engine's nested `modules/juce` submodule is not used (we pin JUCE ourselves).

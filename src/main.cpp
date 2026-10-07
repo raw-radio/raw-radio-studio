@@ -1,11 +1,8 @@
-// raw-radio-studio — Epic 0 engine wiring.
+// raw-radio-studio — Epic 1 application entry point.
 //
-// Opens an empty JUCE window and proves that JUCE + Tracktion Engine compile and
-// link (via Tracktion::Engine::getVersion()). There is no audio graph, device
-// I/O, or transport yet — those arrive in Epic 1.
-//
-// Headless-friendly: `raw_radio_studio --version` prints the banner and exits
-// without opening a window.
+// Opens the tracking-first session window (device panel, transport, input meter,
+// single stereo track, WAV export). `raw-radio-studio --version` prints the
+// banner and exits without creating a window (used by the CI smoke test).
 
 #include <JuceHeader.h>
 
@@ -13,6 +10,8 @@
 
 #include <iostream>
 #include <memory>
+
+#include "ui/MainComponent.h"
 
 #ifndef RAW_RADIO_STUDIO_VERSION
  #define RAW_RADIO_STUDIO_VERSION "0.0.0-dev"
@@ -36,35 +35,6 @@ namespace
                << ", Tracktion Engine " << RAW_RADIO_STUDIO_TRACKTION_VERSION << ')';
         return banner;
     }
-
-    // Placeholder view. Epic 1 replaces this with the device panel, a single
-    // stereo track, transport, and an input meter.
-    class PlaceholderComponent final : public juce::Component
-    {
-    public:
-        PlaceholderComponent()
-        {
-            banner.setText (versionBanner(), juce::dontSendNotification);
-            banner.setJustificationType (juce::Justification::centred);
-            banner.setFont (juce::Font { juce::FontOptions { 16.0f } });
-            addAndMakeVisible (banner);
-        }
-
-        void paint (juce::Graphics& g) override
-        {
-            g.fillAll (getLookAndFeel().findColour (juce::ResizableWindow::backgroundColourId));
-        }
-
-        void resized() override
-        {
-            banner.setBounds (getLocalBounds().reduced (24));
-        }
-
-    private:
-        juce::Label banner;
-
-        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PlaceholderComponent)
-    };
 }
 
 class RawRadioStudioApplication final : public juce::JUCEApplication
@@ -78,17 +48,14 @@ public:
 
     void initialise (const juce::String& commandLine) override
     {
-        // Force the Tracktion Engine module to be linked even though Epic 0 does
-        // not use the engine yet. Calling a public symbol is what proves the
-        // JUCE <-> Tracktion combination compiles AND links. (The returned string
-        // is stale upstream, so it is not shown to users.)
+        // Keep the Tracktion Engine module genuinely linked (Epic 0 compatibility).
         juce::ignoreUnused (tracktion::Engine::getVersion());
 
         std::cout << versionBanner() << std::endl;
 
         // Headless smoke path: print and exit without creating a window.
-        // Exact argument match (not a substring): `--versionfoo` must NOT trigger it.
         const auto args = juce::StringArray::fromTokens (commandLine, true);
+
         if (args.contains ("--version"))
         {
             quit();
@@ -115,10 +82,10 @@ private:
                                     juce::DocumentWindow::allButtons)
         {
             setUsingNativeTitleBar (true);
-            setContentOwned (new PlaceholderComponent(), true);
+            setContentOwned (new rrs::MainComponent(), true);
             setResizable (true, false);
-            setResizeLimits (480, 320, 10000, 10000);
-            centreWithSize (900, 600);
+            setResizeLimits (820, 560, 10000, 10000);
+            centreWithSize (980, 660);
             setVisible (true);
         }
 

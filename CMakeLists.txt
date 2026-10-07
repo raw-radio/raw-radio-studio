@@ -116,9 +116,19 @@ juce_add_gui_app(raw_radio_studio
     NEEDS_WEB_BROWSER FALSE
     ${_raw_radio_juce_app_options})
 
-target_sources(raw_radio_studio PRIVATE src/main.cpp)
+target_sources(raw_radio_studio PRIVATE
+    src/main.cpp
+    src/studio/AudioEngine.cpp
+    src/studio/Session.cpp
+    src/studio/WavExport.cpp
+    src/ui/DevicePanel.cpp
+    src/ui/InputMeter.cpp
+    src/ui/MainComponent.cpp)
 
 juce_generate_juce_header(raw_radio_studio)
+
+target_include_directories(raw_radio_studio PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
 target_compile_features(raw_radio_studio PRIVATE cxx_std_20)
 
