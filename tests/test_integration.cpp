@@ -1610,6 +1610,46 @@ TEST_CASE ("transport: Stop rewinds, Pause holds, Go to start seeks to 0")
 }
 
 //==============================================================================
+// Owner request: a clickable timeline that seeks the transport. The UI maps an
+// x position to seconds and calls Session::setPositionSeconds (which forwards to
+// TransportControl::setPosition); this exercises that API round-trip and its
+// clamping, plus the session length the ruler maps against.
+TEST_CASE ("timeline seek moves the transport and reports a usable length")
+{
+    auto dir = scratchDirectory ("timeline-seek");
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Timeline.tracktionedit")));
+
+    // A real 2 s clip so the session has a non-zero, seekable length.
+    auto tone = writeSineWav (dir.getChildFile ("tone.wav"), 48000.0, 2.0);
+    REQUIRE (tone.existsAsFile());
+    REQUIRE (session.importAudioFile (tone));
+
+    CHECK (session.getPositionSeconds() == doctest::Approx (0.0));
+
+    // Seek to an arbitrary point in the track.
+    session.setPositionSeconds (1.25);
+    CHECK (session.getPositionSeconds() == doctest::Approx (1.25).epsilon (0.01));
+
+    // The ruler length covers the material (and never collapses to zero).
+    CHECK (session.getTimelineLengthSeconds() >= 2.0);
+
+    // A negative seek (e.g. a click left of the ruler origin) clamps to 0.
+    session.setPositionSeconds (-5.0);
+    CHECK (session.getPositionSeconds() == doctest::Approx (0.0));
+
+    // Seeking past the material is allowed (positioning a new take) and the
+    // ruler stretches to keep the playhead visible.
+    session.setPositionSeconds (30.0);
+    CHECK (session.getPositionSeconds() == doctest::Approx (30.0).epsilon (0.01));
+    CHECK (session.getTimelineLengthSeconds() >= 30.0);
+
+    session.close();
+}
+
+//==============================================================================
 // Owner request: recording a new take on a track must not play the previous take
 // back to the performer. The record track's existing clips are muted for the
 // duration of the pass and restored on stop; other (minus/backing) tracks keep

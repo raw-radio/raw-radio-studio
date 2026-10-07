@@ -144,6 +144,7 @@ target_sources(raw_radio_studio PRIVATE
     src/ui/DevicePanel.cpp
     src/ui/InputMeter.cpp
     src/ui/MixerPanel.cpp
+    src/ui/Timeline.cpp
     src/ui/BrandButton.cpp
     src/ui/BrandLookAndFeel.cpp
     src/ui/BrandFonts.cpp

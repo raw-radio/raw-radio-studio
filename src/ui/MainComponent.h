@@ -21,6 +21,7 @@
 #include "ui/DevicePanel.h"
 #include "ui/InputMeter.h"
 #include "ui/MixerPanel.h"
+#include "ui/Timeline.h"
 
 #include <vector>
 
@@ -88,6 +89,10 @@ namespace rrs
         InputMeter inputMeter { session.getInputLevels(),
                                 [this] { return audio.getNumActiveInputChannels(); } };
         MixerPanel mixerPanel { session };
+
+        /** Clickable ruler + playhead above the arrangement lanes (owner request:
+            position anywhere in the track). */
+        Timeline timeline { session };
 
         BrandButton newButton { "New" }, openButton { "Open" };
         BrandButton closeButton { "Close" };

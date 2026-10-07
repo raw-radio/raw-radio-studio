@@ -170,6 +170,19 @@ namespace rrs
         /** Moves the playhead to the session start (0) without changing the
             transport state ("Go to start" / skip-back). */
         void goToStart();
+
+        /** Current transport position in seconds (0 when there is no session). */
+        double getPositionSeconds() const;
+
+        /** Seeks the transport to `seconds` (clamped to >= 0) via
+            `TransportControl::setPosition`. Used by the clickable timeline; a
+            plain control change on the message thread, never the audio thread. */
+        void setPositionSeconds (double seconds);
+
+        /** Arrangement length in seconds for the timeline ruler, floored to a
+            small minimum so the strip is always clickable and never divided by
+            zero. */
+        double getTimelineLengthSeconds() const;
         bool record();
         bool isAnyTrackArmed() const;
 

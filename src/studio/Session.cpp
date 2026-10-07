@@ -29,6 +29,10 @@ namespace rrs
         constexpr float minInputGainDb = -24.0f;
         constexpr float maxInputGainDb =  24.0f;
 
+        // Smallest timeline ruler length (seconds) so an empty edit still has a
+        // usable, clickable strip and no division by zero.
+        constexpr double minimumTimelineSeconds = 10.0;
+
         /** Peak sample magnitude of an audio file, using the engine's read
             formats, or 0 when it cannot be read.
 
@@ -1045,6 +1049,33 @@ namespace rrs
     {
         if (edit != nullptr)
             edit->getTransport().setPosition (te::TimePosition());
+    }
+
+    //==============================================================================
+    // Timeline position / seek (Epic 4 groundwork: a clickable timeline).
+    double Session::getPositionSeconds() const
+    {
+        return edit != nullptr ? edit->getTransport().getPosition().inSeconds() : 0.0;
+    }
+
+    void Session::setPositionSeconds (double seconds)
+    {
+        if (edit == nullptr)
+            return;
+
+        edit->getTransport().setPosition (te::TimePosition::fromSeconds (juce::jmax (0.0, seconds)));
+    }
+
+    double Session::getTimelineLengthSeconds() const
+    {
+        if (edit == nullptr)
+            return minimumTimelineSeconds;
+
+        // Cover the material, the playhead (so seeking past the last clip stays
+        // visible) and a small floor so an empty edit still has a ruler.
+        return juce::jmax (minimumTimelineSeconds,
+                           edit->getLength().inSeconds(),
+                           getPositionSeconds());
     }
 
     bool Session::record()

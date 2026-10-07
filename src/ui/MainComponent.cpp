@@ -40,6 +40,7 @@ namespace rrs
         addAndMakeVisible (devicePanel);
         addAndMakeVisible (inputMeter);
         addAndMakeVisible (mixerPanel);
+        addAndMakeVisible (timeline);
         addAndMakeVisible (transportLabel);
         addAndMakeVisible (statusLabel);
 
@@ -324,6 +325,7 @@ namespace rrs
         addTrackButton.setEnabled (hasEdit && ! busy);
         removeTrackButton.setEnabled (hasEdit && ! busy && session.getNumAudioTracks() > 1);
         mixerPanel.setEnabled (! busy);
+        timeline.setEnabled (hasEdit && ! busy);
 
         newButton.setEnabled (! busy);
         openButton.setEnabled (! busy);
@@ -962,6 +964,18 @@ namespace rrs
                 g.setFont (brand::uiRegular (13.0f));
                 g.drawText ("No session loaded", lanes, juce::Justification::centred);
             }
+
+            // Playhead running down the arrangement, using the same x<->time map
+            // as the ruler so the two lines up exactly.
+            if (session.getEdit() != nullptr)
+            {
+                const auto x = (float) Timeline::xForSeconds (session.getPositionSeconds(),
+                                                              session.getTimelineLengthSeconds(),
+                                                              trackLaneArea);
+                g.setColour (brand::accent.withAlpha (0.85f));
+                g.fillRect (juce::Rectangle<float> (x - 1.0f, (float) trackLaneArea.getY() + 2.0f,
+                                                    2.0f, (float) trackLaneArea.getHeight() - 4.0f));
+            }
         }
     }
 
@@ -1032,6 +1046,11 @@ namespace rrs
         auto middle = bottom;
         inputMeter.setBounds (middle.removeFromRight (180).reduced (2));
         middle.removeFromRight (6);
+
+        // Ruler directly above the arrangement lanes, same width as the lanes so
+        // a click on the ruler and the lane playhead line share one x<->time map.
+        timeline.setBounds (middle.removeFromTop (Timeline::preferredHeight));
+        middle.removeFromTop (4);
         trackLaneArea = middle;
 
         rebuildTrackLaneRects();
