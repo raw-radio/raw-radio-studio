@@ -252,6 +252,10 @@ namespace rrs
             available fallback. */
         tracktion::WaveInputDevice* resolveInputDeviceFor (const InputMapping&) const;
 
+        /** Applies the user's monitoring preference to every input device.
+            Returns false when no input device is available to act on. */
+        bool applyMonitoringToDevices (bool shouldMonitor);
+
         void ensureMeterAttached();
         void detachMeter();
         void writeInterruptionMarker();
@@ -297,6 +301,11 @@ namespace rrs
         void storeMasterState();
         bool meterAttached = false;
         bool inputsConfigured = false;
+        /** User's monitoring preference. Unlike the live device state, this
+            survives reconfiguring the input tracks (reconfigure/add-track), so
+            `configureTracks()` never silently re-enables monitoring the user
+            turned off. Defaults to on (Epic 1 auto-monitor). */
+        bool monitoringEnabled = true;
         juce::WeakReference<tracktion::InputDeviceInstance> meterInstance;
 
         bool lastPlaying = false, lastRecording = false, lastArmed = false;

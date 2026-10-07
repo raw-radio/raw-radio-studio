@@ -11,6 +11,7 @@
 
 #include <JuceHeader.h>
 
+#include <functional>
 #include <memory>
 
 #include "studio/AudioEngine.h"
@@ -54,6 +55,13 @@ namespace rrs
         void exportSession();
         void showAbout();
         void showSettings();
+
+        /** Shared unsaved-changes guard for New/Open/Close. Runs `onProceed`
+            immediately when there is nothing to lose, otherwise shows a
+            Save/Discard/Cancel prompt. A failed Save keeps the session (and does
+            not run `onProceed`); Discard and a successful Save proceed; Cancel
+            does nothing. */
+        void confirmUnsavedChanges (const juce::String& title, std::function<void()> onProceed);
 
         void loadSettings();
         void saveSettings();

@@ -509,6 +509,60 @@ TEST_CASE ("per-track input mapping survives save/open (FR-REC-3)")
 }
 
 //==============================================================================
+// BUG-2 regression: an imported/backing track is playback-only. It must not be
+// possible to arm it or give it a hardware-input mapping, which would flip it
+// into an input track (`rrsInputTrack=true`) and bind it to a hardware channel
+// (default 0), colliding with the real input track.
+TEST_CASE ("imported/backing tracks stay playback-only: cannot arm or input-map (BUG-2)")
+{
+    auto dir = scratchDirectory ("playback-only");
+    auto editFile = dir.getChildFile ("Playback.tracktionedit");
+
+    auto wavFile = writeSineWav (dir.getChildFile ("minus.wav"), 48000.0, 0.25);
+    REQUIRE (wavFile.existsAsFile());
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (editFile));
+    REQUIRE (session.getNumAudioTracks() == 1);
+
+    REQUIRE (session.importAudioFile (wavFile));
+    REQUIRE (session.getNumAudioTracks() == 2);
+
+    const auto inputTrackId   = juce::Identifier ("rrsInputTrack");
+    const auto inputChannelId = juce::Identifier ("rrsInputFirstChannel");
+
+    const int backing = 1;
+    auto* track = session.getTrack (backing);
+    REQUIRE (track != nullptr);
+
+    // The imported track is not an input track, and only track 0 is.
+    CHECK_FALSE (track->state.hasProperty (inputTrackId));
+    CHECK (session.getInputTrackIndices().contains (0));
+    CHECK_FALSE (session.getInputTrackIndices().contains (backing));
+
+    // Arming is rejected and must not mutate the backing track.
+    session.clearLastError();
+    CHECK_FALSE (session.setTrackArmed (backing, true));
+    CHECK (session.getLastError().isNotEmpty());
+    CHECK_FALSE (session.isTrackArmed (backing));
+    CHECK_FALSE (track->state.hasProperty (inputTrackId));
+
+    // Input mapping is rejected and must not create the input-track markers
+    // (nor bind the backing track to a hardware channel).
+    session.clearLastError();
+    CHECK_FALSE (session.setTrackInputMapping (backing, InputMapping { 0, 1, InputLayout::Mono }));
+    CHECK (session.getLastError().isNotEmpty());
+    CHECK_FALSE (track->state.hasProperty (inputTrackId));
+    CHECK_FALSE (track->state.hasProperty (inputChannelId));
+
+    // The real input track keeps its controls (the guard is not over-broad).
+    CHECK (session.setTrackInputMapping (0, InputMapping { 0, 1, InputLayout::Mono }));
+
+    session.close();
+}
+
+//==============================================================================
 // FR-MIX-1 regression: the master fader value and the mute state are persisted
 // *independently* of the master volume plugin. The plugin stores the effective
 // gain (i.e. -100 dB while muted), so reading it back on reopen used to lose the
@@ -1204,6 +1258,72 @@ TEST_CASE ("multitrack: four tracks map to four inputs and record simultaneously
     CHECK (recordedChannels.size() == 4u);
 
     // Tear the edit down before the hosted device is removed by ~EnginePlayer.
+    session.close();
+}
+
+//==============================================================================
+// Minor regression: `configureTracks()` used to force `MonitorMode::on` on every
+// reconfigure/add-track, silently re-enabling monitoring the engineer had turned
+// off. The Session now remembers the user's preference and re-applies it.
+TEST_CASE ("user monitoring state survives adding a track (monitor preserved)")
+{
+    auto dir = scratchDirectory ("monitor-preserve");
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Monitor.tracktionedit")));
+
+    te::HostedAudioDeviceInterface::Parameters params;
+    params.sampleRate = 48000.0;
+    params.blockSize = 256;
+    params.inputChannels = 4;
+    params.outputChannels = 2;
+
+    auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+    REQUIRE (player != nullptr);
+
+    auto& dm = audio.deviceManager();
+
+    auto waitForConfigured = [&]
+    {
+        for (int i = 0; i < 300; ++i)
+        {
+            dm.dispatchPendingUpdates();
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+            if (session.isInputConfigured())
+                return;
+
+            session.reconfigureInputs();
+        }
+    };
+
+    waitForConfigured();
+    REQUIRE (session.isInputConfigured());
+
+    // Epic 1 default: monitoring auto-enabled on a fresh session.
+    CHECK (session.isMonitoringEnabled());
+
+    // The engineer turns monitoring off...
+    REQUIRE (session.setMonitoringEnabled (false));
+    CHECK_FALSE (session.isMonitoringEnabled());
+
+    // ...and adding a track must not silently turn it back on.
+    REQUIRE (session.addAudioTrack() >= 0);
+    waitForConfigured();
+    REQUIRE (session.isInputConfigured());
+    CHECK_FALSE (session.isMonitoringEnabled());
+
+    // The inverse: an explicit on-state is also preserved across add-track.
+    REQUIRE (session.setMonitoringEnabled (true));
+    CHECK (session.isMonitoringEnabled());
+
+    REQUIRE (session.addAudioTrack() >= 0);
+    waitForConfigured();
+    REQUIRE (session.isInputConfigured());
+    CHECK (session.isMonitoringEnabled());
+
+    session.setMonitoringEnabled (false);
     session.close();
 }
 

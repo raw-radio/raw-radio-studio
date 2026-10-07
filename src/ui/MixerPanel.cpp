@@ -52,11 +52,16 @@ namespace rrs
 
         int x = area.getX();
 
+        // Only record/input tracks expose arm + input-mapping controls; imported
+        // backing tracks are playback-only (BUG-2).
+        const auto inputIndices = session.getInputTrackIndices();
+
         auto makeStrip = [&] (bool isMaster, int trackIndex, int width)
         {
             StripControls c;
             c.isMaster = isMaster;
             c.trackIndex = trackIndex;
+            c.isInput = ! isMaster && inputIndices.contains (trackIndex);
             c.strip = juce::Rectangle<int> (x, area.getY(), width, area.getHeight());
             x += width + gap;
 
@@ -65,10 +70,16 @@ namespace rrs
 
             if (! isMaster)
             {
+                // Always reserve the arm row so every strip's fader/meter stays
+                // vertically aligned; only input tracks get the controls.
                 auto armRow = inner.removeFromTop (18);
-                c.arm = armRow.removeFromLeft (armRow.getWidth() / 2).reduced (1, 1);
-                armRow.removeFromLeft (2);
-                c.input = armRow.reduced (1, 1);
+
+                if (c.isInput)
+                {
+                    c.arm = armRow.removeFromLeft (armRow.getWidth() / 2).reduced (1, 1);
+                    armRow.removeFromLeft (2);
+                    c.input = armRow.reduced (1, 1);
+                }
             }
 
             c.meter = inner.removeFromRight (12);
@@ -221,8 +232,8 @@ namespace rrs
         g.drawText (strip.isMaster ? "Master" : session.getTrackName (strip.trackIndex),
                     strip.name, juce::Justification::centred, true);
 
-        // Record-arm chip (FR-REC-2). Only track strips are armable.
-        if (! strip.isMaster && ! strip.arm.isEmpty())
+        // Record-arm chip (FR-REC-2). Only input tracks are armable.
+        if (strip.isInput && ! strip.arm.isEmpty())
         {
             const auto a = strip.arm;
             g.setColour (armed ? brand::accentMuted : brand::bgPanel);
@@ -236,7 +247,8 @@ namespace rrs
 
         // Input-assignment chip (FR-REC-3): layout code + 1-based hardware
         // channel, e.g. "M1", "S2", "A1", "N1". Click to open the mapping menu.
-        if (! strip.isMaster && ! strip.input.isEmpty())
+        // Input tracks only — imported/backing tracks are playback-only (BUG-2).
+        if (strip.isInput && ! strip.input.isEmpty())
         {
             const auto mapping = session.getTrackInputMapping (strip.trackIndex);
 
@@ -357,13 +369,13 @@ namespace rrs
         {
             const auto& strip = strips[i];
 
-            if (! strip.isMaster && strip.arm.contains (e.getPosition()))
+            if (strip.isInput && strip.arm.contains (e.getPosition()))
             {
                 session.setTrackArmed (strip.trackIndex, ! session.isTrackArmed (strip.trackIndex));
                 return;
             }
 
-            if (! strip.isMaster && strip.input.contains (e.getPosition()))
+            if (strip.isInput && strip.input.contains (e.getPosition()))
             {
                 showInputMenu (strip.trackIndex);
                 return;

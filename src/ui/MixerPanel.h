@@ -53,6 +53,7 @@ namespace rrs
             juce::Rectangle<int> mute;
             juce::Rectangle<int> solo;
             bool isMaster = false;
+            bool isInput = false; ///< Track: record/input track (arm + input chips shown).
             int trackIndex = -1;
         };
 

@@ -327,36 +327,79 @@ namespace rrs
     }
 
     //==============================================================================
+    void MainComponent::confirmUnsavedChanges (const juce::String& title, std::function<void()> onProceed)
+    {
+        if (session.getEdit() == nullptr || ! session.hasUnsavedChanges())
+        {
+            onProceed();
+            return;
+        }
+
+        juce::Component::SafePointer<MainComponent> safe (this);
+
+        juce::NativeMessageBox::showAsync (
+            juce::MessageBoxOptions()
+                .withIconType (juce::MessageBoxIconType::WarningIcon)
+                .withTitle (title)
+                .withMessage ("This session has unsaved changes.\n\n"
+                              "Save them before continuing?")
+                .withButton ("Save")
+                .withButton ("Discard")
+                .withButton ("Cancel"),
+            [safe, onProceed] (int result)
+            {
+                auto* self = safe.getComponent();
+
+                if (self == nullptr)
+                    return;
+
+                if (result == 0) // Save
+                {
+                    if (! self->session.save())
+                    {
+                        self->showStatus (self->session.getLastError(), true);
+                        return; // save failed: keep the session
+                    }
+
+                    onProceed();
+                }
+                else if (result == 1) // Discard
+                {
+                    onProceed();
+                }
+                // result == 2 (Cancel): do nothing.
+            });
+    }
+
     void MainComponent::newSession()
     {
         if (exportInProgress)
             return;
 
-        // NOTE: unlike Close (see closeSession()), New does not yet guard against
-        // losing unsaved changes — `createNew()` replaces the Edit directly. This
-        // inconsistency is known; New/Open should prompt Save/Discard/Cancel once
-        // the Close prompt is factored into a shared helper.
-        auto chooser = std::make_shared<juce::FileChooser> ("New session",
-                                                            paths::projectsDirectory(), "*.tracktionedit");
+        confirmUnsavedChanges ("New session", [this]
+        {
+            auto chooser = std::make_shared<juce::FileChooser> ("New session",
+                                                                paths::projectsDirectory(), "*.tracktionedit");
 
-        chooser->launchAsync (juce::FileBrowserComponent::saveMode
-                                  | juce::FileBrowserComponent::canSelectFiles
-                                  | juce::FileBrowserComponent::warnAboutOverwriting,
-                              [this, chooser] (const juce::FileChooser& fc)
-                              {
-                                  auto file = fc.getResult();
+            chooser->launchAsync (juce::FileBrowserComponent::saveMode
+                                      | juce::FileBrowserComponent::canSelectFiles
+                                      | juce::FileBrowserComponent::warnAboutOverwriting,
+                                  [this, chooser] (const juce::FileChooser& fc)
+                                  {
+                                      auto file = fc.getResult();
 
-                                  if (file == juce::File())
-                                      return;
+                                      if (file == juce::File())
+                                          return;
 
-                                  if (! file.hasFileExtension ("tracktionedit"))
-                                      file = file.withFileExtension ("tracktionedit");
+                                      if (! file.hasFileExtension ("tracktionedit"))
+                                          file = file.withFileExtension ("tracktionedit");
 
-                                  if (session.createNew (file))
-                                      onSessionOpened();
-                                  else
-                                      showStatus (session.getLastError(), true);
-                              });
+                                      if (session.createNew (file))
+                                          onSessionOpened();
+                                      else
+                                          showStatus (session.getLastError(), true);
+                                  });
+        });
     }
 
     void MainComponent::openSession()
@@ -364,26 +407,26 @@ namespace rrs
         if (exportInProgress)
             return;
 
-        // NOTE: as with New, Open does not yet guard against losing unsaved
-        // changes (Close does — see closeSession()). Documented known
-        // inconsistency; a shared Save/Discard/Cancel helper is the follow-up.
-        auto chooser = std::make_shared<juce::FileChooser> ("Open session",
-                                                            paths::projectsDirectory(), "*.tracktionedit");
+        confirmUnsavedChanges ("Open session", [this]
+        {
+            auto chooser = std::make_shared<juce::FileChooser> ("Open session",
+                                                                paths::projectsDirectory(), "*.tracktionedit");
 
-        chooser->launchAsync (juce::FileBrowserComponent::openMode
-                                  | juce::FileBrowserComponent::canSelectFiles,
-                              [this, chooser] (const juce::FileChooser& fc)
-                              {
-                                  auto file = fc.getResult();
+            chooser->launchAsync (juce::FileBrowserComponent::openMode
+                                      | juce::FileBrowserComponent::canSelectFiles,
+                                  [this, chooser] (const juce::FileChooser& fc)
+                                  {
+                                      auto file = fc.getResult();
 
-                                  if (file == juce::File())
-                                      return;
+                                      if (file == juce::File())
+                                          return;
 
-                                  if (session.open (file))
-                                      onSessionOpened();
-                                  else
-                                      showStatus (session.getLastError(), true);
-                              });
+                                      if (session.open (file))
+                                          onSessionOpened();
+                                      else
+                                          showStatus (session.getLastError(), true);
+                                  });
+        });
     }
 
     void MainComponent::closeSession()
@@ -415,44 +458,9 @@ namespace rrs
             self->refreshTransportUi();
         };
 
-        if (! session.hasUnsavedChanges())
-        {
-            performClose();
-            return;
-        }
-
-        juce::NativeMessageBox::showAsync (
-            juce::MessageBoxOptions()
-                .withIconType (juce::MessageBoxIconType::WarningIcon)
-                .withTitle ("Close session")
-                .withMessage ("This session has unsaved changes.\n\n"
-                              "Save them before closing?")
-                .withButton ("Save")
-                .withButton ("Discard")
-                .withButton ("Cancel"),
-            [safe, performClose] (int result)
-            {
-                auto* self = safe.getComponent();
-
-                if (self == nullptr)
-                    return;
-
-                if (result == 0) // Save
-                {
-                    if (! self->session.save())
-                    {
-                        self->showStatus (self->session.getLastError(), true);
-                        return; // save failed: keep the session open
-                    }
-
-                    performClose();
-                }
-                else if (result == 1) // Discard
-                {
-                    performClose();
-                }
-                // result == 2 (Cancel): do nothing.
-            });
+        // Same Save/Discard/Cancel guard as New/Open (Close used to be the only
+        // path that prompted).
+        confirmUnsavedChanges ("Close session", performClose);
     }
 
     void MainComponent::saveSession()
@@ -1017,6 +1025,15 @@ namespace rrs
                 continue;
 
             const auto index = (int) i;
+
+            // Imported/backing tracks are playback-only: don't attempt to arm
+            // them (the Session would reject it anyway).
+            if (! session.getInputTrackIndices().contains (index))
+            {
+                showStatus (session.getTrackName (index) + " is a backing track (playback only).");
+                return;
+            }
+
             const auto nowArmed = ! session.isTrackArmed (index);
 
             if (session.setTrackArmed (index, nowArmed))

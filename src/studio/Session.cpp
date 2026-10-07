@@ -353,6 +353,16 @@ namespace rrs
             return false;
         }
 
+        // Only record/input tracks may carry a hardware-input mapping. Without
+        // this guard an imported/backing track could be turned into an input
+        // track (`rrsInputTrack=true`) and bound to a hardware channel (default
+        // 0), colliding with the real input track.
+        if (! isInputTrack (*track))
+        {
+            lastError = "Only input tracks can be assigned a hardware input.";
+            return false;
+        }
+
         writeTrackMapping (*track, mapping);
         inputsConfigured = false;
         configureTracks();
@@ -378,7 +388,12 @@ namespace rrs
         // so an absolute index is valid even for a single-channel device.
         const auto hardwareChannels = juce::jmax (1, audio.getNumActiveInputChannels());
         waveIn->setChannelConfiguration (inputChannelConfigurationForMapping (mapping, hardwareChannels));
-        waveIn->setMonitorMode (te::InputDevice::MonitorMode::on);
+
+        // Honour the user's monitoring preference instead of forcing monitoring
+        // on: `configureTracks()` runs on every reconfigure/add-track and used to
+        // silently re-enable monitoring the engineer had turned off.
+        waveIn->setMonitorMode (monitoringEnabled ? te::InputDevice::MonitorMode::on
+                                                  : te::InputDevice::MonitorMode::off);
 
         resolvedOut = waveIn;
         return true;
@@ -674,6 +689,15 @@ namespace rrs
             return false;
         }
 
+        // Imported/backing tracks are playback-only: arming them would try to
+        // bind them to a hardware input (and used to mutate them into input
+        // tracks). Reject clearly instead.
+        if (! isInputTrack (*track))
+        {
+            lastError = "Only input tracks can be armed for recording.";
+            return false;
+        }
+
         bool found = false;
 
         for (auto* instance : edit->getAllInputDevices())
@@ -719,7 +743,7 @@ namespace rrs
         return false;
     }
 
-    bool Session::setMonitoringEnabled (bool shouldMonitor)
+    bool Session::applyMonitoringToDevices (bool shouldMonitor)
     {
         const auto mode = shouldMonitor ? te::InputDevice::MonitorMode::on
                                         : te::InputDevice::MonitorMode::off;
@@ -737,8 +761,17 @@ namespace rrs
         for (auto* device : devices)
             device->setMonitorMode (mode);
 
-        sendChangeMessage();
         return ! devices.empty();
+    }
+
+    bool Session::setMonitoringEnabled (bool shouldMonitor)
+    {
+        // Remember the preference so a later reconfigure/add-track respects it.
+        monitoringEnabled = shouldMonitor;
+
+        const bool applied = applyMonitoringToDevices (shouldMonitor);
+        sendChangeMessage();
+        return applied;
     }
 
     bool Session::isMonitoringEnabled() const
@@ -1084,8 +1117,9 @@ namespace rrs
         // part of the Edit, so it would survive the teardown below and leave the
         // microphone live-monitored in the "No session" state (feedback risk).
         // Turn it off explicitly, before the early-out, so the Monitor button
-        // also ends up OFF in the UI.
-        setMonitoringEnabled (false);
+        // also ends up OFF in the UI. This is a device teardown, not a user
+        // preference change, so the remembered preference is left intact.
+        applyMonitoringToDevices (false);
 
         if (edit == nullptr)
             return;
