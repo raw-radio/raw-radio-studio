@@ -174,6 +174,7 @@ endif()
 # Small unit tests for pure/testable logic:
 #   * audio-device error classification (FR-MON-5 / NFR-IO-4),
 #   * ALSA `hw` device-name policy,
+#   * device-panel layout (status/error labels must stay visible),
 #   * 24-bit WAV writer round-trip (FR-EXP-1 / NFR-A-1).
 #
 # doctest is vendored (pinned by content) under third_party/doctest/ — no
@@ -203,6 +204,7 @@ target_compile_definitions(raw_radio_studio_tests PRIVATE
 target_link_libraries(raw_radio_studio_tests PRIVATE
     raw_radio_studio_doctest
     juce::juce_audio_formats
+    juce::juce_graphics
     juce::juce_core
     juce::juce_recommended_warning_flags)
 

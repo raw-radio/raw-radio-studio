@@ -2,6 +2,8 @@
 
 #include "WavExport.h"
 
+#include "AudioEngine.h"
+
 namespace rrs
 {
     namespace te = tracktion;
@@ -37,7 +39,17 @@ namespace rrs
         params.destFile           = destination;
         params.audioFormat        = edit.engine.getAudioFileFormatManager().getWavFormat();
         params.bitDepth           = bitDepth;
-        params.sampleRateForAudio = edit.engine.getDeviceManager().getSampleRate();
+
+        // The device may be closed (or not yet opened) when exporting; the
+        // device manager then reports 0 Hz. Fall back to the last-known rate,
+        // then to the Epic 1 default (48 kHz, NFR-A-4) so the render never runs
+        // at 0 Hz.
+        auto sampleRate = edit.engine.getDeviceManager().getSampleRate();
+
+        if (sampleRate <= 0.0)
+            sampleRate = AudioEngine::defaultSampleRate;
+
+        params.sampleRateForAudio = sampleRate;
         params.blockSizeForAudio  = 512;
         params.time               = { te::TimePosition(),
                                       te::TimePosition::fromSeconds (edit.getLength().inSeconds()) };

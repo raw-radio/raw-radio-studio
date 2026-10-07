@@ -44,7 +44,12 @@ public:
 
     const juce::String getApplicationName() override    { return "raw-radio-studio"; }
     const juce::String getApplicationVersion() override { return RAW_RADIO_STUDIO_VERSION; }
-    bool moreThanOneInstanceAllowed() override          { return true; }
+
+    // Single instance: the session lock (AppPaths::lockFile) and the recordings
+    // folder are app-global, so a second instance would clobber the first's
+    // crash-recovery sentinel. A second launch forwards to the running instance
+    // (see anotherInstanceStarted) and exits.
+    bool moreThanOneInstanceAllowed() override          { return false; }
 
     void initialise (const juce::String& commandLine) override
     {

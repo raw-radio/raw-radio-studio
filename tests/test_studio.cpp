@@ -14,6 +14,7 @@
 
 #include "studio/DeviceError.h"
 #include "studio/AppPaths.h"
+#include "ui/DevicePanelLayout.h"
 
 #include <cmath>
 #include <memory>
@@ -52,12 +53,66 @@ TEST_CASE ("device error: unknown failure keeps the raw message")
     CHECK (info.userMessage == juce::String (raw));
 }
 
-TEST_CASE ("ALSA hardware name policy rejects the plugin layer")
+TEST_CASE ("ALSA device policy excludes only the JUCE plugin pseudo-devices")
 {
-    CHECK (isAlsaHardwareDeviceName ("hw:0,0"));
-    CHECK (isAlsaHardwareDeviceName ("HDA Intel PCH, ALC295 Analog (hw:0,0)"));
-    CHECK_FALSE (isAlsaHardwareDeviceName ("default"));
-    CHECK_FALSE (isAlsaHardwareDeviceName ("pulse"));
+    // JUCE's ALSA backend reports real hardware by human-readable name, never as
+    // an "hw:N,M" id. These names must be accepted (NFR-IO-4).
+    CHECK_FALSE (isAlsaPluginPseudoDeviceName ("HDA Intel PCH, ALC295 Analog"));
+    CHECK_FALSE (isAlsaPluginPseudoDeviceName ("USB Audio Device, USB Audio"));
+    CHECK_FALSE (isAlsaPluginPseudoDeviceName ("Focusrite Scarlett 4i4 4th Gen, USB Audio"));
+    CHECK_FALSE (isAlsaPluginPseudoDeviceName ("HDA Intel PCH, ALC295 Analog {hw:0,0}"));
+
+    // The injected plugin pseudo-devices route through PipeWire/PulseAudio and
+    // must be rejected so there is no silent fallback.
+    CHECK (isAlsaPluginPseudoDeviceName ("Default ALSA Input"));
+    CHECK (isAlsaPluginPseudoDeviceName ("Default ALSA Output"));
+    CHECK (isAlsaPluginPseudoDeviceName ("Pulseaudio input"));
+    CHECK (isAlsaPluginPseudoDeviceName ("Pulseaudio output"));
+
+   #if JUCE_LINUX
+    CHECK (isAcceptableInputDeviceName ("HDA Intel PCH, ALC295 Analog"));
+    CHECK_FALSE (isAcceptableInputDeviceName ("Default ALSA Input"));
+    CHECK_FALSE (isAcceptableInputDeviceName ("Pulseaudio output"));
+    CHECK_FALSE (isAcceptableInputDeviceName (""));
+   #else
+    CHECK (isAcceptableInputDeviceName ("anything on this platform"));
+   #endif
+}
+
+//==============================================================================
+TEST_CASE ("device panel always gives the status + error labels real height")
+{
+    // The panel must be tall enough for a multi-line device error (FR-MON-5).
+    const auto layout = computeDevicePanelLayout ({ 0, 0, 900, devicePanelHeight });
+
+    CHECK (layout.statusLabel.getHeight() > 0);
+    CHECK (layout.errorLabel.getHeight() >= 80); // ~4-5 lines at the default font
+    CHECK (layout.errorLabel.getY() >= layout.statusLabel.getBottom());
+    CHECK (layout.errorLabel.getBottom() <= devicePanelHeight);
+
+    // Regression guard: at the old 170 px height the remaining area was exhausted
+    // before the labels, leaving the error label with far less room.
+    const auto cramped = computeDevicePanelLayout ({ 0, 0, 900, 170 });
+    CHECK (cramped.errorLabel.getHeight() < layout.errorLabel.getHeight());
+}
+
+TEST_CASE ("a simulated busy-device error is representable and visible")
+{
+    // Simulate the exact error the ALSA open path surfaces when PipeWire holds the
+    // device; this is what DevicePanel::showError puts in the error label.
+    const auto info = classifyDeviceError ("ALSA: cannot open device: Device or resource busy (EBUSY)");
+
+    CHECK (info.isBusy);
+    CHECK (info.userMessage.isNotEmpty());
+
+    // The message is multi-line (paragraphs) and the error label reserved at the
+    // real panel height is tall enough for at least four text lines, so the whole
+    // actionable message is visible rather than clipped to zero height.
+    const auto lineCount = juce::StringArray::fromLines (info.userMessage).size();
+    CHECK (lineCount >= 3);
+
+    const auto layout = computeDevicePanelLayout ({ 0, 0, 900, devicePanelHeight });
+    CHECK (layout.errorLabel.getHeight() >= lineCount * 16);
 }
 
 //==============================================================================

@@ -5,9 +5,12 @@
 // policy from the spec (FR-MON-5, NFR-IO-4):
 //
 //   * a missing device and a busy device get distinct, actionable messages;
-//   * on Linux the ALSA backend must open `hw` devices directly — a name that is
-//     not a raw hardware PCM is rejected so we never silently fall back to the
-//     "default"/dmix/plugin path held by PipeWire.
+//   * on Linux the ALSA backend must open raw hardware PCMs directly, never the
+//     PipeWire/PulseAudio plugin path held by another daemon. JUCE reports ALSA
+//     devices by their human-readable names (e.g. "HDA Intel PCH, ALC295 Analog",
+//     "USB Audio Device, USB Audio") and only injects the "Default ALSA …" and
+//     "Pulseaudio …" pseudo-devices for the plugin layer, so we exclude exactly
+//     those rather than looking for an "hw:" id (which never appears in a name).
 
 #pragma once
 
@@ -72,18 +75,27 @@ namespace rrs
         return info;
     }
 
-    /** True if a device name denotes an ALSA raw hardware PCM (e.g. "hw:0,0"). */
-    inline bool isAlsaHardwareDeviceName (const juce::String& deviceName)
+    /** True for the plugin/pseudo devices JUCE injects into the ALSA device list
+        ("Default ALSA Input/Output" and "Pulseaudio input/output"). These open
+        the `default`/`pulse` plugin PCMs, i.e. route through PipeWire/PulseAudio,
+        and are excluded so we open a raw hardware PCM directly (NFR-IO-4).
+
+        Every other ALSA name JUCE reports is a real hardware PCM. */
+    inline bool isAlsaPluginPseudoDeviceName (const juce::String& deviceName)
     {
-        return deviceName.containsIgnoreCase ("hw:");
+        return deviceName.startsWithIgnoreCase ("Default ALSA")
+            || deviceName.startsWithIgnoreCase ("Pulseaudio");
     }
 
     /** Whether a device name is acceptable for direct recording.
-        On Linux we require ALSA `hw` (no silent fallback to the plugin layer). */
+        On Linux we exclude only JUCE's injected plugin pseudo-devices so we never
+        silently fall back to the PipeWire/PulseAudio path. JUCE's ALSA backend
+        reports real hardware with human-readable names, never as `hw:N,M`, so a
+        `hw:` substring test would reject every real device. */
     inline bool isAcceptableInputDeviceName (const juce::String& deviceName)
     {
        #if JUCE_LINUX
-        return isAlsaHardwareDeviceName (deviceName);
+        return deviceName.isNotEmpty() && ! isAlsaPluginPseudoDeviceName (deviceName);
        #else
         juce::ignoreUnused (deviceName);
         return true;

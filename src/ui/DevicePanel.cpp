@@ -2,6 +2,8 @@
 
 #include "DevicePanel.h"
 
+#include "DevicePanelLayout.h"
+
 namespace rrs
 {
     DevicePanel::DevicePanel (AudioEngine& engine)
@@ -215,42 +217,19 @@ namespace rrs
 
     void DevicePanel::resized()
     {
-        auto area = getLocalBounds().reduced (12);
-        area.removeFromTop (20); // title
+        const auto layout = computeDevicePanelLayout (getLocalBounds());
 
-        const auto rowHeight = 24;
-        const auto labelWidth = 90;
-
-        auto row1 = area.removeFromTop (rowHeight);
-        typeLabel.setBounds (row1.removeFromLeft (labelWidth));
-        typeBox.setBounds (row1.removeFromLeft (juce::jmin (160, row1.getWidth() / 2)));
-
-        area.removeFromTop (6);
-
-        auto row2 = area.removeFromTop (rowHeight);
-        deviceLabel.setBounds (row2.removeFromLeft (labelWidth));
-        deviceBox.setBounds (row2);
-
-        area.removeFromTop (6);
-
-        auto row3 = area.removeFromTop (rowHeight);
-        rateLabel.setBounds (row3.removeFromLeft (labelWidth));
-        rateBox.setBounds (row3.removeFromLeft (juce::jmin (140, row3.getWidth() / 2)));
-        row3.removeFromLeft (8);
-        bufferLabel.setBounds (row3.removeFromLeft (80));
-        bufferBox.setBounds (row3.removeFromLeft (juce::jmin (140, row3.getWidth())));
-
-        area.removeFromTop (8);
-
-        auto row4 = area.removeFromTop (28);
-        applyButton.setBounds (row4.removeFromLeft (90));
-        row4.removeFromLeft (8);
-        rescanButton.setBounds (row4.removeFromLeft (90));
-
-        area.removeFromTop (6);
-        statusLabel.setBounds (area.removeFromTop (20));
-
-        area.removeFromTop (4);
-        errorLabel.setBounds (area);
+        typeLabel.setBounds (layout.typeLabel);
+        typeBox.setBounds (layout.typeBox);
+        deviceLabel.setBounds (layout.deviceLabel);
+        deviceBox.setBounds (layout.deviceBox);
+        rateLabel.setBounds (layout.rateLabel);
+        rateBox.setBounds (layout.rateBox);
+        bufferLabel.setBounds (layout.bufferLabel);
+        bufferBox.setBounds (layout.bufferBox);
+        applyButton.setBounds (layout.applyButton);
+        rescanButton.setBounds (layout.rescanButton);
+        statusLabel.setBounds (layout.statusLabel);
+        errorLabel.setBounds (layout.errorLabel);
     }
 }

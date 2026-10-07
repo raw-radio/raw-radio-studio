@@ -6,9 +6,11 @@
 //
 //   <app data>/raw-radio-studio/
 //       Projects/                  — .tracktionedit session files
-//       settings.json              — app settings (autosave interval, last session)
 //       session.lock               — unclean-shutdown sentinel (removed on clean exit)
 //       Projects/Recordings/       — recorded takes (crash-safe, incremental WAV)
+//
+// App settings (autosave interval, last session) are not handled here: they are
+// stored by a juce::PropertiesFile owned by MainComponent (see loadSettings()).
 
 #pragma once
 
@@ -33,12 +35,6 @@ namespace rrs::paths
     inline juce::File defaultEditFile()
     {
         return projectsDirectory().getChildFile ("Untitled Session.tracktionedit");
-    }
-
-    /** App settings file (JSON via juce::PropertiesFile). */
-    inline juce::File settingsFile()
-    {
-        return appDataDirectory().getChildFile ("settings.json");
     }
 
     /** Sentinel written at startup and removed on a clean shutdown. */

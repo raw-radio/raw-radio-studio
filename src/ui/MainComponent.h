@@ -75,6 +75,7 @@ namespace rrs
 
         std::unique_ptr<juce::PropertiesFile> settings;
         std::shared_ptr<tracktion::EditRenderer::Handle> exportHandle;
+        bool exportInProgress = false;
 
         juce::String statusMessage;
         bool statusIsError = false;

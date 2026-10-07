@@ -3,6 +3,7 @@
 #include "MainComponent.h"
 
 #include "studio/AppPaths.h"
+#include "ui/DevicePanelLayout.h"
 
 #include <cmath>
 
@@ -69,6 +70,16 @@ namespace rrs
     {
         stopTimer();
         session.removeChangeListener (this);
+
+        // A render holds a raw `Edit*` on a background thread. Cancel and join it
+        // before `session` (a member declared before `exportHandle`) is destroyed,
+        // otherwise the render thread can touch a freed Edit.
+        if (exportHandle != nullptr)
+        {
+            exportHandle->cancel();
+            exportHandle.reset();
+        }
+
         saveSettings();
     }
 
@@ -123,9 +134,17 @@ namespace rrs
     {
         const bool hasEdit = session.getEdit() != nullptr;
 
+        // While a render holds the `Edit*`, nothing may replace or mutate it:
+        // New/Open would reset the Edit (use-after-free on the render thread)
+        // and the transport/Save would race it. Disable them all for the duration.
+        const bool busy = exportInProgress;
+
         for (auto* button : { &saveButton, &saveAsButton, &exportButton, &armButton,
                               &recordButton, &playButton, &stopButton, &monitorButton })
-            button->setEnabled (hasEdit);
+            button->setEnabled (hasEdit && ! busy);
+
+        newButton.setEnabled (! busy);
+        openButton.setEnabled (! busy);
 
         recordButton.setButtonText (session.isRecording() ? "Stop rec" : "Record");
         playButton.setButtonText (session.isPlaying() ? "Pause" : "Play");
@@ -162,6 +181,9 @@ namespace rrs
     //==============================================================================
     void MainComponent::newSession()
     {
+        if (exportInProgress)
+            return;
+
         auto chooser = std::make_shared<juce::FileChooser> ("New session",
                                                             paths::projectsDirectory(), "*.tracktionedit");
 
@@ -187,6 +209,9 @@ namespace rrs
 
     void MainComponent::openSession()
     {
+        if (exportInProgress)
+            return;
+
         auto chooser = std::make_shared<juce::FileChooser> ("Open session",
                                                             paths::projectsDirectory(), "*.tracktionedit");
 
@@ -208,7 +233,7 @@ namespace rrs
 
     void MainComponent::saveSession()
     {
-        if (session.getEdit() == nullptr)
+        if (exportInProgress || session.getEdit() == nullptr)
             return;
 
         if (session.save())
@@ -219,7 +244,7 @@ namespace rrs
 
     void MainComponent::saveSessionAs()
     {
-        if (session.getEdit() == nullptr)
+        if (exportInProgress || session.getEdit() == nullptr)
             return;
 
         auto chooser = std::make_shared<juce::FileChooser> ("Save session as",
@@ -252,6 +277,9 @@ namespace rrs
 
     void MainComponent::exportSession()
     {
+        if (exportInProgress)
+            return;
+
         if (session.getEdit() == nullptr)
         {
             showStatus ("Open a session before exporting.", true);
@@ -275,7 +303,11 @@ namespace rrs
                                   if (! file.hasFileExtension ("wav"))
                                       file = file.withFileExtension ("wav");
 
-                                  exportButton.setEnabled (false);
+                                  // Lock the session for the duration of the render:
+                                  // New/Open would reset the Edit the render thread
+                                  // is reading (use-after-free).
+                                  exportInProgress = true;
+                                  refreshTransportUi();
                                   showStatus ("Exporting 24-bit WAV...");
 
                                   juce::Component::SafePointer<MainComponent> safe (this);
@@ -289,8 +321,9 @@ namespace rrs
                                           if (self == nullptr)
                                               return;
 
-                                          self->exportButton.setEnabled (true);
                                           self->exportHandle.reset();
+                                          self->exportInProgress = false;
+                                          self->refreshTransportUi();
 
                                           if (success)
                                               self->showStatus ("Exported 24-bit WAV: " + result.getFullPathName());
@@ -540,7 +573,7 @@ namespace rrs
         titleLabel.setBounds (area.removeFromTop (26));
         area.removeFromTop (4);
 
-        devicePanel.setBounds (area.removeFromTop (170));
+        devicePanel.setBounds (area.removeFromTop (devicePanelHeight));
         area.removeFromTop (6);
 
         auto transportRow = area.removeFromTop (34);

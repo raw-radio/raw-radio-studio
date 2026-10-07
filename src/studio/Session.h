@@ -118,7 +118,7 @@ namespace rrs
     private:
         //==============================================================================
         void timerCallback() override;
-        bool createOrOpenEdit (const juce::File&);
+        bool createOrOpenEdit (const juce::File&, bool loadIfExists);
         bool configureSingleStereoTrack();
         void ensureMeterAttached();
         void detachMeter();

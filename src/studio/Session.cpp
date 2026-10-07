@@ -91,7 +91,7 @@ namespace rrs
             return false;
         }
 
-        if (! createOrOpenEdit (file))
+        if (! createOrOpenEdit (file, false))
             return false;
 
         writeLockFile();
@@ -109,7 +109,7 @@ namespace rrs
             return false;
         }
 
-        if (! createOrOpenEdit (file))
+        if (! createOrOpenEdit (file, true))
             return false;
 
         writeLockFile();
@@ -118,14 +118,17 @@ namespace rrs
         return true;
     }
 
-    bool Session::createOrOpenEdit (const juce::File& file)
+    // `loadIfExists == false` makes this a genuine "New": even if the chosen file
+    // exists it is not loaded, an empty Edit is created (and then saved over it).
+    // "Open" passes true so an existing session is loaded.
+    bool Session::createOrOpenEdit (const juce::File& file, bool loadIfExists)
     {
         detachMeter();
         edit.reset();
 
         auto& engine = audio.engine();
 
-        if (file.existsAsFile())
+        if (loadIfExists && file.existsAsFile())
             edit = te::loadEditFromFile (engine, file);
         else
             edit = te::createEmptyEdit (engine, file);
@@ -386,6 +389,11 @@ namespace rrs
             return false;
         }
 
+        // Retarget subsequent saves, temp versions (autosave/recovery) and
+        // relative-path resolution at the new file. Without this, Tracktion keeps
+        // writing back to the original path and recovery scans the wrong place.
+        edit->editFileRetriever = [file] { return file; };
+
         editFile = file;
         audio.behaviour().setRecordingsDirectory (paths::recordingsDirectoryFor (file));
         sendChangeMessage();
@@ -481,6 +489,10 @@ namespace rrs
         const auto referenced = findReferencedRecordings();
         int imported = 0;
 
+        // Lay recovered takes down the timeline one after another so multiple
+        // takes never overlap at time 0.
+        te::TimePosition nextStart {};
+
         for (auto& file : recordingsDir.findChildFiles (juce::File::findFiles, false, "*.wav"))
         {
             if (referenced.contains (file))
@@ -489,13 +501,22 @@ namespace rrs
             te::AudioFile audioFile (edit->engine, file);
 
             if (! audioFile.isValid() || audioFile.getLength() <= 0.0)
+            {
+                // FR-REC-8 crash window: Tracktion flushes recorded audio roughly
+                // every 6 s, so a crash inside the first window can leave a WAV
+                // whose header claims 0 samples and which cannot be recovered.
+                // Accepted for Epic 1 "basics"; hardened in Epic 7.
                 continue;
+            }
+
+            const auto length = te::TimeDuration::fromSeconds (audioFile.getLength());
+            const te::ClipPosition position { { nextStart, length }, {} };
 
             if (auto clip = track->insertWaveClip (file.getFileNameWithoutExtension(), file,
-                                                   { { {}, te::TimeDuration::fromSeconds (audioFile.getLength()) }, {} },
-                                                   false))
+                                                   position, false))
             {
                 clip->setName ("Recovered: " + file.getFileNameWithoutExtension());
+                nextStart = nextStart + length;
                 ++imported;
             }
         }
