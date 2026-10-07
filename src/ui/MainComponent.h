@@ -105,6 +105,9 @@ namespace rrs
         std::unique_ptr<juce::PropertiesFile> settings;
         std::shared_ptr<tracktion::EditRenderer::Handle> exportHandle;
         bool exportInProgress = false;
+        /** Metronome state saved when an export starts, restored when it ends so
+            the click can never leak into the rendered WAV (FR-EXP-1). */
+        bool exportMetronomeWasEnabled = false;
 
         juce::String statusMessage;
         bool statusIsError = false;

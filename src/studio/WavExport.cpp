@@ -19,12 +19,31 @@ namespace rrs
     }
 
     std::shared_ptr<te::EditRenderer::Handle>
-        WavExport::start (te::Edit& edit, const juce::File& destination, CompletionCallback callback)
+        WavExport::start (te::Edit& edit, const juce::File& destination, CompletionCallback callback,
+                          bool suppressMetronome)
     {
-        const auto fail = [callback, destination] (const juce::String& message)
+        // FR-EXP-1: `edit.clickTrackEnabled` is read live by the ClickNode while
+        // the render graph plays, so clearing it here (on the message thread,
+        // before the render is built) guarantees an enabled metronome is never
+        // baked into the exported WAV. The previous state is restored in every
+        // completion path below, on the message thread.
+        const bool metronomeWasEnabled = edit.clickTrackEnabled.get();
+
+        if (suppressMetronome)
+            edit.clickTrackEnabled = false;
+
+        const auto restoreMetronome = [&edit, metronomeWasEnabled, suppressMetronome]
         {
-            juce::MessageManager::callAsync ([callback, destination, message]
+            if (suppressMetronome)
+                edit.clickTrackEnabled = metronomeWasEnabled;
+        };
+
+        const auto fail = [callback, destination, restoreMetronome] (const juce::String& message)
+        {
+            juce::MessageManager::callAsync ([callback, destination, message, restoreMetronome]
                                              {
+                                                 restoreMetronome();
+
                                                  if (callback)
                                                      callback (false, destination, message);
                                              });
@@ -60,14 +79,19 @@ namespace rrs
 
         auto handle = te::EditRenderer::render (
             params,
-            [callback, destination] (tl::expected<juce::File, std::string> result)
+            [callback, destination, restoreMetronome] (tl::expected<juce::File, std::string> result)
             {
                 const bool success = result.has_value();
                 const auto file = success ? result.value() : destination;
                 const auto error = success ? juce::String() : juce::String (result.error());
 
-                juce::MessageManager::callAsync ([callback, success, file, error]
+                juce::MessageManager::callAsync ([callback, success, file, error, restoreMetronome]
                                                  {
+                                                     // Restore before the caller's callback so the
+                                                     // Session/UI sees the click back in its original
+                                                     // state by the time it reacts to the export.
+                                                     restoreMetronome();
+
                                                      if (callback)
                                                          callback (success, file, error);
                                                  });

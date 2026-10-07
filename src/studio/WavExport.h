@@ -26,9 +26,17 @@ namespace rrs
 
         /** Starts an asynchronous export. The callback is always invoked on the
             message thread. Returns the render handle (may be null if the render
-            could not be started, in which case the callback is still invoked). */
+            could not be started, in which case the callback is still invoked).
+
+            FR-EXP-1: the built-in metronome/click is a real node in the render
+            graph, so an enabled click would be baked into the exported WAV. When
+            `suppressMetronome` is true (the default) the click is forced off for
+            the duration of the render and its previous state is restored in every
+            completion path (success, failure, or render-start failure). Pass
+            false only to render the click on purpose (used by tests). */
         static std::shared_ptr<tracktion::EditRenderer::Handle>
-            start (tracktion::Edit& edit, const juce::File& destination, CompletionCallback);
+            start (tracktion::Edit& edit, const juce::File& destination, CompletionCallback,
+                   bool suppressMetronome = true);
 
         /** Suggested default export path for a session file. */
         static juce::File defaultDestinationFor (const juce::File& editFile);

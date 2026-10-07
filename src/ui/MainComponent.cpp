@@ -170,6 +170,11 @@ namespace rrs
             exportHandle.reset();
         }
 
+        // Cancelling may skip the export completion callback, so restore the
+        // metronome here too (FR-EXP-1) rather than leaving it silently off.
+        if (exportMetronomeWasEnabled)
+            session.setMetronomeEnabled (true);
+
         saveSettings();
     }
 
@@ -567,6 +572,18 @@ namespace rrs
                                   // New/Open would reset the Edit the render thread
                                   // is reading (use-after-free).
                                   exportInProgress = true;
+
+                                  // FR-EXP-1: save and disable the metronome for the
+                                  // render, and restore it once the render ends (the
+                                  // completion callback below runs on success, failure
+                                  // and cancel alike). WavExport::start also enforces
+                                  // this at the render choke point; doing it here keeps
+                                  // the Session/UI state honest while the click is off.
+                                  exportMetronomeWasEnabled = session.isMetronomeEnabled();
+
+                                  if (exportMetronomeWasEnabled)
+                                      session.setMetronomeEnabled (false);
+
                                   refreshTransportUi();
                                   showStatus ("Exporting 24-bit WAV...");
 
@@ -581,6 +598,10 @@ namespace rrs
                                           if (self == nullptr)
                                               return;
 
+                                          if (self->exportMetronomeWasEnabled)
+                                              self->session.setMetronomeEnabled (true);
+
+                                          self->exportMetronomeWasEnabled = false;
                                           self->exportHandle.reset();
                                           self->exportInProgress = false;
                                           self->refreshTransportUi();

@@ -148,7 +148,8 @@ namespace
         build its audio graph without one. This is the same role Tracktion's own
         offline-render tests use, and WavExport/EditRenderer build the graph
         themselves. */
-    std::unique_ptr<te::Edit> makeEditWithClip (const juce::File& editFile, const juce::File& wavFile)
+    std::unique_ptr<te::Edit> makeEditWithClip (const juce::File& editFile, const juce::File& wavFile,
+                                                double clipSeconds = 0.5)
     {
         auto edit = te::Edit::createSingleTrackEdit (testEngine(), te::Edit::EditRole::forRendering);
 
@@ -175,10 +176,29 @@ namespace
         if (tracks.isEmpty())
             return {};
 
-        const auto length = te::TimeDuration::fromSeconds (0.5);
+        const auto length = te::TimeDuration::fromSeconds (clipSeconds);
         tracks[0]->insertWaveClip ("take", wavFile,
                                    { { te::TimePosition(), length }, {} }, false);
         return edit;
+    }
+
+    /** Peak sample magnitude of a rendered WAV (across all channels), or -1 on
+        failure. Used to compare click-on vs click-off renders. */
+    float readWavPeak (const juce::File& file)
+    {
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::AudioFormatReader> reader (
+            wav.createReaderFor (new juce::FileInputStream (file), true));
+
+        if (reader == nullptr || reader->lengthInSamples <= 0)
+            return -1.0f;
+
+        juce::AudioBuffer<float> buffer ((int) reader->numChannels, (int) reader->lengthInSamples);
+
+        if (! reader->read (&buffer, 0, (int) reader->lengthInSamples, 0, true, true))
+            return -1.0f;
+
+        return buffer.getMagnitude (0, buffer.getNumSamples());
     }
 }
 
@@ -246,6 +266,77 @@ TEST_CASE ("WavExport renders a synthetic edit to 24-bit WAV at the default rate
 
     CHECK (reader->numChannels == 2u);
     CHECK (reader->lengthInSamples > 0);
+}
+
+//==============================================================================
+// FR-EXP-1: an enabled metronome ("Click") must never be baked into an exported
+// WAV. This locks in the export guard: WavExport forces the click off for the
+// render, the exported file is identical to a metronome-off render, and the
+// click state is restored afterwards (success, failure and cancel alike).
+TEST_CASE ("WavExport keeps the metronome out of the export and restores it (FR-EXP-1)")
+{
+    auto dir = scratchDirectory ("export-no-click");
+    auto editFile = dir.getChildFile ("Click Export.tracktionedit");
+
+    // A 2 s source so a 1.5 s clip spans several beats (default 120 BPM -> a
+    // beat every 0.5 s): an enabled click would land at t = 0, 0.5 and 1.0 s.
+    auto wavFile = writeSineWav (dir.getChildFile ("tone.wav"), 48000.0, 2.0);
+    REQUIRE (wavFile.existsAsFile());
+
+    auto edit = makeEditWithClip (editFile, wavFile, 1.5);
+    REQUIRE (edit != nullptr);
+
+    auto renderTo = [&] (const juce::File& dest, bool suppressMetronome)
+    {
+        dest.deleteFile();
+
+        std::atomic<bool> finished { false };
+        bool succeeded = false;
+        juce::String error;
+
+        auto handle = WavExport::start (*edit, dest,
+                                        [&] (bool success, juce::File, juce::String message)
+                                        {
+                                            succeeded = success;
+                                            error = message;
+                                            finished = true;
+                                        },
+                                        suppressMetronome);
+
+        REQUIRE (handle != nullptr);
+
+        // The guard must take effect synchronously, before the render runs.
+        if (suppressMetronome)
+            CHECK_FALSE (edit->clickTrackEnabled.get());
+
+        for (int i = 0; i < 400 && ! finished.load(); ++i)
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (25);
+
+        REQUIRE (finished.load());
+        INFO ("render error: " << error);
+        REQUIRE (succeeded);
+        return dest;
+    };
+
+    // Metronome-off reference.
+    edit->clickTrackEnabled = false;
+    const auto offFile = renderTo (dir.getChildFile ("off.wav"), true);
+    const auto offPeak = readWavPeak (offFile);
+    REQUIRE (offPeak > 0.1f);
+
+    // Export while the click is enabled: the export guard must force it off and
+    // restore it once the render completes.
+    edit->clickTrackEnabled = true;
+    const auto suppressedFile = renderTo (dir.getChildFile ("suppressed.wav"), true);
+
+    CHECK (edit->clickTrackEnabled.get()); // restored by the completion path
+
+    // The exported file matches the metronome-off render and carries no click
+    // transient (the peak must not exceed the tone-only reference).
+    const auto suppressedPeak = readWavPeak (suppressedFile);
+    INFO ("off peak " << offPeak << ", suppressed peak " << suppressedPeak);
+    CHECK (suppressedPeak == doctest::Approx (offPeak).epsilon (0.01f));
+    CHECK (suppressedPeak <= offPeak * 1.01f);
 }
 
 //==============================================================================
