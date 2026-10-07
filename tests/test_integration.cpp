@@ -1571,10 +1571,11 @@ TEST_CASE ("mixer: gain and mute change the measured master level (measured)")
 }
 
 //==============================================================================
-// Transport (Epic 2 GUI retest): Stop must return the playhead to the start so
-// a take can be restarted from the top; Pause must stop in place (unchanged
-// Play/Pause semantics), and "Go to start" moves the playhead to 0.
-TEST_CASE ("transport: Stop rewinds, Pause holds, Go to start seeks to 0")
+// Transport (owner request): Stop holds the playhead where it stopped (it does
+// NOT rewind); Pause must stop in place (unchanged Play/Pause semantics), and
+// "Go to start" moves the playhead to 0. Returning to the start is the job of
+// the dedicated Start button via Session::goToStart().
+TEST_CASE ("transport: Stop holds position, Pause holds, Go to start seeks to 0")
 {
     auto dir = scratchDirectory ("transport");
 
@@ -1596,9 +1597,12 @@ TEST_CASE ("transport: Stop rewinds, Pause holds, Go to start seeks to 0")
     session.pause();
     CHECK (position() == doctest::Approx (1.5).epsilon (0.01));
 
-    // Stop rewinds to the very start (the owner's "Stop returns to start").
+    // Stop holds the playhead where it stopped — it must NOT rewind to 0
+    // (owner request; the old rewind-to-start behaviour was removed).
+    transport.setPosition (te::TimePosition::fromSeconds (1.5));
+    REQUIRE (position() == doctest::Approx (1.5).epsilon (0.01));
     session.stop();
-    CHECK (position() == doctest::Approx (0.0).epsilon (0.001));
+    CHECK (position() == doctest::Approx (1.5).epsilon (0.01));
 
     // "Go to start" seeks to 0 without changing the transport state.
     transport.setPosition (te::TimePosition::fromSeconds (1.5));

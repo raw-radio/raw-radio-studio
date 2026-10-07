@@ -164,8 +164,10 @@ namespace rrs
         /** Pause: stops the transport in place, keeping the playhead where it is
             (Play/Pause toggle semantics — unchanged). */
         void pause();
-        /** Stop: stops the transport and returns the playhead to the session
-            start (0) so a take can be restarted from the top (owner request). */
+        /** Stop: stops the transport (and recording) in place, leaving the
+            playhead where it stopped — Stop does NOT rewind. Returning to the
+            session start (0) is the job of `goToStart()` (the "Start" button).
+            Owner request: Stop must not move the playhead to 0. */
         void stop();
         /** Moves the playhead to the session start (0) without changing the
             transport state ("Go to start" / skip-back). */

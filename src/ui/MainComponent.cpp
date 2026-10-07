@@ -61,16 +61,34 @@ namespace rrs
         armButton.setOnColours (brand::accentMuted, brand::accent, brand::accent);
         monitorButton.setOnColours (brand::success.withAlpha (0.25f), brand::success, brand::success);
 
-        // Lucide icons + tooltips.
+        // Icon-only action buttons (owner request): no text labels, each with a
+        // hover tooltip describing the action. 32x32 squares in the action row.
         newButton.setIconName ("file-plus");
+        newButton.setIconOnly (true);
+        newButton.setTooltip ("New session");
         openButton.setIconName ("folder-open");
+        openButton.setIconOnly (true);
+        openButton.setTooltip ("Open session");
         saveButton.setIconName ("save");
+        saveButton.setIconOnly (true);
+        saveButton.setTooltip ("Save session");
         saveAsButton.setIconName ("save-all");
+        saveAsButton.setIconOnly (true);
+        saveAsButton.setTooltip ("Save session as...");
         closeButton.setIconName ("x");
+        closeButton.setIconOnly (true);
+        closeButton.setTooltip ("Close session");
         importButton.setIconName ("file-input");
+        importButton.setIconOnly (true);
+        importButton.setTooltip ("Import an audio file as a backing track");
+        // Export keeps its primary (accent) styling, now icon-only.
+        exportButton.setIconName ("file-output");
+        exportButton.setIconOnly (true);
+        exportButton.setTooltip ("Export session to 24-bit WAV");
+
+        // Utility buttons outside the owner's icon-only set keep their labels.
         normaliseButton.setIconName ("activity");
         normaliseButton.setTooltip ("Peak-normalise the most recent take to -1 dBFS");
-        exportButton.setIconName ("file-output");
         addTrackButton.setIconName ("file-plus");
         addTrackButton.setTooltip ("Add an input track (maps to the next free input)");
         removeTrackButton.setIconName ("x");
@@ -83,18 +101,27 @@ namespace rrs
         aboutButton.setIconOnly (true);
         aboutButton.setTooltip ("About raw-radio-studio");
 
+        // Icon-only transport: square, each with a hover tooltip. Record is a
+        // little larger to keep its emphasis; the rest are 36x36 (>= 32x32).
         armButton.setIconName ("circle-dot");
+        armButton.setIconOnly (true, 36);
         armButton.setTooltip ("Arm the track for recording");
         recordButton.setIconName ("circle");
+        recordButton.setIconOnly (true, 40);
         recordButton.setTooltip ("Record / stop recording");
         playButton.setIconName ("play");
+        playButton.setIconOnly (true, 36);
         playButton.setTooltip ("Play / pause");
         stopButton.setIconName ("square");
-        stopButton.setTooltip ("Stop and return to the start");
+        stopButton.setIconOnly (true, 36);
+        stopButton.setTooltip ("Stop (keeps the playhead where it stopped)");
         goToStartButton.setIconName ("skip-back");
-        goToStartButton.setTooltip ("Go to start");
+        goToStartButton.setIconOnly (true, 36);
+        goToStartButton.setTooltip ("Go to start (return the playhead to 0)");
         monitorButton.setIconName ("headphones");
+        monitorButton.setIconOnly (true, 36);
         monitorButton.setTooltip ("Toggle input monitoring");
+
         metronomeButton.setIconName ("clock");
         metronomeButton.setTooltip ("Metronome / count-in click");
         countInBox.setTooltip ("Count-in before recording starts");
@@ -272,7 +299,7 @@ namespace rrs
                 return;
 
             if (session.isPlaying())
-                session.pause(); // pause in place; Stop is the rewind action
+                session.pause(); // pause in place; Stop holds too, Start returns to 0
             else
                 session.play();
 
@@ -990,29 +1017,30 @@ namespace rrs
         devicePanel.setBounds (area.removeFromTop (devicePanelHeight));
         area.removeFromTop (8);
 
-        // Transport row: Record is 40 px tall; Play/Pause/Stop and the chips are
-        // 36 px, vertically centred in the 40 px row.
+        // Transport row: icon-only squares (>= 32x32) with consistent 8 px gaps.
+        // Record is 40x40 to keep its emphasis; the rest are 36x36, vertically
+        // centred in the 40 px row. Metronome + Count-in stay labelled.
         auto transportRow = area.removeFromTop (40);
 
-        auto placeTransport = [&transportRow] (BrandButton& b, int minWidth, int height)
+        auto placeTransport = [&transportRow] (BrandButton& b, int size)
         {
-            const auto w = juce::jmax (b.getPreferredWidth(), minWidth);
-            b.setBounds (transportRow.removeFromLeft (w).withSizeKeepingCentre (w, height));
+            const auto w = juce::jmax (b.getPreferredWidth(), size);
+            b.setBounds (transportRow.removeFromLeft (w).withSizeKeepingCentre (w, size));
         };
 
-        placeTransport (armButton,     72, 36);
+        placeTransport (armButton,       36);
         transportRow.removeFromLeft (8);
-        placeTransport (recordButton,  96, 40);
+        placeTransport (recordButton,    40);
         transportRow.removeFromLeft (8);
-        placeTransport (playButton,    84, 36);
+        placeTransport (playButton,      36);
         transportRow.removeFromLeft (8);
-        placeTransport (stopButton,    80, 36);
+        placeTransport (stopButton,      36);
         transportRow.removeFromLeft (8);
-        placeTransport (goToStartButton, 80, 36);
+        placeTransport (goToStartButton, 36);
         transportRow.removeFromLeft (16);
-        placeTransport (monitorButton, 96, 36);
+        placeTransport (monitorButton,   36);
         transportRow.removeFromLeft (8);
-        placeTransport (metronomeButton, 80, 36);
+        placeTransport (metronomeButton, 80);
         transportRow.removeFromLeft (8);
         countInBox.setBounds (transportRow.removeFromLeft (150).withSizeKeepingCentre (150, 28));
         transportRow.removeFromLeft (8);

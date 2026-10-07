@@ -1039,10 +1039,10 @@ namespace rrs
         endRecordPassMutes();
         edit->getTransport().stop (false, false);
 
-        // Stop rewinds: the owner expects the playhead back at the top so a take
-        // can be started over (previously Stop left it at the stop position, so
-        // Play resumed mid-take — the reported "glitch"/continuation).
-        edit->getTransport().setPosition (te::TimePosition());
+        // Stop holds the playhead where it stopped (owner request): it does NOT
+        // rewind. Returning to 0 is the job of the dedicated Go-to-start button
+        // (`goToStart()`), so a take can be reviewed from its stop position and
+        // the transport restarted from the top explicitly.
     }
 
     void Session::goToStart()
