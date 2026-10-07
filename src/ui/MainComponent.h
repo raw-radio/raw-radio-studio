@@ -44,6 +44,7 @@ namespace rrs
         void openSession();
         void saveSession();
         void saveSessionAs();
+        void importAudioFile();
         void exportSession();
         void showAbout();
         void showSettings();
@@ -64,6 +65,7 @@ namespace rrs
 
         juce::TextButton newButton { "New" }, openButton { "Open" };
         juce::TextButton saveButton { "Save" }, saveAsButton { "Save As" };
+        juce::TextButton importButton { "Import..." };
         juce::TextButton exportButton { "Export WAV..." };
         juce::TextButton settingsButton { "Settings" }, aboutButton { "About" };
 

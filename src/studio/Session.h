@@ -49,6 +49,16 @@ namespace rrs
         juce::String getSessionName() const;
         tracktion::Edit* getEdit() const noexcept               { return edit.get(); }
         tracktion::AudioTrack* getTrack() const;
+        int getNumAudioTracks() const;
+
+        //==============================================================================
+        // Audio import (Epic 1 backing-track playback)
+        /** Imports an audio file as a referenced clip on a new audio track
+            (WAV/AIFF/FLAC/MP3/OGG), laid down at time 0. Coexists with the armed
+            record track: the imported track plays back while recording. The source
+            file is referenced, never copied or modified. Returns false on failure
+            with getLastError() set. */
+        bool importAudioFile (const juce::File& sourceFile);
 
         //==============================================================================
         // Recording / monitoring

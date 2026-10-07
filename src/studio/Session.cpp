@@ -3,6 +3,7 @@
 #include "Session.h"
 
 #include "AppPaths.h"
+#include "AudioImport.h"
 
 #include <algorithm>
 #include <cmath>
@@ -168,6 +169,39 @@ namespace rrs
 
         const auto tracks = te::getAudioTracks (*edit);
         return tracks.isEmpty() ? nullptr : tracks[0];
+    }
+
+    int Session::getNumAudioTracks() const
+    {
+        return edit != nullptr ? te::getAudioTracks (*edit).size() : 0;
+    }
+
+    //==============================================================================
+    bool Session::importAudioFile (const juce::File& sourceFile)
+    {
+        if (edit == nullptr)
+        {
+            lastError = "Open a session before importing.";
+            return false;
+        }
+
+        const auto result = AudioImport::import (*edit, sourceFile);
+
+        if (! result.success)
+        {
+            lastError = result.error;
+            return false;
+        }
+
+        edit->restartPlayback();
+        const bool saved = save();
+        sendChangeMessage();
+
+        if (! saved)
+            return false;
+
+        clearLastError();
+        return true;
     }
 
     bool Session::configureSingleStereoTrack()

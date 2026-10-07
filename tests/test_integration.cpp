@@ -23,6 +23,7 @@
 
 #include "studio/AppPaths.h"
 #include "studio/AudioEngine.h"
+#include "studio/AudioImport.h"
 #include "studio/DeviceError.h"
 #include "studio/Session.h"
 #include "studio/WavExport.h"
@@ -248,6 +249,60 @@ TEST_CASE ("project save/open round-trip keeps the take intact")
 
     // The take survived the save/open cycle.
     CHECK_EQ (tracks[0]->getClips().size(), 1);
+}
+
+//==============================================================================
+TEST_CASE ("imported audio file is referenced on a new track and survives save/open")
+{
+    auto dir = scratchDirectory ("import");
+    auto editFile = dir.getChildFile ("Import Session.tracktionedit");
+
+    auto wavFile = writeSineWav (dir.getChildFile ("minus.wav"), 48000.0, 0.5);
+    REQUIRE (wavFile.existsAsFile());
+
+    const auto sourceSizeBefore = wavFile.getSize();
+
+    // Start from a session that already has a track (stands in for the armed
+    // record track), mirroring a real "record voice over the minus" session.
+    auto edit = te::Edit::createSingleTrackEdit (testEngine(), te::Edit::EditRole::forRendering);
+    REQUIRE (edit != nullptr);
+    edit->editFileRetriever = [editFile] { return editFile; };
+    editFile.getParentDirectory().createDirectory();
+    te::EditFileOperations (*edit).save (true, true, false);
+    REQUIRE (editFile.existsAsFile());
+    REQUIRE_EQ (te::getAudioTracks (*edit).size(), 1);
+
+    const auto result = AudioImport::import (*edit, wavFile);
+    INFO ("import error: " << result.error);
+    REQUIRE (result.success);
+    REQUIRE (result.track != nullptr);
+    REQUIRE (result.clip != nullptr);
+
+    // The import created its own track alongside the existing one.
+    CHECK_EQ (te::getAudioTracks (*edit).size(), 2);
+    CHECK (result.track->getName() == "minus");
+
+    // The clip references the original file (no copy) and has real length.
+    CHECK (result.clip->getOriginalFile() == wavFile);
+    CHECK (result.clip->getPosition().getLength().inSeconds() > 0.0);
+
+    // The source file is untouched by the import.
+    REQUIRE (wavFile.existsAsFile());
+    CHECK (wavFile.getSize() == sourceSizeBefore);
+
+    // FR-PRJ-1: the reference survives a save/open round-trip.
+    te::EditFileOperations (*edit).save (true, true, false);
+
+    auto reopened = te::loadEditFromFile (testEngine(), editFile);
+    REQUIRE (reopened != nullptr);
+
+    auto tracks = te::getAudioTracks (*reopened);
+    REQUIRE_EQ (tracks.size(), 2);
+    REQUIRE_EQ (tracks[1]->getClips().size(), 1);
+
+    auto* reopenedClip = dynamic_cast<te::WaveAudioClip*> (tracks[1]->getClips()[0]);
+    REQUIRE (reopenedClip != nullptr);
+    CHECK (reopenedClip->getOriginalFile() == wavFile);
 }
 
 //==============================================================================

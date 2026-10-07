@@ -119,6 +119,7 @@ juce_add_gui_app(raw_radio_studio
 target_sources(raw_radio_studio PRIVATE
     src/main.cpp
     src/studio/AudioEngine.cpp
+    src/studio/AudioImport.cpp
     src/studio/Session.cpp
     src/studio/WavExport.cpp
     src/ui/DevicePanel.cpp
@@ -229,6 +230,7 @@ juce_add_console_app(raw_radio_studio_integration_tests
 target_sources(raw_radio_studio_integration_tests PRIVATE
     tests/test_integration.cpp
     src/studio/AudioEngine.cpp
+    src/studio/AudioImport.cpp
     src/studio/Session.cpp
     src/studio/WavExport.cpp)
 

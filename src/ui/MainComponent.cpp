@@ -3,6 +3,7 @@
 #include "MainComponent.h"
 
 #include "studio/AppPaths.h"
+#include "studio/AudioImport.h"
 #include "ui/DevicePanelLayout.h"
 
 #include <cmath>
@@ -37,7 +38,7 @@ namespace rrs
         addAndMakeVisible (statusLabel);
 
         for (auto* button : { &newButton, &openButton, &saveButton, &saveAsButton,
-                              &exportButton, &settingsButton, &aboutButton,
+                              &importButton, &exportButton, &settingsButton, &aboutButton,
                               &armButton, &recordButton, &playButton, &stopButton, &monitorButton })
             addAndMakeVisible (*button);
 
@@ -47,6 +48,7 @@ namespace rrs
         openButton.onClick      = [this] { openSession(); };
         saveButton.onClick      = [this] { saveSession(); };
         saveAsButton.onClick    = [this] { saveSessionAs(); };
+        importButton.onClick    = [this] { importAudioFile(); };
         exportButton.onClick    = [this] { exportSession(); };
         settingsButton.onClick  = [this] { showSettings(); };
         aboutButton.onClick     = [this] { showAbout(); };
@@ -165,8 +167,8 @@ namespace rrs
         // panel (children included) also blocks Rescan/Apply/combo changes.
         devicePanel.setEnabled (! busy);
 
-        for (auto* button : { &saveButton, &saveAsButton, &exportButton, &armButton,
-                              &recordButton, &playButton, &stopButton, &monitorButton })
+        for (auto* button : { &saveButton, &saveAsButton, &importButton, &exportButton,
+                              &armButton, &recordButton, &playButton, &stopButton, &monitorButton })
             button->setEnabled (hasEdit && ! busy);
 
         newButton.setEnabled (! busy);
@@ -298,6 +300,48 @@ namespace rrs
                                   {
                                       showStatus (session.getLastError(), true);
                                   }
+                              });
+    }
+
+    void MainComponent::importAudioFile()
+    {
+        if (exportInProgress)
+            return;
+
+        if (session.getEdit() == nullptr)
+        {
+            showStatus ("Open a session before importing.", true);
+            return;
+        }
+
+        auto startDir = session.getEditFile() != juce::File()
+                            ? session.getEditFile().getParentDirectory()
+                            : paths::projectsDirectory();
+
+        auto chooser = std::make_shared<juce::FileChooser> ("Import audio file", startDir,
+                                                            AudioImport::fileWildcard);
+
+        chooser->launchAsync (juce::FileBrowserComponent::openMode
+                                  | juce::FileBrowserComponent::canSelectFiles,
+                              [this, chooser] (const juce::FileChooser& fc)
+                              {
+                                  auto file = fc.getResult();
+
+                                  if (file == juce::File())
+                                      return;
+
+                                  if (session.importAudioFile (file))
+                                  {
+                                      showStatus ("Imported: " + file.getFileName()
+                                                  + " (" + juce::String (session.getNumAudioTracks())
+                                                  + " track(s))");
+                                  }
+                                  else
+                                  {
+                                      showStatus (session.getLastError(), true);
+                                  }
+
+                                  refreshTransportUi();
                               });
     }
 
@@ -559,35 +603,59 @@ namespace rrs
     {
         g.fillAll (juce::Colour (0xff0f172a));
 
-        // Track lane
-        const auto lane = trackLaneArea.toFloat();
-
-        if (! lane.isEmpty())
+        // Track lanes: the armed record track first, then any imported backing
+        // tracks. Each import adds its own lane so it is visible after import.
+        if (! trackLaneArea.isEmpty())
         {
             g.setColour (juce::Colour (0xff1e293b));
-            g.fillRoundedRectangle (lane, 6.0f);
+            g.fillRoundedRectangle (trackLaneArea.toFloat(), 6.0f);
 
-            g.setColour (juce::Colours::white.withAlpha (0.9f));
-            g.setFont (14.0f);
+            auto lanes = trackLaneArea.reduced (8, 6);
 
-            if (auto* track = session.getTrack())
+            if (auto* edit = session.getEdit())
             {
-                const auto armed = session.isTrackArmed();
-                g.drawText (track->getName() + (armed ? "   [ARMED]" : ""),
-                            trackLaneArea.reduced (12).removeFromTop (24),
-                            juce::Justification::centredLeft);
+                const auto tracks = te::getAudioTracks (*edit);
 
-                const auto numClips = track->getClips().size();
-                g.setColour (juce::Colours::white.withAlpha (0.55f));
-                g.setFont (12.0f);
-                g.drawText (juce::String (numClips) + " clip(s)   -   stereo",
-                            trackLaneArea.reduced (12).removeFromTop (44).removeFromTop (18),
-                            juce::Justification::centredLeft);
+                if (tracks.isEmpty())
+                {
+                    g.setColour (juce::Colours::white.withAlpha (0.7f));
+                    g.setFont (13.0f);
+                    g.drawText ("No session loaded", lanes, juce::Justification::centred);
+                }
+
+                for (auto* track : tracks)
+                {
+                    if (lanes.getHeight() <= 0)
+                        break;
+
+                    auto lane = lanes.removeFromTop (juce::jmin (46, lanes.getHeight()));
+
+                    if (track != tracks.getFirst())
+                        g.setColour (juce::Colour (0xff243449));
+                    else
+                        g.setColour (juce::Colour (0xff2b3b52));
+                    g.fillRoundedRectangle (lane.toFloat().reduced (0.0f, 2.0f), 5.0f);
+
+                    const bool armed = track == session.getTrack() && session.isTrackArmed();
+
+                    g.setColour (juce::Colours::white.withAlpha (0.9f));
+                    g.setFont (13.0f);
+                    g.drawText (track->getName() + (armed ? "   [ARMED]" : ""),
+                                lane.reduced (10).removeFromTop (20),
+                                juce::Justification::centredLeft);
+
+                    g.setColour (juce::Colours::white.withAlpha (0.55f));
+                    g.setFont (11.0f);
+                    g.drawText (juce::String (track->getClips().size()) + " clip(s)",
+                                lane.reduced (10).removeFromTop (34).removeFromTop (16),
+                                juce::Justification::centredLeft);
+                }
             }
             else
             {
-                g.drawText ("No session loaded",
-                            trackLaneArea.reduced (12), juce::Justification::centred);
+                g.setColour (juce::Colours::white.withAlpha (0.7f));
+                g.setFont (13.0f);
+                g.drawText ("No session loaded", lanes, juce::Justification::centred);
             }
         }
     }
@@ -625,7 +693,7 @@ namespace rrs
         auto actions = area.removeFromTop (30);
 
         for (auto* button : { &newButton, &openButton, &saveButton, &saveAsButton,
-                              &exportButton, &settingsButton, &aboutButton })
+                              &importButton, &exportButton, &settingsButton, &aboutButton })
             button->setBounds (actions.removeFromLeft (82).reduced (2));
 
         area.removeFromTop (4);
