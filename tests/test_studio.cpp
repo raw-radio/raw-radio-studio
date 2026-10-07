@@ -484,16 +484,18 @@ TEST_CASE ("meter ballistics are frame-rate independent (same duration, same res
 }
 
 //==============================================================================
-// Fader taper (owner request): the travel position maps linearly to decibels.
-// The owner found the useful range compressed into the top of a -60..+6 travel;
-// narrowing the level range to -40..+6 puts unity at ~0.870 and gives the lower
-// travel usable resolution. 0 dB lands where the linear map puts it
-// (documented), the mapping is exactly invertible, and the bottom of a level
-// fader is a hard mute detent.
-TEST_CASE ("fader taper is linear in dB with a documented unity position")
+// Fader taper (owner request): the level travel maps linearly to decibels,
+// while the record trim is shaped by a tanh S-curve. The owner found the level
+// useful range compressed into the top of a -60..+6 travel, so it was narrowed
+// to -40..+6 (unity ~0.870, linear-in-dB); separately, the trim dropped away
+// from +24 dB too fast, so it now holds closer to the top through a documented,
+// tunable bend (FaderTaper.h). 0 dB lands where the documented map puts it, the
+// mapping is exactly invertible, and the bottom of a level fader is a hard mute.
+TEST_CASE ("fader taper: linear level law and a non-linear S-curve trim")
 {
     using rrs::fader::level;
     using rrs::fader::inputTrim;
+    using rrs::fader::inputTrimBend;
 
     SUBCASE ("level fader: equal position steps are equal dB steps")
     {
@@ -508,10 +510,42 @@ TEST_CASE ("fader taper is linear in dB with a documented unity position")
         CHECK (threeQtr == doctest::Approx (-5.5f));
         CHECK (top      == doctest::Approx (6.0f));
 
-        // Equal travel steps are equal dB steps: the taper is linear in dB.
+        // Equal travel steps are equal dB steps: the level taper is linear in dB.
         // (The shape was never linear in amplitude — only the range changed.)
         CHECK ((half - quarter) == doctest::Approx (threeQtr - half).epsilon (1.0e-4f));
         CHECK ((threeQtr - half) == doctest::Approx (top - threeQtr).epsilon (1.0e-4f));
+    }
+
+    SUBCASE ("record trim: an S-curve holds the gain closer to the maximum")
+    {
+        // Linear would be +12 dB at 0.75 and +19.2 dB at 0.9; the S-curve must
+        // sit higher (closer to +24) so lowering from the top feels gentler.
+        CHECK (inputTrim.posToDb (0.75f) > 12.0f);
+        CHECK (inputTrim.posToDb (0.75f) == doctest::Approx (16.84f).epsilon (1.0e-3f));
+        CHECK (inputTrim.posToDb (0.9f) > 19.2f);
+        CHECK (inputTrim.posToDb (0.9f) == doctest::Approx (22.10f).epsilon (1.0e-3f));
+
+        // Still strictly inside the +24 dB rail, and closer to it than linear.
+        CHECK (inputTrim.posToDb (0.95f) < 24.0f);
+        CHECK (inputTrim.posToDb (0.95f) > -24.0f + 48.0f * 0.95f);
+
+        // Symmetric about unity: the curve is odd, so ±offsets mirror exactly.
+        for (const float d : { 0.1f, 0.25f, 0.4f, 0.49f })
+            CHECK (inputTrim.posToDb (0.5f + d)
+                   == doctest::Approx (-inputTrim.posToDb (0.5f - d)).epsilon (1.0e-4f));
+
+        // Monotonic across the whole travel (never doubles back).
+        float previous = inputTrim.posToDb (0.0f);
+        for (int i = 1; i <= 20; ++i)
+        {
+            const auto current = inputTrim.posToDb ((float) i / 20.0f);
+            CHECK (current > previous);
+            previous = current;
+        }
+
+        // The documented bend is the trim's, not the level faders'.
+        CHECK (inputTrimBend > 0.0f);
+        CHECK (level.bend == 0.0f);
     }
 
     SUBCASE ("0 dB position is documented and exactly reproducible")

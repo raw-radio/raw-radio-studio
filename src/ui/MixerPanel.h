@@ -76,7 +76,8 @@ namespace rrs
         void showInputMenu (int trackIndex);
 
         /** dBFS -> 0..1 for the level bars only. Faders use the documented
-            linear-in-dB taper in `FaderTaper.h`, not this meter scale. */
+            taper in `FaderTaper.h` (linear-in-dB for gain, an S-curve for the
+            record trim), not this meter scale. */
         static float meterNormalised (float db) noexcept;
 
         Session& session;

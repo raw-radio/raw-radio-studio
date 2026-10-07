@@ -299,7 +299,8 @@ namespace rrs
             g.setColour (brand::meterTrough);
             g.fillRoundedRectangle (juce::Rectangle<float> (left, cy - 1.5f, juce::jmax (1.0f, right - left), 3.0f), 1.5f);
 
-            // 0 dB centre tick: where the linear-in-dB trim law is at unity.
+            // 0 dB centre tick: where the trim law is at unity (0.5; the
+            // S-curve is symmetric about it).
             const auto centreX = left + fader::inputTrim.unityPos() * (right - left);
             g.setColour (brand::border);
             g.fillRect (juce::Rectangle<float> (centreX - 0.5f, cy - 3.5f, 1.0f, 7.0f));
