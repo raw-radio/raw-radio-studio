@@ -46,6 +46,11 @@ namespace rrs
 
         buildTransportUi();
 
+        // Arm and Monitor are toggle chips with distinct on-states: arm uses the
+        // brand accent, monitor uses the success tint.
+        armButton.setOnColours (brand::accentMuted, brand::accent, brand::accent);
+        monitorButton.setOnColours (brand::success.withAlpha (0.25f), brand::success, brand::success);
+
         newButton.onClick       = [this] { newSession(); };
         openButton.onClick      = [this] { openSession(); };
         closeButton.onClick     = [this] { closeSession(); };
@@ -69,7 +74,7 @@ namespace rrs
 
         session.addChangeListener (this);
 
-        setSize (960, 640);
+        setSize (1100, 700);
         startTimerHz (10);
 
         refreshTransportUi();
@@ -701,6 +706,12 @@ namespace rrs
     {
         g.fillAll (brand::bgWindow);
 
+        // 1 px dividers between the action-row groups.
+        g.setColour (brand::border);
+
+        for (const auto& divider : actionDividers)
+            g.fillRect (divider);
+
         // Track lanes: the armed record track first, then any imported backing
         // tracks. Each import adds its own lane so it is visible after import.
         if (! trackLaneArea.isEmpty())
@@ -779,71 +790,129 @@ namespace rrs
 
     void MainComponent::resized()
     {
-        auto area = getLocalBounds().reduced (10);
+        // Spacing scale: 4 / 8 / 12 / 16 / 24 / 32.
+        auto area = getLocalBounds().reduced (12);
 
         titleLabel.setBounds (area.removeFromTop (26));
         area.removeFromTop (4);
 
         devicePanel.setBounds (area.removeFromTop (devicePanelHeight));
-        area.removeFromTop (6);
+        area.removeFromTop (8);
 
-        auto transportRow = area.removeFromTop (34);
-        armButton.setBounds     (transportRow.removeFromLeft (70).reduced (2));
-        transportRow.removeFromLeft (4);
-        recordButton.setBounds  (transportRow.removeFromLeft (100).reduced (2));
-        playButton.setBounds    (transportRow.removeFromLeft (90).reduced (2));
-        stopButton.setBounds    (transportRow.removeFromLeft (80).reduced (2));
+        // Transport row: Record is 40 px tall; Play/Pause/Stop and the chips are
+        // 36 px, vertically centred in the 40 px row.
+        auto transportRow = area.removeFromTop (40);
+
+        auto placeTransport = [&transportRow] (BrandButton& b, int minWidth, int height)
+        {
+            const auto w = juce::jmax (b.getPreferredWidth(), minWidth);
+            b.setBounds (transportRow.removeFromLeft (w).withSizeKeepingCentre (w, height));
+        };
+
+        placeTransport (armButton,     72, 36);
         transportRow.removeFromLeft (8);
-        monitorButton.setBounds (transportRow.removeFromLeft (90).reduced (2));
+        placeTransport (recordButton,  96, 40);
         transportRow.removeFromLeft (8);
+        placeTransport (playButton,    84, 36);
+        transportRow.removeFromLeft (8);
+        placeTransport (stopButton,    80, 36);
+        transportRow.removeFromLeft (16);
+        placeTransport (monitorButton, 96, 36);
+        transportRow.removeFromLeft (16);
         transportLabel.setBounds (transportRow);
 
-        area.removeFromTop (6);
+        area.removeFromTop (8);
 
-        auto middle = area.removeFromTop (juce::jmax (100, area.getHeight() - 56));
+        // Bottom-anchored: status line, then the action row (which may wrap to a
+        // second line when the window is narrow — layoutActionRow reports the
+        // height it consumed).
+        auto bottom = area;
+        statusLabel.setBounds (bottom.removeFromBottom (22));
+        bottom.removeFromBottom (4);
+
+        const auto actionHeight = layoutActionRow (bottom);
+        bottom.removeFromBottom (actionHeight);
+        bottom.removeFromBottom (8);
+
+        auto middle = bottom;
         inputMeter.setBounds (middle.removeFromRight (180).reduced (2));
         middle.removeFromRight (6);
         trackLaneArea = middle;
+    }
 
-        area.removeFromTop (6);
+    int MainComponent::layoutActionRow (juce::Rectangle<int> area)
+    {
+        actionDividers.clear();
 
-        auto actions = area.removeFromTop (30);
+        constexpr int gap = 8;
+        constexpr int rowHeight = 32;
+        constexpr int dividerWidth = 1;
 
-        // Content-based widths: a single fixed width per button gave every label
-        // the same box, which cramped the longest ("Export WAV..."). Size each
-        // button to its own text (the LookAndFeel's width-to-fit-text adds a
-        // symmetric border, so the horizontal padding stays consistent) and only
-        // fall back to an equal split when the window is too narrow to fit them.
-        const std::array<juce::TextButton*, 9> actionButtons {
-            &newButton, &openButton, &closeButton, &saveButton, &saveAsButton,
-            &importButton, &exportButton, &settingsButton, &aboutButton };
-
-        constexpr int gap = 6;
-        constexpr int minWidth = 56;
-
-        std::array<int, actionButtons.size()> widths {};
-        int totalWidth = 0;
-
-        for (size_t i = 0; i < actionButtons.size(); ++i)
+        struct Item
         {
-            widths[i] = juce::jmax (minWidth, actionButtons[i]->getBestWidthForHeight (actions.getHeight()));
-            totalWidth += widths[i];
+            BrandButton* button = nullptr;
+            bool divider = false;
+            int width = 0;
+        };
+
+        // [New][Open][Save][Save As] · [Close][Import][Export WAV] · [Settings][About]
+        BrandButton* const buttons[] = { &newButton, &openButton, &saveButton, &saveAsButton,
+                                         &closeButton, &importButton, &exportButton,
+                                         &settingsButton, &aboutButton };
+        const int groups[] = { 0, 0, 0, 0, 1, 1, 1, 2, 2 };
+        constexpr int numButtons = (int) std::size (buttons);
+
+        std::vector<Item> items;
+        items.reserve (numButtons + 2);
+        int lastGroup = -1;
+
+        for (int i = 0; i < numButtons; ++i)
+        {
+            if (groups[i] != lastGroup)
+            {
+                if (lastGroup >= 0)
+                    items.push_back ({ nullptr, true, dividerWidth });
+
+                lastGroup = groups[i];
+            }
+
+            items.push_back ({ buttons[i], false, buttons[i]->getPreferredWidth() });
         }
 
-        const auto available = actions.getWidth() - gap * ((int) actionButtons.size() - 1);
+        const int left = area.getX();
+        const int right = area.getRight();
+        const int bottom = area.getBottom();
 
-        if (totalWidth > available && available > 0)
-            widths.fill (juce::jmax (minWidth, available / (int) actionButtons.size()));
+        int row = 0;
+        int x = left;
 
-        int x = actions.getX();
-
-        for (size_t i = 0; i < actionButtons.size(); ++i)
+        for (auto& item : items)
         {
-            actionButtons[i]->setBounds (x, actions.getY(), widths[i], actions.getHeight());
-            x += widths[i] + gap;
+            const int advance = item.divider ? item.width + 2 * gap : item.width + gap;
+
+            if (x > left && x + advance > right)
+            {
+                ++row;
+                x = left;
+
+                if (item.divider)
+                    continue; // drop a divider that would land at a row start
+            }
+
+            const int rowTop = bottom - (row + 1) * rowHeight - row * gap;
+
+            if (item.divider)
+            {
+                actionDividers.push_back ({ x + gap, rowTop + 6, dividerWidth, rowHeight - 12 });
+            }
+            else
+            {
+                item.button->setBounds (x, rowTop, item.width, rowHeight);
+            }
+
+            x += advance;
         }
 
-        area.removeFromTop (4);
-        statusLabel.setBounds (area.removeFromTop (22));
+        return (row + 1) * rowHeight + row * gap;
     }
 }

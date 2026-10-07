@@ -446,8 +446,8 @@ private:
             setUsingNativeTitleBar (true);
             setContentOwned (new rrs::MainComponent(), true);
             setResizable (true, false);
-            setResizeLimits (820, 560, 10000, 10000);
-            centreWithSize (980, 660);
+            setResizeLimits (1100, 700, 10000, 10000);
+            centreWithSize (1200, 780);
             setVisible (true);
         }
 
