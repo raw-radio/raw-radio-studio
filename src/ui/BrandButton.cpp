@@ -9,6 +9,13 @@ namespace rrs
     namespace
     {
         constexpr int iconLabelGap = 6;
+
+        // Icon-only buttons render a fixed ~20 px glyph centred in the button's
+        // hit area, instead of filling the whole square with min(w, h). The
+        // owner found the icons too big once they were icon-only: the glyph no
+        // longer touches the border, while the button keeps its 32/36/40 px hit
+        // size.
+        constexpr int iconOnlyGlyphSize = 20;
     }
 
     BrandButton::BrandButton (const juce::String& buttonText, Style buttonStyle)
@@ -193,7 +200,14 @@ namespace rrs
         if (iconOnly)
         {
             if (iconName.isNotEmpty())
-                IconCache::getInstance().drawIcon (g, iconName, textColour, getLocalBounds());
+            {
+                // Inset glyph (see iconOnlyGlyphSize) so the button's hit area
+                // stays larger than the visible icon. Clamp for tiny buttons.
+                const auto glyph = juce::jmin (iconOnlyGlyphSize, getWidth(), getHeight());
+                const auto target = juce::Rectangle<int> (glyph, glyph)
+                                        .withCentre (getLocalBounds().getCentre());
+                IconCache::getInstance().drawIcon (g, iconName, textColour, target);
+            }
 
             return;
         }

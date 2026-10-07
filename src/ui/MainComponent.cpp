@@ -86,12 +86,17 @@ namespace rrs
         exportButton.setIconOnly (true);
         exportButton.setTooltip ("Export session to 24-bit WAV");
 
-        // Utility buttons outside the owner's icon-only set keep their labels.
+        // Utility buttons are icon-only too (owner request): the action row no
+        // longer overflows once Normalize / Add track / Remove track drop their
+        // text, and the row matches the icon-only session buttons.
         normaliseButton.setIconName ("auto_fix_high");
+        normaliseButton.setIconOnly (true);
         normaliseButton.setTooltip ("Peak-normalise the most recent take to -1 dBFS");
         addTrackButton.setIconName ("add");
+        addTrackButton.setIconOnly (true);
         addTrackButton.setTooltip ("Add an input track (maps to the next free input)");
         removeTrackButton.setIconName ("delete");
+        removeTrackButton.setIconOnly (true);
         removeTrackButton.setTooltip ("Remove the last track");
 
         settingsButton.setIconName ("settings");
@@ -123,14 +128,18 @@ namespace rrs
         monitorButton.setTooltip ("Toggle input monitoring");
 
         metronomeButton.setIconName ("timer");
+        metronomeButton.setIconOnly (true, 36);
         metronomeButton.setTooltip ("Metronome / count-in click");
         countInBox.setTooltip ("Count-in before recording starts");
 
-        countInBox.addItem ("Count-in: off",      (int) te::Edit::CountIn::none + 1);
-        countInBox.addItem ("Count-in: 1 beat",   (int) te::Edit::CountIn::oneBeat + 1);
-        countInBox.addItem ("Count-in: 2 beats",  (int) te::Edit::CountIn::twoBeat + 1);
-        countInBox.addItem ("Count-in: 1 bar",    (int) te::Edit::CountIn::oneBar + 1);
-        countInBox.addItem ("Count-in: 2 bars",   (int) te::Edit::CountIn::twoBar + 1);
+        // Shorter labels (the "Count-in: " prefix was redundant with the
+        // tooltip and made the combo wider than the transport row could spare
+        // at the minimum window size).
+        countInBox.addItem ("Off",     (int) te::Edit::CountIn::none + 1);
+        countInBox.addItem ("1 beat",  (int) te::Edit::CountIn::oneBeat + 1);
+        countInBox.addItem ("2 beats", (int) te::Edit::CountIn::twoBeat + 1);
+        countInBox.addItem ("1 bar",   (int) te::Edit::CountIn::oneBar + 1);
+        countInBox.addItem ("2 bars",  (int) te::Edit::CountIn::twoBar + 1);
 
         newButton.onClick       = [this] { newSession(); };
         openButton.onClick      = [this] { openSession(); };
@@ -1019,7 +1028,9 @@ namespace rrs
 
         // Transport row: icon-only squares (>= 32x32) with consistent 8 px gaps.
         // Record is 40x40 to keep its emphasis; the rest are 36x36, vertically
-        // centred in the 40 px row. Metronome + Count-in stay labelled.
+        // centred in the 40 px row. The Click button is icon-only (timer) and
+        // the count-in is a compact combo, so the row never overflows at the
+        // minimum window size.
         auto transportRow = area.removeFromTop (40);
 
         auto placeTransport = [&transportRow] (BrandButton& b, int size)
@@ -1040,11 +1051,14 @@ namespace rrs
         transportRow.removeFromLeft (16);
         placeTransport (monitorButton,   36);
         transportRow.removeFromLeft (8);
-        placeTransport (metronomeButton, 80);
+        placeTransport (metronomeButton, 36);
         transportRow.removeFromLeft (8);
-        countInBox.setBounds (transportRow.removeFromLeft (150).withSizeKeepingCentre (150, 28));
+        countInBox.setBounds (transportRow.removeFromLeft (110).withSizeKeepingCentre (110, 28));
         transportRow.removeFromLeft (8);
-        transportLabel.setBounds (transportRow);
+
+        // Clamp so a very narrow row can never hand a label a negative width
+        // (the fixed controls above already fit at the 1100 px minimum window).
+        transportLabel.setBounds (transportRow.withWidth (juce::jmax (0, transportRow.getWidth())));
 
         area.removeFromTop (8);
 
@@ -1148,8 +1162,8 @@ namespace rrs
             int width = 0;
         };
 
-        // [New][Open][Save][Save As] · [Close][Import][Normalize][Export WAV][Add track]
-        // [Remove track] · [Settings][About]
+        // Groups: [New][Open][Save][Save As] · [Close][Import][Normalize][Export]
+        // [Add track][Remove track] · [Settings][About] — all icon-only now.
         BrandButton* const buttons[] = { &newButton, &openButton, &saveButton, &saveAsButton,
                                          &closeButton, &importButton, &normaliseButton, &exportButton,
                                          &addTrackButton, &removeTrackButton,
