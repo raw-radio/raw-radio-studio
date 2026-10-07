@@ -75,7 +75,9 @@ namespace rrs
         /** Opens the per-track input-assignment popup (channel + layout, FR-REC-3). */
         void showInputMenu (int trackIndex);
 
-        static float normaliseDb (float db) noexcept;
+        /** dBFS -> 0..1 for the level bars only. Faders use the documented
+            linear-in-dB taper in `FaderTaper.h`, not this meter scale. */
+        static float meterNormalised (float db) noexcept;
 
         Session& session;
         std::vector<StripControls> strips;

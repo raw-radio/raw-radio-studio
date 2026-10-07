@@ -18,6 +18,7 @@
 #include "studio/InputMapping.h"
 #include "ui/BrandFonts.h"
 #include "ui/DevicePanelLayout.h"
+#include "ui/FaderTaper.h"
 #include "ui/IconCache.h"
 #include "ui/MeterBallistics.h"
 
@@ -478,6 +479,89 @@ TEST_CASE ("meter ballistics are frame-rate independent (same duration, same res
         fast.update (-6.0f, 1.0f / 60.0f);
 
     CHECK (slow.getDb() == doctest::Approx (fast.getDb()).epsilon (0.1f));
+}
+
+//==============================================================================
+// Fader taper (owner request): position <-> dB must be linear in dB across the
+// whole travel, not linear in amplitude. 0 dB lands where the linear map puts
+// it (documented), the mapping is exactly invertible, and the bottom of a level
+// fader is a hard mute detent.
+TEST_CASE ("fader taper is linear in dB with a documented unity position")
+{
+    using rrs::fader::level;
+    using rrs::fader::inputTrim;
+
+    SUBCASE ("level fader: equal position steps are equal dB steps")
+    {
+        const auto quarter  = level.posToDb (0.25f);
+        const auto half     = level.posToDb (0.50f);
+        const auto threeQtr = level.posToDb (0.75f);
+        const auto top      = level.posToDb (1.00f);
+
+        // -60 .. +6 over 66 dB of travel, so each 0.25 is 16.5 dB.
+        CHECK (quarter  == doctest::Approx (-43.5f));
+        CHECK (half     == doctest::Approx (-27.0f));
+        CHECK (threeQtr == doctest::Approx (-10.5f));
+        CHECK (top      == doctest::Approx (6.0f));
+
+        // The steps really are equal (this is the "linear in dB" property that
+        // the old linear-amplitude law lacked).
+        CHECK ((half - quarter) == doctest::Approx (threeQtr - half).epsilon (1.0e-4f));
+        CHECK ((threeQtr - half) == doctest::Approx (top - threeQtr).epsilon (1.0e-4f));
+    }
+
+    SUBCASE ("0 dB position is documented and exactly reproducible")
+    {
+        // (0 - -60) / (6 - -60) = 60/66 ~= 0.909.
+        CHECK (level.unityPos() == doctest::Approx (60.0f / 66.0f));
+        CHECK (level.posToDb (level.unityPos()) == doctest::Approx (0.0f).epsilon (1.0e-4f));
+
+        // The record trim is symmetric: unity is dead centre.
+        CHECK (inputTrim.unityPos() == doctest::Approx (0.5f));
+        CHECK (inputTrim.posToDb (0.5f) == doctest::Approx (0.0f));
+        CHECK (inputTrim.posToDb (0.0f) == doctest::Approx (-24.0f));
+        CHECK (inputTrim.posToDb (1.0f) == doctest::Approx (24.0f));
+    }
+
+    SUBCASE ("dB -> position is the inverse of position -> dB")
+    {
+        for (const float p : { 0.1f, 0.25f, 0.5f, 0.75f, 0.9f, 1.0f })
+        {
+            const auto db = level.posToDb (p);
+            CHECK (level.dbToPos (db) == doctest::Approx (p).epsilon (1.0e-4f));
+
+            const auto trimDb = inputTrim.posToDb (p);
+            CHECK (inputTrim.dbToPos (trimDb) == doctest::Approx (p).epsilon (1.0e-4f));
+        }
+    }
+
+    SUBCASE ("level fader bottoms out to a mute detent; the trim does not")
+    {
+        const auto mute = level.posToDb (0.0f);
+        CHECK (std::isinf (mute));
+        CHECK (mute < 0.0f);
+
+        // Anything at/below the floor (including -inf) reads as the bottom and
+        // is reported as silent, so a mute state round-trips through the UI.
+        CHECK (level.dbToPos (mute) == doctest::Approx (0.0f));
+        CHECK (level.dbToPos (-100.0f) == doctest::Approx (0.0f));
+        CHECK (level.isSilentDb (mute));
+        CHECK (level.isSilentDb (-100.0f));
+        CHECK_FALSE (level.isSilentDb (-59.0f));
+        CHECK_FALSE (level.isSilentDb (0.0f));
+
+        // The record trim is a gain control, never a mute.
+        CHECK_FALSE (inputTrim.isSilentDb (inputTrim.posToDb (0.0f)));
+        CHECK_FALSE (std::isinf (inputTrim.posToDb (0.0f)));
+    }
+
+    SUBCASE ("out-of-range input is clamped, never UB")
+    {
+        CHECK (level.posToDb (-1.0f) < 0.0f);           // clamps to p=0 -> mute
+        CHECK (level.posToDb (5.0f) == doctest::Approx (6.0f));
+        CHECK (level.dbToPos (-1000.0f) == doctest::Approx (0.0f));
+        CHECK (level.dbToPos (1000.0f) == doctest::Approx (1.0f));
+    }
 }
 
 //==============================================================================

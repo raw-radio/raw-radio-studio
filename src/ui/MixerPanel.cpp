@@ -4,23 +4,17 @@
 
 #include "BrandColours.h"
 #include "BrandFonts.h"
+#include "FaderTaper.h"
 
 namespace rrs
 {
     namespace
     {
-        constexpr float minGainDb = -60.0f;
-        constexpr float maxGainDb = 6.0f;
-
-        // Record-trim range (FR-REC-4); must match Session's clamp.
-        constexpr float minTrimDb = -24.0f;
-        constexpr float maxTrimDb =  24.0f;
-
-        float trimFromX (float x, float left, float right) noexcept
-        {
-            const auto t = juce::jlimit (0.0f, 1.0f, (x - left) / juce::jmax (1.0f, right - left));
-            return minTrimDb + t * (maxTrimDb - minTrimDb);
-        }
+        // Meter scale only (dBFS -> 0..1 for the level bars). The faders have
+        // their own, documented taper in FaderTaper.h — keep them independent so
+        // changing the fader law never silently rescales the meters.
+        constexpr float meterFloorDb = -60.0f;
+        constexpr float meterCeilDb  = 6.0f;
     }
 
     MixerPanel::MixerPanel (Session& sessionRef)
@@ -148,9 +142,9 @@ namespace rrs
     }
 
     //==============================================================================
-    float MixerPanel::normaliseDb (float db) noexcept
+    float MixerPanel::meterNormalised (float db) noexcept
     {
-        return juce::jlimit (0.0f, 1.0f, (db - minGainDb) / (maxGainDb - minGainDb));
+        return juce::jlimit (0.0f, 1.0f, (db - meterFloorDb) / (meterCeilDb - meterFloorDb));
     }
 
     void MixerPanel::updateMeters()
@@ -305,13 +299,12 @@ namespace rrs
             g.setColour (brand::meterTrough);
             g.fillRoundedRectangle (juce::Rectangle<float> (left, cy - 1.5f, juce::jmax (1.0f, right - left), 3.0f), 1.5f);
 
-            // 0 dB centre tick.
-            const auto centreX = (left + right) * 0.5f;
+            // 0 dB centre tick: where the linear-in-dB trim law is at unity.
+            const auto centreX = left + fader::inputTrim.unityPos() * (right - left);
             g.setColour (brand::border);
             g.fillRect (juce::Rectangle<float> (centreX - 0.5f, cy - 3.5f, 1.0f, 7.0f));
 
-            const auto t = (trimDb - minTrimDb) / (maxTrimDb - minTrimDb);
-            const auto thumbX = left + juce::jlimit (0.0f, 1.0f, t) * (right - left);
+            const auto thumbX = left + fader::inputTrim.dbToPos (trimDb) * (right - left);
 
             g.setColour (std::abs (trimDb) > 0.05f ? brand::accent : brand::textPrimary);
             g.fillEllipse (thumbX - 3.0f, cy - 3.0f, 6.0f, 6.0f);
@@ -328,7 +321,10 @@ namespace rrs
         const auto cx = (float) f.getCentreX();
         const auto top = (float) f.getY() + 4.0f;
         const auto bottom = (float) f.getBottom() - 4.0f;
-        const auto t = normaliseDb (juce::jlimit (minGainDb, maxGainDb, gainDb));
+        // Fader law is linear in dB (FaderTaper.h): the thumb sits at the taper
+        // position for the stored dB, and bottoms out to a mute detent. The
+        // gain label shows "-inf" once the taper is at/below its floor.
+        const auto t = fader::level.dbToPos (gainDb);
         const auto thumbY = bottom - t * (bottom - top);
 
         g.setColour (brand::meterTrough);
@@ -342,7 +338,9 @@ namespace rrs
 
         g.setColour (brand::textTertiary);
         g.setFont (brand::monoRegular (10.0f));
-        g.drawText (juce::String (gainDb, 1), juce::Rectangle<int> (f.getX(), (int) top - 2, f.getWidth(), 12),
+        g.drawText (fader::level.isSilentDb (gainDb) ? juce::String ("-inf")
+                                                     : juce::String (gainDb, 1),
+                    juce::Rectangle<int> (f.getX(), (int) top - 2, f.getWidth(), 12),
                     juce::Justification::centred);
 
         // Pan (per track and master, FR-MIX-1).
@@ -383,8 +381,8 @@ namespace rrs
         g.setColour (brand::meterTrough);
         g.fillRoundedRectangle (bar, 2.0f);
 
-        const auto level = normaliseDb (meter.ballistics.getDb());
-        const auto hold  = normaliseDb (meter.ballistics.getHoldDb());
+        const auto level = meterNormalised (meter.ballistics.getDb());
+        const auto hold  = meterNormalised (meter.ballistics.getHoldDb());
 
         const auto fill = bar.getHeight() * level;
         g.setColour (brand::vuGreen);
@@ -490,7 +488,7 @@ namespace rrs
             const auto top = (float) strip.fader.getY() + 4.0f;
             const auto bottom = (float) strip.fader.getBottom() - 4.0f;
             const auto t = juce::jlimit (0.0f, 1.0f, (bottom - (float) pos.y) / juce::jmax (1.0f, bottom - top));
-            const auto db = minGainDb + t * (maxGainDb - minGainDb);
+            const auto db = fader::level.posToDb (t);
 
             if (strip.isMaster)
                 session.setMasterGainDb (db);
@@ -515,9 +513,12 @@ namespace rrs
             const auto left = (float) bar.getX() + 3.0f;
             const auto right = (float) bar.getRight() - 3.0f;
 
+            const auto t = juce::jlimit (0.0f, 1.0f,
+                                         ((float) pos.x - left) / juce::jmax (1.0f, right - left));
+
             // Apply the gain live but defer persisting: writing the session file
             // on every mouse-move made the drag lag. `mouseUp` saves once.
-            session.setTrackInputGainDb (strip.trackIndex, trimFromX ((float) pos.x, left, right), false);
+            session.setTrackInputGainDb (strip.trackIndex, fader::inputTrim.posToDb (t), false);
             trimDragDirty = true;
         }
 
