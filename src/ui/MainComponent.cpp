@@ -53,6 +53,11 @@ namespace rrs
 
         devicePanel.onDeviceChanged = [this]
         {
+            // The panel is disabled during export; guard the callback too so an
+            // unsolicited device-manager change cannot race the render thread.
+            if (exportInProgress)
+                return;
+
             session.reconfigureInputs();
             refreshTransportUi();
         };
@@ -91,6 +96,9 @@ namespace rrs
 
         armButton.onClick = [this]
         {
+            if (exportInProgress)
+                return;
+
             if (! session.setTrackArmed (armButton.getToggleState()))
             {
                 showStatus (session.getLastError(), true);
@@ -100,11 +108,17 @@ namespace rrs
 
         monitorButton.onClick = [this]
         {
+            if (exportInProgress)
+                return;
+
             session.setMonitoringEnabled (monitorButton.getToggleState());
         };
 
         recordButton.onClick = [this]
         {
+            if (exportInProgress)
+                return;
+
             if (session.isRecording())
                 session.stop();
             else if (! session.record())
@@ -115,6 +129,9 @@ namespace rrs
 
         playButton.onClick = [this]
         {
+            if (exportInProgress)
+                return;
+
             if (session.isPlaying())
                 session.stop();
             else
@@ -125,6 +142,9 @@ namespace rrs
 
         stopButton.onClick = [this]
         {
+            if (exportInProgress)
+                return;
+
             session.stop();
             refreshTransportUi();
         };
@@ -138,6 +158,12 @@ namespace rrs
         // New/Open would reset the Edit (use-after-free on the render thread)
         // and the transport/Save would race it. Disable them all for the duration.
         const bool busy = exportInProgress;
+
+        // While a render holds the `Edit*`, the device panel must be inert:
+        // applying a device change runs session.reconfigureInputs(), which
+        // mutates the Edit concurrently with the render thread. Disabling the
+        // panel (children included) also blocks Rescan/Apply/combo changes.
+        devicePanel.setEnabled (! busy);
 
         for (auto* button : { &saveButton, &saveAsButton, &exportButton, &armButton,
                               &recordButton, &playButton, &stopButton, &monitorButton })

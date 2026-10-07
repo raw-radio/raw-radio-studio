@@ -41,9 +41,8 @@ namespace rrs
         params.bitDepth           = bitDepth;
 
         // The device may be closed (or not yet opened) when exporting; the
-        // device manager then reports 0 Hz. Fall back to the last-known rate,
-        // then to the Epic 1 default (48 kHz, NFR-A-4) so the render never runs
-        // at 0 Hz.
+        // device manager then reports 0 Hz. Fall back to the Epic 1 default
+        // (48 kHz, NFR-A-4) so the render never runs at 0 Hz.
         auto sampleRate = edit.engine.getDeviceManager().getSampleRate();
 
         if (sampleRate <= 0.0)

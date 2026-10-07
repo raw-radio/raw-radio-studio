@@ -275,8 +275,12 @@ namespace rrs
        #if JUCE_LINUX
         auto& dm = enginePtr->getDeviceManager().deviceManager;
 
-        const auto alreadyDirect = isAcceptableInputDeviceName (getCurrentDeviceName())
-                                && getCurrentDeviceName().isNotEmpty();
+        // `getInputDeviceNames()` already excludes plugin/routed PCMs
+        // (PipeWire/PulseAudio/JACK, dmix/dsnoop), so a name accepted here is a
+        // confirmed direct-hardware PCM.
+        const auto currentName = getCurrentDeviceName();
+        const auto alreadyDirect = currentName.isNotEmpty()
+                                && isAcceptableInputDeviceName (currentName);
 
         if (alreadyDirect)
             return;
@@ -285,12 +289,16 @@ namespace rrs
 
         if (names.isEmpty())
         {
+            // Fail loudly: never fall back to the plugin/PipeWire path.
             dm.closeAudioDevice();
-            lastError = "No ALSA hardware (`hw`) audio device was found. raw-radio-studio "
-                        "opens ALSA `hw` directly and does not fall back to PipeWire/PulseAudio.";
+            lastError = "No direct ALSA hardware audio device was found. raw-radio-studio "
+                        "opens ALSA hardware directly; PipeWire/PulseAudio/JACK and "
+                        "dmix/dsnoop PCM devices are excluded by design (no fallback).";
             return;
         }
 
+        // `names[0]` is the first confirmed direct-hardware device. If it cannot
+        // be opened, close the device rather than silently keeping a plugin one.
         if (applyDeviceSetup (names[0], defaultSampleRate, 0).isNotEmpty())
             dm.closeAudioDevice();
        #endif

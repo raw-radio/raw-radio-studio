@@ -106,4 +106,35 @@ private:
     std::unique_ptr<MainWindow> mainWindow;
 };
 
+// Custom entry point (macOS/Linux use a plain `main`; Windows is not a target).
+//
+// We must handle `--version` BEFORE JUCE's single-instance gate: with
+// moreThanOneInstanceAllowed()==false, `initialiseApp()` forwards the command
+// line to an already-running instance and returns false without ever calling
+// initialise(), so the launching process would print nothing. The CI smoke
+// contract requires `raw-radio-studio --version` to print the banner and exit 0
+// unconditionally — even when another instance is running.
+#if ! (JUCE_WINDOWS && ! defined (_CONSOLE))
+JUCE_BEGIN_IGNORE_WARNINGS_GCC_LIKE ("-Wmissing-prototypes")
+
+juce::JUCEApplicationBase* juce_CreateApplication() { return new RawRadioStudioApplication(); }
+
+int main (int argc, char* argv[])
+{
+    for (int i = 1; i < argc; ++i)
+    {
+        if (juce::String (argv[i]) == "--version")
+        {
+            std::cout << versionBanner() << std::endl;
+            return 0;
+        }
+    }
+
+    juce::JUCEApplicationBase::createInstance = &juce_CreateApplication;
+    return juce::JUCEApplicationBase::main (argc, (const char**) argv);
+}
+
+JUCE_END_IGNORE_WARNINGS_GCC_LIKE
+#else
 START_JUCE_APPLICATION (RawRadioStudioApplication)
+#endif

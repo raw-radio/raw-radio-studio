@@ -53,28 +53,60 @@ TEST_CASE ("device error: unknown failure keeps the raw message")
     CHECK (info.userMessage == juce::String (raw));
 }
 
-TEST_CASE ("ALSA device policy excludes only the JUCE plugin pseudo-devices")
+TEST_CASE ("ALSA device policy excludes plugin/routed PCMs and keeps raw hardware")
 {
     // JUCE's ALSA backend reports real hardware by human-readable name, never as
-    // an "hw:N,M" id. These names must be accepted (NFR-IO-4).
+    // an "hw:N,M" id. This includes the analog card itself plus the `hw:` /
+    // `front:` / `surround:` PCM variants; all must be accepted (NFR-IO-4).
     CHECK_FALSE (isAlsaPluginPseudoDeviceName ("HDA Intel PCH, ALC295 Analog"));
     CHECK_FALSE (isAlsaPluginPseudoDeviceName ("USB Audio Device, USB Audio"));
     CHECK_FALSE (isAlsaPluginPseudoDeviceName ("Focusrite Scarlett 4i4 4th Gen, USB Audio"));
     CHECK_FALSE (isAlsaPluginPseudoDeviceName ("HDA Intel PCH, ALC295 Analog {hw:0,0}"));
+    CHECK_FALSE (isAlsaPluginPseudoDeviceName ("HDA Intel PCH, ALC295 Analog; Front output"));
+    CHECK_FALSE (isAlsaPluginPseudoDeviceName ("HDA Intel PCH, ALC295 Analog; Surround output"));
+    CHECK_FALSE (isAlsaPluginPseudoDeviceName (
+        "HDA Intel PCH, ALC295 Analog; Direct hardware device without any conversions"));
 
-    // The injected plugin pseudo-devices route through PipeWire/PulseAudio and
+    // JUCE-injected plugin pseudo-devices route through PipeWire/PulseAudio and
     // must be rejected so there is no silent fallback.
     CHECK (isAlsaPluginPseudoDeviceName ("Default ALSA Input"));
     CHECK (isAlsaPluginPseudoDeviceName ("Default ALSA Output"));
     CHECK (isAlsaPluginPseudoDeviceName ("Pulseaudio input"));
     CHECK (isAlsaPluginPseudoDeviceName ("Pulseaudio output"));
 
+    // Plugin-server bridge PCMs present on a stock Ubuntu 24.04 (PipeWire) box.
+    // Before the fix these passed the denylist and could be auto-selected.
+    CHECK (isAlsaPluginPseudoDeviceName ("PipeWire Sound Server"));
+    CHECK (isAlsaPluginPseudoDeviceName ("JACK Audio Connection Kit"));
+    CHECK (isAlsaPluginPseudoDeviceName ("PulseAudio Sound Server"));
+
+    // Software-mixing PCMs (ALSA `dmix`/`dsnoop`): described by their role,
+    // sometimes surfaced by their raw id.
+    CHECK (isAlsaPluginPseudoDeviceName (
+        "HDA Intel PCH, ALC295 Analog; Direct sample mixing device"));
+    CHECK (isAlsaPluginPseudoDeviceName (
+        "HDA Intel PCH, ALC295 Analog; Direct sample snooping device"));
+    CHECK (isAlsaPluginPseudoDeviceName ("dmix"));
+    CHECK (isAlsaPluginPseudoDeviceName ("dsnoop"));
+
    #if JUCE_LINUX
+    // Raw hardware stays selectable for direct recording...
     CHECK (isAcceptableInputDeviceName ("HDA Intel PCH, ALC295 Analog"));
+    CHECK (isAcceptableInputDeviceName ("USB Audio Device, USB Audio"));
+    CHECK (isAcceptableInputDeviceName (
+        "HDA Intel PCH, ALC295 Analog; Direct hardware device without any conversions"));
+
+    // ...but plugin/routed PCMs are rejected from the direct auto-selection, so
+    // `enforceDirectAlsaOnStartup()` can never silently pick PipeWire/JACK.
     CHECK_FALSE (isAcceptableInputDeviceName ("Default ALSA Input"));
     CHECK_FALSE (isAcceptableInputDeviceName ("Pulseaudio output"));
+    CHECK_FALSE (isAcceptableInputDeviceName ("PipeWire Sound Server"));
+    CHECK_FALSE (isAcceptableInputDeviceName ("JACK Audio Connection Kit"));
+    CHECK_FALSE (isAcceptableInputDeviceName (
+        "HDA Intel PCH, ALC295 Analog; Direct sample mixing device"));
     CHECK_FALSE (isAcceptableInputDeviceName (""));
    #else
+    // Non-Linux backends have no plugin-fallback hazard; the policy is a no-op.
     CHECK (isAcceptableInputDeviceName ("anything on this platform"));
    #endif
 }

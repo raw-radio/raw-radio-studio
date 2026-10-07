@@ -6,11 +6,12 @@
 //
 //   * a missing device and a busy device get distinct, actionable messages;
 //   * on Linux the ALSA backend must open raw hardware PCMs directly, never the
-//     PipeWire/PulseAudio plugin path held by another daemon. JUCE reports ALSA
-//     devices by their human-readable names (e.g. "HDA Intel PCH, ALC295 Analog",
-//     "USB Audio Device, USB Audio") and only injects the "Default ALSA …" and
-//     "Pulseaudio …" pseudo-devices for the plugin layer, so we exclude exactly
-//     those rather than looking for an "hw:" id (which never appears in a name).
+//     PipeWire/PulseAudio plugin path held by another daemon. JUCE enumerates
+//     *every* ALSA PCM hint (except `default:`/`sysdefault:`/`plughw:`/`null`),
+//     so plugin-backed and software-routed PCMs (`pipewire`, `jack`, `dmix`,
+//     `dsnoop`) also appear — reported by their human-readable descriptor, never
+//     by their `hw:N,M` id. We reject all of them so the direct-hardware
+//     auto-selection can never silently take the plugin path (NFR-IO-4).
 
 #pragma once
 
@@ -75,23 +76,60 @@ namespace rrs
         return info;
     }
 
-    /** True for the plugin/pseudo devices JUCE injects into the ALSA device list
-        ("Default ALSA Input/Output" and "Pulseaudio input/output"). These open
-        the `default`/`pulse` plugin PCMs, i.e. route through PipeWire/PulseAudio,
-        and are excluded so we open a raw hardware PCM directly (NFR-IO-4).
+    /** True for ALSA PCM devices that are NOT raw hardware and must never be
+        used for direct recording (NFR-IO-4).
 
-        Every other ALSA name JUCE reports is a real hardware PCM. */
+        JUCE's ALSA backend enumerates *every* PCM hint (`snd_device_name_hint`)
+        except `default:`/`sysdefault:`/`plughw:`/`null`, so plugin-backed and
+        software-routed PCMs appear next to real hardware. The `id` -> reported
+        name mapping on a stock Ubuntu 24.04 (PipeWire) box looks like:
+
+          * `default`  -> "Default ALSA Output" / "Default ALSA Input" (JUCE-injected)
+          * `pulse`    -> "Pulseaudio output" / "Pulseaudio input"    (JUCE-injected)
+          * `pipewire` -> "PipeWire Sound Server"
+          * `jack`     -> "JACK Audio Connection Kit"
+          * `dmix:`    -> "<card>; Direct sample mixing device"
+          * `dsnoop:`  -> "<card>; Direct sample snooping device"
+
+        All of these route through PipeWire/PulseAudio/a plugin layer, so they are
+        rejected from the "direct hardware" auto-selection. The match is
+        case-insensitive on the human-readable descriptor because JUCE reports ALSA
+        devices by `DESC`, never by their `hw:N,M` id. Matching is deliberately
+        conservative: rejecting a marginal real device is preferable to silently
+        taking the plugin path. */
     inline bool isAlsaPluginPseudoDeviceName (const juce::String& deviceName)
     {
-        return deviceName.startsWithIgnoreCase ("Default ALSA")
-            || deviceName.startsWithIgnoreCase ("Pulseaudio");
+        // JUCE-injected pseudo-devices.
+        if (deviceName.startsWithIgnoreCase ("Default ALSA")
+            || deviceName.startsWithIgnoreCase ("Pulseaudio"))
+            return true;
+
+        // Plugin-server bridge PCMs (PipeWire / PulseAudio / JACK).
+        if (deviceName.containsIgnoreCase ("pipewire")
+            || deviceName.containsIgnoreCase ("pulseaudio")
+            || deviceName.containsIgnoreCase ("jack")
+            || deviceName.containsIgnoreCase ("sound server"))
+            return true;
+
+        // Software-mixing PCMs. ALSA describes these by their role ("Direct
+        // sample mixing/snooping device"); some configurations also surface the
+        // raw `dmix`/`dsnoop` id when the description is empty.
+        if (deviceName.containsIgnoreCase ("dmix")
+            || deviceName.containsIgnoreCase ("dsnoop")
+            || deviceName.containsIgnoreCase ("direct sample mixing")
+            || deviceName.containsIgnoreCase ("direct sample snooping"))
+            return true;
+
+        return false;
     }
 
     /** Whether a device name is acceptable for direct recording.
-        On Linux we exclude only JUCE's injected plugin pseudo-devices so we never
-        silently fall back to the PipeWire/PulseAudio path. JUCE's ALSA backend
-        reports real hardware with human-readable names, never as `hw:N,M`, so a
-        `hw:` substring test would reject every real device. */
+        On Linux we exclude plugin-backed/routed PCMs (see
+        isAlsaPluginPseudoDeviceName) so we never silently fall back to the
+        PipeWire/PulseAudio path. Real hardware PCMs (`hw:`, `front:`,
+        `surround:`, analog card names) stay usable. JUCE's ALSA backend reports
+        real hardware with human-readable names, never as `hw:N,M`, so a `hw:`
+        substring test would reject every real device. */
     inline bool isAcceptableInputDeviceName (const juce::String& deviceName)
     {
        #if JUCE_LINUX

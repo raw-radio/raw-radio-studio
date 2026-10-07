@@ -4,6 +4,7 @@
 
 #include "AppPaths.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace rrs
@@ -489,11 +490,25 @@ namespace rrs
         const auto referenced = findReferencedRecordings();
         int imported = 0;
 
+        // `findChildFiles` returns filesystem order, which is not chronological.
+        // Sort by modification time (file name as tie-breaker) so recovered takes
+        // are laid down the timeline in the order they were recorded.
+        auto orphanFiles = recordingsDir.findChildFiles (juce::File::findFiles, false, "*.wav");
+
+        std::sort (orphanFiles.begin(), orphanFiles.end(),
+                   [] (const juce::File& a, const juce::File& b)
+                   {
+                       const auto ta = a.getLastModificationTime();
+                       const auto tb = b.getLastModificationTime();
+
+                       return ta != tb ? ta < tb : a.getFileName() < b.getFileName();
+                   });
+
         // Lay recovered takes down the timeline one after another so multiple
         // takes never overlap at time 0.
         te::TimePosition nextStart {};
 
-        for (auto& file : recordingsDir.findChildFiles (juce::File::findFiles, false, "*.wav"))
+        for (auto& file : orphanFiles)
         {
             if (referenced.contains (file))
                 continue;
