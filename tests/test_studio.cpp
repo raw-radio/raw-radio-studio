@@ -15,6 +15,7 @@
 #include "studio/DeviceError.h"
 #include "studio/DeviceSelection.h"
 #include "studio/AppPaths.h"
+#include "studio/InputMapping.h"
 #include "ui/BrandFonts.h"
 #include "ui/DevicePanelLayout.h"
 #include "ui/IconCache.h"
@@ -306,6 +307,88 @@ TEST_CASE ("device selection keeps input and output independent")
 
         CHECK (sel.input == stale);
         CHECK (sel.output == macSpeakers);
+    }
+}
+
+//==============================================================================
+// FR-REC-3 (Epic 2): a track can select any input device channel and a
+// mono/stereo/N layout. The pure resolver must produce the right destination
+// map for arbitrary channel counts and starting channels.
+TEST_CASE ("input mapping resolves arbitrary channel counts and layouts")
+{
+    SUBCASE ("Auto keeps the Epic 1 behaviour (mono centred, stereo L/R)")
+    {
+        const auto mono = mappedChannelsFor ({ 0, 1, InputLayout::Auto }, 1);
+        REQUIRE (mono.size() == 2);
+        CHECK (mono[0].deviceChannel == 0);
+        CHECK (mono[1].deviceChannel == 0); // duplicated to both L and R
+        CHECK (mono[0].type == juce::AudioChannelSet::left);
+        CHECK (mono[1].type == juce::AudioChannelSet::right);
+
+        // 0 channels (no device yet) also defaults to centred, never hard-left.
+        const auto none = mappedChannelsFor ({ 0, 1, InputLayout::Auto }, 0);
+        CHECK (none[0].deviceChannel == 0);
+        CHECK (none[1].deviceChannel == 0);
+
+        const auto stereo = mappedChannelsFor ({ 0, 2, InputLayout::Auto }, 2);
+        REQUIRE (stereo.size() == 2);
+        CHECK (stereo[0].deviceChannel == 0);
+        CHECK (stereo[1].deviceChannel == 1);
+    }
+
+    SUBCASE ("Mono picks any hardware channel and centres it")
+    {
+        // The 3rd input of a 4-in interface (0-based index 2) on a mono track.
+        const auto cfg = mappedChannelsFor ({ 2, 1, InputLayout::Mono }, 4);
+        REQUIRE (cfg.size() == 2);
+        CHECK (cfg[0].deviceChannel == 2);
+        CHECK (cfg[1].deviceChannel == 2);
+        CHECK (cfg[0].type == juce::AudioChannelSet::left);
+        CHECK (cfg[1].type == juce::AudioChannelSet::right);
+    }
+
+    SUBCASE ("Stereo picks any adjacent hardware pair")
+    {
+        const auto cfg = mappedChannelsFor ({ 2, 2, InputLayout::Stereo }, 4);
+        REQUIRE (cfg.size() == 2);
+        CHECK (cfg[0].deviceChannel == 2);
+        CHECK (cfg[1].deviceChannel == 3);
+    }
+
+    SUBCASE ("Stereo on a 1-channel device falls back to centred mono")
+    {
+        const auto cfg = mappedChannelsFor ({ 0, 2, InputLayout::Stereo }, 1);
+        REQUIRE (cfg.size() == 2);
+        CHECK (cfg[0].deviceChannel == 0);
+        CHECK (cfg[1].deviceChannel == 0);
+    }
+
+    SUBCASE ("MultiChannel maps N discrete channels (4-in acceptance path)")
+    {
+        const auto cfg = mappedChannelsFor ({ 0, 4, InputLayout::MultiChannel }, 4);
+        REQUIRE (cfg.size() == 4);
+        CHECK (cfg[0].deviceChannel == 0);
+        CHECK (cfg[1].deviceChannel == 1);
+        CHECK (cfg[2].deviceChannel == 2);
+        CHECK (cfg[3].deviceChannel == 3);
+
+        // N is clamped to what the device actually has from `firstChannel` on.
+        const auto clamped = mappedChannelsFor ({ 1, 8, InputLayout::MultiChannel }, 4);
+        CHECK (clamped.size() == 3);
+    }
+
+    SUBCASE ("an out-of-range firstChannel is clamped, never UB")
+    {
+        const auto cfg = mappedChannelsFor ({ 9, 1, InputLayout::Mono }, 2);
+        REQUIRE (cfg.size() == 2);
+        CHECK (cfg[0].deviceChannel == 1);
+        CHECK (cfg[1].deviceChannel == 1);
+    }
+
+    SUBCASE ("layout string round-trips for persistence")
+    {
+        for (auto layout : { InputLayout::Auto, InputLayout::Mono, InputLayout::Stereo, InputLayout::MultiChannel })
+            CHECK (inputLayoutFromString (inputLayoutToString (layout)) == layout);
     }
 }
 

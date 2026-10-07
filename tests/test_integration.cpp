@@ -731,6 +731,48 @@ TEST_CASE ("stereo input monitor signal preserves its channels (measured L != R,
     CHECK (stereo.r == doctest::Approx (0.25f));
 }
 
+TEST_CASE ("arbitrary-channel input mapping routes the selected channels (measured, 4-in path)")
+{
+    // FR-REC-3 (Epic 2): a track can pick any input of an N-channel interface.
+    // Drive the real wave-input path of a 4-channel hosted device with distinct
+    // per-channel amplitudes and confirm the mapping selects exactly the
+    // requested hardware channels (this is the 4-in acceptance path, exercised
+    // headlessly because no 4-in interface is attached to this machine).
+    const std::vector<float> fourInputs { 0.1f, 0.2f, 0.3f, 0.4f };
+
+    SUBCASE ("stereo pair at hardware channels 2/3")
+    {
+        MonitorCapture capture;
+        REQUIRE (measureMonitorBuffer (inputChannelConfigurationForMapping ({ 2, 2, InputLayout::Stereo }, 4),
+                                       capture, fourInputs));
+        CHECK (capture.channels == 2);
+        CHECK (capture.l == doctest::Approx (0.3f));
+        CHECK (capture.r == doctest::Approx (0.4f));
+    }
+
+    SUBCASE ("mono centred on hardware channel 2")
+    {
+        MonitorCapture capture;
+        REQUIRE (measureMonitorBuffer (inputChannelConfigurationForMapping ({ 2, 1, InputLayout::Mono }, 4),
+                                       capture, fourInputs));
+        CHECK (capture.channels == 2);
+        CHECK (capture.l == doctest::Approx (0.3f));
+        CHECK (capture.r == doctest::Approx (0.3f));
+    }
+
+    SUBCASE ("4-channel map preserves all four hardware channels")
+    {
+        MonitorCapture capture;
+        REQUIRE (measureMonitorBuffer (inputChannelConfigurationForMapping ({ 0, 4, InputLayout::MultiChannel }, 4),
+                                       capture, fourInputs));
+        CHECK (capture.channels == 4);
+        // The probe reads the first two channels; they must be the first two
+        // hardware inputs, not duplicated/downmixed.
+        CHECK (capture.l == doctest::Approx (0.1f));
+        CHECK (capture.r == doctest::Approx (0.2f));
+    }
+}
+
 //==============================================================================
 // NFR-IO-4 / FR-MON-5: on Linux, ALSA hardware is opened directly and a failure
 // to do so is surfaced loudly — never a silent fallback to PipeWire/Pulse/JACK.
