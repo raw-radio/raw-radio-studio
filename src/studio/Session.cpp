@@ -79,7 +79,7 @@ namespace rrs
             edit.reset();
         }
 
-        removeLockFile();
+        clearInterruptionMarker();
     }
 
     //==============================================================================
@@ -96,7 +96,7 @@ namespace rrs
         if (! createOrOpenEdit (file, false))
             return false;
 
-        writeLockFile();
+        writeInterruptionMarker();
         configureSingleStereoTrack();
         save();
         sendChangeMessage();
@@ -114,7 +114,7 @@ namespace rrs
         if (! createOrOpenEdit (file, true))
             return false;
 
-        writeLockFile();
+        writeInterruptionMarker();
         configureSingleStereoTrack();
         sendChangeMessage();
         return true;
@@ -437,6 +437,41 @@ namespace rrs
     }
 
     //==============================================================================
+    void Session::close()
+    {
+        if (edit == nullptr)
+            return;
+
+        stopTimer();
+        detachMeter();
+
+        // Halt playback/recording before the Edit is torn down.
+        edit->getTransport().stop (false, false);
+
+        // Drop any autosave temp version *before* the Edit goes away: a
+        // deliberately-closed project must leave no stale recovery artifact
+        // behind (otherwise the next launch would prompt for a resolved session).
+        te::EditFileOperations ops (*edit);
+        ops.deleteTempVersion();
+
+        edit.reset();
+        editFile = juce::File();
+        inputsConfigured = false;
+
+        // The session is gone: clear the sentinel so a crash while empty does not
+        // masquerade as an interrupted session.
+        clearInterruptionMarker();
+
+        clearLastError();
+        sendChangeMessage();
+    }
+
+    bool Session::hasUnsavedChanges() const
+    {
+        return edit != nullptr && edit->hasChangedSinceSaved();
+    }
+
+    //==============================================================================
     void Session::setAutosaveIntervalSeconds (int seconds)
     {
         autosaveIntervalSeconds = juce::jmax (0, seconds);
@@ -673,14 +708,14 @@ namespace rrs
     }
 
     //==============================================================================
-    void Session::writeLockFile()
+    void Session::writeInterruptionMarker()
     {
         paths::appDataDirectory().createDirectory();
         paths::lockFile().replaceWithText ("raw-radio-studio session lock\n"
                                            + juce::Time::getCurrentTime().toString (true, true, true, true) + "\n");
     }
 
-    void Session::removeLockFile()
+    void Session::clearInterruptionMarker()
     {
         paths::lockFile().deleteFile();
     }

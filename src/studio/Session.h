@@ -45,6 +45,16 @@ namespace rrs
         bool save();
         bool saveAs (const juce::File&);
 
+        /** Closes the current session, returning the app to an empty state.
+            Deletes any autosave temp version and clears the startup sentinel so
+            a deliberately-closed project leaves no stale recovery state. The
+            caller is responsible for warning about unsaved changes first. */
+        void close();
+
+        /** True when the current edit has edits not yet written to the session
+            file (drives the Close/Save unsaved-changes guard). */
+        bool hasUnsavedChanges() const;
+
         juce::File getEditFile() const noexcept                 { return editFile; }
         juce::String getSessionName() const;
         tracktion::Edit* getEdit() const noexcept               { return edit.get(); }
@@ -98,8 +108,18 @@ namespace rrs
             juce::File editFile;
             juce::File tempEditFile;                     ///< `.tmp_<name>` from autosave.
             bool hasTempEdit = false;
-            bool uncleanShutdown = false;                ///< Lock file was present.
+            bool uncleanShutdown = false;                ///< Startup sentinel was present.
             juce::Array<juce::File> candidateRecordings; ///< Unreferenced WAV candidates.
+
+            /** True when the previous run did not end cleanly: the startup
+                sentinel (session.lock) is still present, or an unsaved temp
+                version was left behind. This is the authoritative signal that
+                must ALWAYS trigger the recovery prompt — it is not inferred
+                from transient autosave state. */
+            bool interrupted() const noexcept
+            {
+                return uncleanShutdown || hasTempEdit;
+            }
 
             bool hasRecoverables() const noexcept
             {
@@ -132,8 +152,12 @@ namespace rrs
         bool configureSingleStereoTrack();
         void ensureMeterAttached();
         void detachMeter();
-        void writeLockFile();
-        void removeLockFile();
+        /** Writes/removes the interrupted-session sentinel (AppPaths::lockFile).
+            Written when a session becomes active and only cleared on a clean
+            shutdown, so its presence on the next launch deterministically means
+            "the previous run was interrupted". */
+        void writeInterruptionMarker();
+        void clearInterruptionMarker();
         juce::Array<juce::File> findReferencedRecordings() const;
 
         AudioEngine& audio;

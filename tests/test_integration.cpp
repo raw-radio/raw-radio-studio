@@ -338,6 +338,44 @@ TEST_CASE ("autosave writes the .tmp_ sibling and detectRecovery finds it")
 }
 
 //==============================================================================
+TEST_CASE ("interrupted-session detection is deterministic (sentinel or temp always prompts)")
+{
+    // The startup decision must key off an explicit marker, never off transient
+    // autosave state that a proactive save() would have consumed. These are the
+    // three cases MainComponent::runStartupRecovery distinguishes.
+    {
+        Session::RecoveryInfo clean;
+        CHECK_FALSE (clean.interrupted());
+    }
+    {
+        Session::RecoveryInfo unclean;
+        unclean.uncleanShutdown = true; // startup sentinel present, no temp yet
+        CHECK (unclean.interrupted());
+    }
+    {
+        Session::RecoveryInfo temp;
+        temp.hasTempEdit = true;        // unsaved temp left by a quit
+        CHECK (temp.interrupted());
+    }
+}
+
+TEST_CASE ("detectRecovery treats a leftover temp edit as an interrupted session")
+{
+    auto dir = scratchDirectory ("interrupt-temp");
+    auto editFile = dir.getChildFile ("Interrupted.tracktionedit");
+
+    // Simulate an autosave temp surviving a crash: no real session file needed
+    // for detection to flag the session as interrupted.
+    const auto tempFile = paths::tempEditFileFor (editFile);
+    tempFile.replaceWithText ("<EDIT/>");
+
+    const auto info = Session::detectRecovery (editFile);
+    CHECK (info.hasTempEdit);
+    CHECK (info.interrupted());
+    CHECK (info.hasRecoverables());
+}
+
+//==============================================================================
 // NFR-IO-4 / FR-MON-5: on Linux, ALSA hardware is opened directly and a failure
 // to do so is surfaced loudly — never a silent fallback to PipeWire/Pulse/JACK.
 // The policy logic itself is unit-tested on every platform in test_studio.cpp;

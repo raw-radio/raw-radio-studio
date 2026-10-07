@@ -42,6 +42,7 @@ namespace rrs
 
         void newSession();
         void openSession();
+        void closeSession();
         void saveSession();
         void saveSessionAs();
         void importAudioFile();
@@ -64,6 +65,7 @@ namespace rrs
         InputMeter inputMeter { session.getInputLevels() };
 
         juce::TextButton newButton { "New" }, openButton { "Open" };
+        juce::TextButton closeButton { "Close" };
         juce::TextButton saveButton { "Save" }, saveAsButton { "Save As" };
         juce::TextButton importButton { "Import..." };
         juce::TextButton exportButton { "Export WAV..." };

@@ -37,7 +37,7 @@ namespace rrs
         addAndMakeVisible (transportLabel);
         addAndMakeVisible (statusLabel);
 
-        for (auto* button : { &newButton, &openButton, &saveButton, &saveAsButton,
+        for (auto* button : { &newButton, &openButton, &closeButton, &saveButton, &saveAsButton,
                               &importButton, &exportButton, &settingsButton, &aboutButton,
                               &armButton, &recordButton, &playButton, &stopButton, &monitorButton })
             addAndMakeVisible (*button);
@@ -46,6 +46,7 @@ namespace rrs
 
         newButton.onClick       = [this] { newSession(); };
         openButton.onClick      = [this] { openSession(); };
+        closeButton.onClick     = [this] { closeSession(); };
         saveButton.onClick      = [this] { saveSession(); };
         saveAsButton.onClick    = [this] { saveSessionAs(); };
         importButton.onClick    = [this] { importAudioFile(); };
@@ -173,6 +174,7 @@ namespace rrs
 
         newButton.setEnabled (! busy);
         openButton.setEnabled (! busy);
+        closeButton.setEnabled (hasEdit && ! busy);
 
         recordButton.setButtonText (session.isRecording() ? "Stop rec" : "Record");
         playButton.setButtonText (session.isPlaying() ? "Pause" : "Play");
@@ -257,6 +259,75 @@ namespace rrs
                                   else
                                       showStatus (session.getLastError(), true);
                               });
+    }
+
+    void MainComponent::closeSession()
+    {
+        if (exportInProgress || session.getEdit() == nullptr)
+            return;
+
+        juce::Component::SafePointer<MainComponent> safe (this);
+
+        // Performs the actual close: resets the session to an empty state and
+        // forgets it so a subsequent launch does not silently reopen it.
+        auto performClose = [safe]
+        {
+            auto* self = safe.getComponent();
+
+            if (self == nullptr)
+                return;
+
+            self->session.close();
+            self->titleLabel.setText ("raw-radio-studio   -   No session", juce::dontSendNotification);
+
+            if (self->settings != nullptr)
+            {
+                self->settings->removeValue ("lastSession");
+                self->settings->saveIfNeeded();
+            }
+
+            self->showStatus ("Session closed.");
+            self->refreshTransportUi();
+        };
+
+        if (! session.hasUnsavedChanges())
+        {
+            performClose();
+            return;
+        }
+
+        juce::NativeMessageBox::showAsync (
+            juce::MessageBoxOptions()
+                .withIconType (juce::MessageBoxIconType::WarningIcon)
+                .withTitle ("Close session")
+                .withMessage ("This session has unsaved changes.\n\n"
+                              "Save them before closing?")
+                .withButton ("Save")
+                .withButton ("Discard")
+                .withButton ("Cancel"),
+            [safe, performClose] (int result)
+            {
+                auto* self = safe.getComponent();
+
+                if (self == nullptr)
+                    return;
+
+                if (result == 0) // Save
+                {
+                    if (! self->session.save())
+                    {
+                        self->showStatus (self->session.getLastError(), true);
+                        return; // save failed: keep the session open
+                    }
+
+                    performClose();
+                }
+                else if (result == 1) // Discard
+                {
+                    performClose();
+                }
+                // result == 2 (Cancel): do nothing.
+            });
     }
 
     void MainComponent::saveSession()
@@ -484,7 +555,10 @@ namespace rrs
 
         const auto info = Session::detectRecovery (lastSession);
 
-        if (! info.hasRecoverables())
+        // Only a clean previous exit (no startup sentinel, no unsaved temp
+        // version) may auto-open the last session. Any interruption ALWAYS shows
+        // the dialog below — the user must explicitly Restore or Discard.
+        if (! info.interrupted())
         {
             if (lastSession.existsAsFile())
                 session.open (lastSession);
@@ -496,9 +570,7 @@ namespace rrs
         }
 
         juce::String message;
-
-        if (info.uncleanShutdown)
-            message << "The previous session ended unexpectedly.\n\n";
+        message << "The previous session did not close cleanly.\n\n";
 
         if (info.hasTempEdit)
             message << "- An autosaved version of the session is available.\n";
@@ -507,7 +579,7 @@ namespace rrs
             message << "- " << info.candidateRecordings.size()
                     << " recorded file(s) from the previous run are present.\n";
 
-        message << "\nRecover the session?";
+        message << "\nRestore the session, or discard the recovered changes?";
 
         juce::Component::SafePointer<MainComponent> safe (this);
 
@@ -516,7 +588,7 @@ namespace rrs
                 .withIconType (juce::MessageBoxIconType::WarningIcon)
                 .withTitle ("Session recovery")
                 .withMessage (message)
-                .withButton ("Recover")
+                .withButton ("Restore")
                 .withButton ("Discard"),
             [safe, info, lastSession] (int result)
             {
@@ -525,7 +597,7 @@ namespace rrs
                 if (self == nullptr)
                     return;
 
-                if (result == 0) // Recover
+                if (result == 0) // Restore
                 {
                     if (info.hasTempEdit)
                         self->session.applyTempEditRecovery (info);
@@ -542,7 +614,7 @@ namespace rrs
                     if (recovered > 0)
                         self->showStatus ("Recovered " + juce::String (recovered) + " recording(s).");
                 }
-                else // Discard
+                else // Discard: drop the recovered changes, start from the last saved state
                 {
                     if (info.hasTempEdit)
                         info.tempEditFile.deleteFile();
@@ -692,7 +764,7 @@ namespace rrs
 
         auto actions = area.removeFromTop (30);
 
-        for (auto* button : { &newButton, &openButton, &saveButton, &saveAsButton,
+        for (auto* button : { &newButton, &openButton, &closeButton, &saveButton, &saveAsButton,
                               &importButton, &exportButton, &settingsButton, &aboutButton })
             button->setBounds (actions.removeFromLeft (82).reduced (2));
 
