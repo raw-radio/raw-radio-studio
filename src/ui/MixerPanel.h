@@ -86,6 +86,11 @@ namespace rrs
         DragTarget dragTarget = DragTarget::None;
         int dragIndex = -1;
 
+        /** True when a trim drag applied a live gain change that has not yet been
+            persisted. The session file is written once on mouse-up instead of on
+            every mouse-move. */
+        bool trimDragDirty = false;
+
         /** Timestamp of the previous meter update, for dt-based ballistics. */
         double lastMeterMs = 0.0;
 

@@ -515,7 +515,10 @@ namespace rrs
             const auto left = (float) bar.getX() + 3.0f;
             const auto right = (float) bar.getRight() - 3.0f;
 
-            session.setTrackInputGainDb (strip.trackIndex, trimFromX ((float) pos.x, left, right));
+            // Apply the gain live but defer persisting: writing the session file
+            // on every mouse-move made the drag lag. `mouseUp` saves once.
+            session.setTrackInputGainDb (strip.trackIndex, trimFromX ((float) pos.x, left, right), false);
+            trimDragDirty = true;
         }
 
         repaint();
@@ -523,6 +526,13 @@ namespace rrs
 
     void MixerPanel::mouseUp (const juce::MouseEvent&)
     {
+        // Persist a trim drag exactly once, after the pointer is released.
+        if (dragTarget == DragTarget::Trim && trimDragDirty)
+        {
+            session.save();
+            trimDragDirty = false;
+        }
+
         dragTarget = DragTarget::None;
         dragIndex = -1;
     }

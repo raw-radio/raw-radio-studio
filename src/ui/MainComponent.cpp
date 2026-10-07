@@ -115,10 +115,22 @@ namespace rrs
             if (exportInProgress || session.getEdit() == nullptr)
                 return;
 
-            if (session.normaliseLatestTake())
-                showStatus ("Normalised the latest take to -1 dBFS.");
+            Session::NormaliseResult result;
+
+            if (session.normaliseLatestTake (-1.0f, &result))
+            {
+                if (result.clamped)
+                    showStatus ("Normalised the latest take: gain clamped to "
+                                + juce::String (result.appliedGainDb, 1)
+                                + " dB, peak " + juce::String (result.achievedPeakDb, 1)
+                                + " dBFS (target -1 dBFS not reachable).");
+                else
+                    showStatus ("Normalised the latest take to -1 dBFS.");
+            }
             else
+            {
                 showStatus (session.getLastError(), true);
+            }
 
             refreshTransportUi();
         };

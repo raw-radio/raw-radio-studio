@@ -30,8 +30,13 @@ namespace rrs
         constexpr float maxInputGainDb =  24.0f;
 
         /** Peak sample magnitude of an audio file, using the engine's read
-            formats, or 0 when it cannot be read. Runs on the message thread
-            (normalisation is a user action), never on the audio thread. */
+            formats, or 0 when it cannot be read.
+
+            KNOWN LIMITATION: this scans the whole file synchronously on the
+            calling (message) thread, so normalising a long take briefly blocks
+            the UI. A future revision should move the scan onto a background
+            thread with a progress/locked state. Never called on the audio
+            thread. */
         float readFilePeak (te::Engine& engine, const juce::File& file)
         {
             if (! file.existsAsFile())
@@ -61,6 +66,40 @@ namespace rrs
             }
 
             return peak;
+        }
+
+        /** The most recent wave clip on a track, chosen by timeline position so
+            the result is deterministic — Tracktion's `getClips()` order is not
+            guaranteed to be chronological. A tie on the start time is broken by
+            the source file name so repeated calls always pick the same take. */
+        te::WaveAudioClip* latestWaveClip (te::AudioTrack& track)
+        {
+            te::WaveAudioClip* latest = nullptr;
+
+            for (auto* clip : track.getClips())
+            {
+                auto* wave = dynamic_cast<te::WaveAudioClip*> (clip);
+
+                if (wave == nullptr)
+                    continue;
+
+                if (latest == nullptr)
+                {
+                    latest = wave;
+                    continue;
+                }
+
+                const auto candidateStart = wave->getPosition().getStart();
+                const auto latestStart    = latest->getPosition().getStart();
+
+                if (candidateStart > latestStart
+                    || (candidateStart == latestStart
+                        && wave->getOriginalFile().getFileName()
+                               > latest->getOriginalFile().getFileName()))
+                    latest = wave;
+            }
+
+            return latest;
         }
 
         // Master fader state. Stored on the Edit's root ValueTree so the user's
@@ -158,6 +197,14 @@ namespace rrs
 
         if (! createOrOpenEdit (file, false))
             return false;
+
+        // Tracktion's `createEmptyEdit` gives a brand-new Edit a master default of
+        // -3 dB (`Edit::Options::defaultMasterVolumedB`). RAW Radio sessions start
+        // at unity so the mixer and the exported WAV are predictable (a fresh
+        // session's render matches the engineer's monitoring with no hidden trim).
+        // Reopened projects keep their stored master gain, restored in
+        // `createOrOpenEdit`.
+        setMasterGainDb (0.0f);
 
         writeInterruptionMarker();
         configureTracks();
@@ -413,7 +460,7 @@ namespace rrs
 
     //==============================================================================
     // Per-input-track record gain / trim (FR-REC-4)
-    bool Session::setTrackInputGainDb (int trackIndex, float db)
+    bool Session::setTrackInputGainDb (int trackIndex, float db, bool persist)
     {
         auto* track = getTrack (trackIndex);
 
@@ -432,7 +479,13 @@ namespace rrs
         if (auto* waveIn = resolveInputDeviceFor (readTrackMapping (trackIndex)))
             waveIn->setInputGainDb (clamped);
 
-        save();
+        // Persisting rewrites the whole `.tracktionedit`. During a UI drag the
+        // caller passes `persist=false` on every mouse-move and saves once on
+        // mouse-up, so the live gain still tracks the pointer without writing the
+        // file per frame.
+        if (persist)
+            save();
+
         sendChangeMessage();
         return true;
     }
@@ -450,7 +503,7 @@ namespace rrs
 
     //==============================================================================
     // Take normalisation (peak-normalise a recorded clip, non-destructive).
-    bool Session::normaliseTake (int trackIndex, float targetPeakDb)
+    bool Session::normaliseTake (int trackIndex, float targetPeakDb, NormaliseResult* result)
     {
         auto* track = getTrack (trackIndex);
 
@@ -460,12 +513,9 @@ namespace rrs
             return false;
         }
 
-        // The most recent wave clip on the track is the take to normalise.
-        te::WaveAudioClip* take = nullptr;
-
-        for (auto* clip : track->getClips())
-            if (auto* wave = dynamic_cast<te::WaveAudioClip*> (clip))
-                take = wave;
+        // The most recent wave clip on the track is the take to normalise,
+        // chosen by timeline position (deterministic) rather than clip-list order.
+        auto* take = latestWaveClip (*track);
 
         if (take == nullptr)
         {
@@ -482,7 +532,24 @@ namespace rrs
         }
 
         const auto peakDb = juce::Decibels::gainToDecibels (peak, -100.0f);
-        take->setGainDB (juce::jlimit (-100.0f, 24.0f, targetPeakDb - peakDb));
+        const auto requestedGainDb = targetPeakDb - peakDb;
+
+        // Tracktion clamps clip gain to [-100, +24] dB. A very quiet take (or a
+        // target requiring more than +24 dB) is limited, so the take may fall
+        // short of the requested target — report the achieved value instead of
+        // assuming it landed on target.
+        constexpr float minClipGainDb = -100.0f;
+        constexpr float maxClipGainDb = 24.0f;
+        const auto appliedGainDb = juce::jlimit (minClipGainDb, maxClipGainDb, requestedGainDb);
+
+        take->setGainDB (appliedGainDb);
+
+        if (result != nullptr)
+        {
+            result->appliedGainDb  = appliedGainDb;
+            result->achievedPeakDb = peakDb + appliedGainDb;
+            result->clamped        = std::abs (appliedGainDb - requestedGainDb) > 0.01f;
+        }
 
         edit->restartPlayback();
         save();
@@ -491,7 +558,7 @@ namespace rrs
         return true;
     }
 
-    bool Session::normaliseLatestTake (float targetPeakDb)
+    bool Session::normaliseLatestTake (float targetPeakDb, NormaliseResult* result)
     {
         if (edit == nullptr)
             return false;
@@ -501,23 +568,19 @@ namespace rrs
 
         auto hasWaveClip = [] (te::AudioTrack* track)
         {
-            for (auto* clip : track->getClips())
-                if (dynamic_cast<te::WaveAudioClip*> (clip) != nullptr)
-                    return true;
-
-            return false;
+            return latestWaveClip (*track) != nullptr;
         };
 
         // Prefer the tracked takes (input tracks), newest channel last.
         for (int i = inputIndices.size() - 1; i >= 0; --i)
             if (auto* track = rows[inputIndices[i]])
                 if (hasWaveClip (track))
-                    return normaliseTake (inputIndices[i], targetPeakDb);
+                    return normaliseTake (inputIndices[i], targetPeakDb, result);
 
         // Fall back to any track that carries a wave clip.
         for (int i = rows.size() - 1; i >= 0; --i)
             if (hasWaveClip (rows[i]))
-                return normaliseTake (i, targetPeakDb);
+                return normaliseTake (i, targetPeakDb, result);
 
         lastError = "No recorded take to normalise.";
         return false;

@@ -407,15 +407,19 @@ TEST_CASE ("WavExport reflects the mixer: track fader, master gain and mute (mea
     REQUIRE (unityPeak > 0.1f);
 
     // Track fader -20 dB AND master -6 dB => the rendered peak must drop by the
-    // combined 26 dB. This is the exact "minus fader ignored in export" case.
+    // combined 26 dB. Assert in the dB domain: if the master chain were omitted
+    // (the useMasterPlugins=false regression) only the -20 dB track fader would
+    // apply and the drop would be -20 dB — a ratio tolerance can absorb that, an
+    // absolute dB check cannot. This is the exact "minus fader ignored in export"
+    // case.
     trackVolume->setVolumeDb (-20.0f);
     masterVolume->setVolumeDb (-6.0f);
     const auto reducedPeak = renderPeak (dir.getChildFile ("reduced.wav"));
 
-    const auto expectedRatio = juce::Decibels::decibelsToGain (-26.0f);
-    INFO ("unity " << unityPeak << ", reduced " << reducedPeak
-                   << ", ratio " << (reducedPeak / unityPeak) << ", expected " << expectedRatio);
-    CHECK (reducedPeak / unityPeak == doctest::Approx (expectedRatio).epsilon (0.05));
+    const auto dropDb = juce::Decibels::gainToDecibels (reducedPeak, -100.0f)
+                      - juce::Decibels::gainToDecibels (unityPeak, -100.0f);
+    INFO ("unity " << unityPeak << ", reduced " << reducedPeak << ", drop " << dropDb << " dB");
+    CHECK (dropDb == doctest::Approx (-26.0f).epsilon (0.02f));
 
     // Reset the faders; a muted master must render silence.
     trackVolume->setVolumeDb (0.0f);
@@ -1741,8 +1745,9 @@ TEST_CASE ("normalise brings a quiet take's peak to -1 dBFS (measured)")
     Session session (audio);
     REQUIRE (session.createNew (dir.getChildFile ("Normalise.tracktionedit")));
 
-    // Tracktion's new-edit master default is -3 dB; neutralise it so the export
-    // measures the *clip* normalisation, not the master trim.
+    // A fresh session now starts at master unity (see Session::createNew); this
+    // explicit set keeps the export measuring the *clip* normalisation, not any
+    // master trim, even if the default ever changes.
     REQUIRE (session.setMasterGainDb (0.0f));
 
     REQUIRE (session.importAudioFile (wavFile));
