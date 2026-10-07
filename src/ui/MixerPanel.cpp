@@ -11,6 +11,16 @@ namespace rrs
     {
         constexpr float minGainDb = -60.0f;
         constexpr float maxGainDb = 6.0f;
+
+        // Record-trim range (FR-REC-4); must match Session's clamp.
+        constexpr float minTrimDb = -24.0f;
+        constexpr float maxTrimDb =  24.0f;
+
+        float trimFromX (float x, float left, float right) noexcept
+        {
+            const auto t = juce::jlimit (0.0f, 1.0f, (x - left) / juce::jmax (1.0f, right - left));
+            return minTrimDb + t * (maxTrimDb - minTrimDb);
+        }
     }
 
     MixerPanel::MixerPanel (Session& sessionRef)
@@ -81,6 +91,13 @@ namespace rrs
                     armRow.removeFromLeft (2);
                     c.input = armRow.reduced (1, 1);
                 }
+
+                // Record trim row (FR-REC-4): reserved on every track strip so
+                // faders stay aligned; only input tracks draw/accept it.
+                auto trimRow = inner.removeFromTop (14);
+
+                if (c.isInput)
+                    c.trim = trimRow.reduced (1, 1);
             }
 
             c.meter = inner.removeFromRight (12);
@@ -271,6 +288,39 @@ namespace rrs
             g.drawText (code + juce::String (mapping.firstChannel + 1), i, juce::Justification::centred);
         }
 
+        // Record trim (FR-REC-4): a small horizontal bar, 0 dB centred, that
+        // scales the input before it is monitored and recorded. Input tracks only.
+        if (strip.isInput && ! strip.trim.isEmpty())
+        {
+            const auto trimDb = session.getTrackInputGainDb (strip.trackIndex);
+
+            auto trimArea = strip.trim;
+            auto valueArea = trimArea.removeFromLeft (26);
+            auto barArea = trimArea;
+
+            const auto left = (float) barArea.getX() + 3.0f;
+            const auto right = (float) barArea.getRight() - 3.0f;
+            const auto cy = (float) barArea.getCentreY();
+
+            g.setColour (brand::meterTrough);
+            g.fillRoundedRectangle (juce::Rectangle<float> (left, cy - 1.5f, juce::jmax (1.0f, right - left), 3.0f), 1.5f);
+
+            // 0 dB centre tick.
+            const auto centreX = (left + right) * 0.5f;
+            g.setColour (brand::border);
+            g.fillRect (juce::Rectangle<float> (centreX - 0.5f, cy - 3.5f, 1.0f, 7.0f));
+
+            const auto t = (trimDb - minTrimDb) / (maxTrimDb - minTrimDb);
+            const auto thumbX = left + juce::jlimit (0.0f, 1.0f, t) * (right - left);
+
+            g.setColour (std::abs (trimDb) > 0.05f ? brand::accent : brand::textPrimary);
+            g.fillEllipse (thumbX - 3.0f, cy - 3.0f, 6.0f, 6.0f);
+
+            g.setColour (brand::textTertiary);
+            g.setFont (brand::monoRegular (9.0f));
+            g.drawText (juce::String (trimDb, 1), valueArea, juce::Justification::centred);
+        }
+
         drawMeter (g, strip.meter, meter);
 
         // Fader.
@@ -383,6 +433,14 @@ namespace rrs
                 return;
             }
 
+            if (strip.isInput && strip.trim.contains (e.getPosition()))
+            {
+                dragTarget = DragTarget::Trim;
+                dragIndex = (int) i;
+                mouseDrag (e);
+                return;
+            }
+
             if (strip.mute.contains (e.getPosition()))
             {
                 if (strip.isMaster)
@@ -449,6 +507,15 @@ namespace rrs
                 session.setMasterPan (-1.0f + 2.0f * t);
             else
                 session.setTrackPan (strip.trackIndex, -1.0f + 2.0f * t);
+        }
+        else if (dragTarget == DragTarget::Trim && strip.isInput)
+        {
+            auto bar = strip.trim;
+            bar.removeFromLeft (26);
+            const auto left = (float) bar.getX() + 3.0f;
+            const auto right = (float) bar.getRight() - 3.0f;
+
+            session.setTrackInputGainDb (strip.trackIndex, trimFromX ((float) pos.x, left, right));
         }
 
         repaint();
@@ -521,6 +588,12 @@ namespace rrs
     {
         for (const auto& strip : strips)
         {
+            if (strip.isInput && strip.trim.contains (e.getPosition()))
+            {
+                session.setTrackInputGainDb (strip.trackIndex, 0.0f);
+                return;
+            }
+
             if (strip.fader.contains (e.getPosition()))
             {
                 if (strip.isMaster)

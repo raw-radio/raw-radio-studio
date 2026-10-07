@@ -86,6 +86,27 @@ namespace rrs
         bool setTrackInputMapping (int trackIndex, const InputMapping&);
         InputMapping getTrackInputMapping (int trackIndex) const;
 
+        //==============================================================================
+        // Per-input-track record gain / trim (FR-REC-4, Epic 2 GUI retest)
+        /** Sets the record trim in dB (applied to the input buffer before it is
+            both monitored and written to disk). RT-safe: the gain is a plain
+            value applied by the engine on the audio thread; no allocation. The
+            value is stored on the track's state so it survives save/open. */
+        bool setTrackInputGainDb (int trackIndex, float db);
+        float getTrackInputGainDb (int trackIndex) const;
+
+        //==============================================================================
+        // Take normalisation (Epic 2 GUI retest)
+        /** Peak-normalises the most recent wave clip on `trackIndex` so its peak
+            lands at `targetPeakDb` (default -1 dBFS). Non-destructive (clip
+            gain). Returns false when the track has no readable wave clip. */
+        bool normaliseTake (int trackIndex, float targetPeakDb = -1.0f);
+
+        /** Peak-normalises the most recent take in the session (input tracks
+            first, then any track with a wave clip). Returns false when there is
+            nothing to normalise. */
+        bool normaliseLatestTake (float targetPeakDb = -1.0f);
+
         /** Number of currently active hardware input channels on the open device
             (0 when no device is open). Used by the UI to offer valid input
             assignments (FR-REC-3). */

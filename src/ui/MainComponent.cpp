@@ -44,7 +44,8 @@ namespace rrs
         addAndMakeVisible (statusLabel);
 
         for (auto* button : { &newButton, &openButton, &closeButton, &saveButton, &saveAsButton,
-                              &importButton, &exportButton, &addTrackButton, &removeTrackButton,
+                              &importButton, &normaliseButton, &exportButton,
+                              &addTrackButton, &removeTrackButton,
                               &settingsButton, &aboutButton,
                               &armButton, &recordButton, &playButton, &stopButton, &goToStartButton,
                               &monitorButton, &metronomeButton })
@@ -66,6 +67,8 @@ namespace rrs
         saveAsButton.setIconName ("save-all");
         closeButton.setIconName ("x");
         importButton.setIconName ("file-input");
+        normaliseButton.setIconName ("activity");
+        normaliseButton.setTooltip ("Peak-normalise the most recent take to -1 dBFS");
         exportButton.setIconName ("file-output");
         addTrackButton.setIconName ("file-plus");
         addTrackButton.setTooltip ("Add an input track (maps to the next free input)");
@@ -107,6 +110,18 @@ namespace rrs
         saveButton.onClick      = [this] { saveSession(); };
         saveAsButton.onClick    = [this] { saveSessionAs(); };
         importButton.onClick    = [this] { importAudioFile(); };
+        normaliseButton.onClick = [this]
+        {
+            if (exportInProgress || session.getEdit() == nullptr)
+                return;
+
+            if (session.normaliseLatestTake())
+                showStatus ("Normalised the latest take to -1 dBFS.");
+            else
+                showStatus (session.getLastError(), true);
+
+            refreshTransportUi();
+        };
         exportButton.onClick    = [this] { exportSession(); };
         addTrackButton.onClick  = [this]
         {
@@ -285,7 +300,7 @@ namespace rrs
         // panel (children included) also blocks Rescan/Apply/combo changes.
         devicePanel.setEnabled (! busy);
 
-        for (auto* button : { &saveButton, &saveAsButton, &importButton, &exportButton,
+        for (auto* button : { &saveButton, &saveAsButton, &importButton, &normaliseButton, &exportButton,
                               &armButton, &recordButton, &playButton, &stopButton, &goToStartButton,
                               &monitorButton, &metronomeButton })
             button->setEnabled (hasEdit && ! busy);
@@ -1074,13 +1089,13 @@ namespace rrs
             int width = 0;
         };
 
-        // [New][Open][Save][Save As] · [Close][Import][Export WAV][Add track][Remove track]
-        // · [Settings][About]
+        // [New][Open][Save][Save As] · [Close][Import][Normalize][Export WAV][Add track]
+        // [Remove track] · [Settings][About]
         BrandButton* const buttons[] = { &newButton, &openButton, &saveButton, &saveAsButton,
-                                         &closeButton, &importButton, &exportButton,
+                                         &closeButton, &importButton, &normaliseButton, &exportButton,
                                          &addTrackButton, &removeTrackButton,
                                          &settingsButton, &aboutButton };
-        const int groups[] = { 0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2 };
+        const int groups[] = { 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 2, 2 };
         constexpr int numButtons = (int) std::size (buttons);
 
         std::vector<Item> items;

@@ -93,6 +93,7 @@ namespace rrs
         BrandButton closeButton { "Close" };
         BrandButton saveButton { "Save" }, saveAsButton { "Save As" };
         BrandButton importButton { "Import" };
+        BrandButton normaliseButton { "Normalize" };
         BrandButton exportButton { "Export WAV", BrandButton::Style::Primary };
         BrandButton addTrackButton { "Add track" }, removeTrackButton { "Remove track" };
         BrandButton settingsButton { "Settings" }, aboutButton { "About" };

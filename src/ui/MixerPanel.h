@@ -48,6 +48,7 @@ namespace rrs
             juce::Rectangle<int> name;
             juce::Rectangle<int> arm;   ///< Track: record-arm chip (FR-REC-2). Unused on master.
             juce::Rectangle<int> input; ///< Track: input-mapping chip (FR-REC-3). Unused on master.
+            juce::Rectangle<int> trim;  ///< Track: record trim (FR-REC-4). Input tracks only.
             juce::Rectangle<int> meter;
             juce::Rectangle<int> fader;
             juce::Rectangle<int> pan;
@@ -81,7 +82,7 @@ namespace rrs
         std::vector<MeterVisual> meters;
         int stripCount = -1;
 
-        enum class DragTarget { None, Fader, Pan };
+        enum class DragTarget { None, Fader, Pan, Trim };
         DragTarget dragTarget = DragTarget::None;
         int dragIndex = -1;
 

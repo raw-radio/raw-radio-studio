@@ -111,7 +111,8 @@ namespace
     }
 
     /** Writes a valid 24-bit stereo sine WAV so an edit can reference it. */
-    juce::File writeSineWav (const juce::File& file, double sampleRate, double seconds)
+    juce::File writeSineWav (const juce::File& file, double sampleRate, double seconds,
+                             float amplitude = 0.5f)
     {
         file.deleteFile();
 
@@ -132,8 +133,8 @@ namespace
 
         for (int ch = 0; ch < 2; ++ch)
             for (int i = 0; i < numSamples; ++i)
-                buffer.setSample (ch, i, 0.5f * (float) std::sin (2.0 * juce::MathConstants<double>::pi
-                                                                   * 440.0 * (double) i / sampleRate));
+                buffer.setSample (ch, i, amplitude * (float) std::sin (2.0 * juce::MathConstants<double>::pi
+                                                                       * 440.0 * (double) i / sampleRate));
 
         if (! writer->writeFromAudioSampleBuffer (buffer, 0, numSamples))
             return {};
@@ -1600,6 +1601,211 @@ TEST_CASE ("transport: Stop rewinds, Pause holds, Go to start seeks to 0")
     REQUIRE (position() == doctest::Approx (1.5).epsilon (0.01));
     session.goToStart();
     CHECK (position() == doctest::Approx (0.0).epsilon (0.001));
+
+    session.close();
+}
+
+//==============================================================================
+// FR-REC-4 (Epic 2 GUI retest): the per-input-track record trim must scale the
+// signal written to disk (it is applied to the input buffer on the record path,
+// before monitoring and recording). Two tracks, two trims, one pass.
+TEST_CASE ("input record trim scales the recorded signal (measured)")
+{
+    auto dir = scratchDirectory ("input-trim");
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Trim.tracktionedit")));
+    REQUIRE (session.getNumAudioTracks() == 1);
+    REQUIRE (session.addAudioTrack() >= 0);
+    REQUIRE (session.getNumAudioTracks() == 2);
+
+    te::HostedAudioDeviceInterface::Parameters params;
+    params.sampleRate = 48000.0;
+    params.blockSize = 256;
+    params.inputChannels = 2;
+    params.outputChannels = 2;
+
+    auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+
+    auto& dm = audio.deviceManager();
+    dm.setAllWaveInputsToNumChannels (1);
+
+    for (int i = 0; i < 300; ++i)
+    {
+        dm.dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+        if (session.isInputConfigured() && dm.getNumWaveInDevices() >= 2)
+            break;
+
+        session.reconfigureInputs();
+    }
+
+    REQUIRE (session.isInputConfigured());
+
+    const auto indices = session.getInputTrackIndices();
+    REQUIRE (indices.size() == 2);
+
+    REQUIRE (session.setTrackInputGainDb (indices[0], 6.0f));
+    REQUIRE (session.setTrackInputGainDb (indices[1], -6.0f));
+    CHECK (session.getTrackInputGainDb (indices[0]) == doctest::Approx (6.0f));
+    CHECK (session.getTrackInputGainDb (indices[1]) == doctest::Approx (-6.0f));
+
+    for (auto index : indices)
+        REQUIRE (session.setTrackArmed (index, true));
+
+    const float amps[2] = { 0.25f, 0.125f };
+
+    session.getEdit()->getTransport().setPosition (te::TimePosition {});
+    REQUIRE (session.record());
+
+    juce::AudioBuffer<float> input (2, 256);
+
+    for (int block = 0; block < 80; ++block)
+    {
+        for (int ch = 0; ch < 2; ++ch)
+            for (int s = 0; s < input.getNumSamples(); ++s)
+                input.setSample (ch, s, amps[ch]);
+
+        player->process (input);
+    }
+
+    session.stop();
+
+    for (int i = 0; i < 300; ++i)
+    {
+        session.getEdit()->dispatchPendingUpdatesSynchronously();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (20);
+    }
+
+    for (auto index : indices)
+        session.setTrackArmed (index, false);
+
+    session.setMonitoringEnabled (false);
+
+    const float gains[2] = { juce::Decibels::decibelsToGain (6.0f),
+                             juce::Decibels::decibelsToGain (-6.0f) };
+
+    for (int t = 0; t < (int) indices.size(); ++t)
+    {
+        auto* track = session.getTrack (indices[t]);
+        REQUIRE (track != nullptr);
+        REQUIRE (track->getClips().size() >= 1);
+
+        auto* clip = dynamic_cast<te::WaveAudioClip*> (track->getClips()[0]);
+        REQUIRE (clip != nullptr);
+
+        const auto file = clip->getOriginalFile();
+        REQUIRE (file.existsAsFile());
+
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::AudioFormatReader> reader (
+            wav.createReaderFor (new juce::FileInputStream (file), true));
+        REQUIRE (reader != nullptr);
+        REQUIRE (reader->lengthInSamples > 0);
+
+        const auto total = (juce::int64) reader->lengthInSamples;
+        const auto start = total / 2;
+        const auto numToRead = (int) juce::jmin ((juce::int64) 2048, total - start);
+        juce::AudioBuffer<float> recorded ((int) reader->numChannels, numToRead);
+        REQUIRE (reader->read (&recorded, 0, numToRead, start, true, true));
+
+        const auto inputChannel = session.getTrackInputMapping (indices[t]).firstChannel;
+        REQUIRE (juce::isPositiveAndBelow (inputChannel, 2));
+
+        const auto peak = recorded.getMagnitude (0, numToRead);
+        const auto expected = amps[inputChannel] * gains[t];
+
+        INFO ("track " << indices[t] << " trim " << session.getTrackInputGainDb (indices[t])
+                       << " dB on input " << inputChannel
+                       << ": recorded peak " << peak << " expected " << expected);
+        CHECK (peak == doctest::Approx (expected).epsilon (0.03f));
+    }
+
+    session.close();
+}
+
+//==============================================================================
+// Normalise (Epic 2 GUI retest): a quiet take is peak-normalised to -1 dBFS,
+// measured through an actual export render.
+TEST_CASE ("normalise brings a quiet take's peak to -1 dBFS (measured)")
+{
+    auto dir = scratchDirectory ("normalise");
+
+    // 0.1 amplitude = -20 dBFS source peak.
+    auto wavFile = writeSineWav (dir.getChildFile ("quiet.wav"), 48000.0, 0.5, 0.1f);
+    REQUIRE (wavFile.existsAsFile());
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Normalise.tracktionedit")));
+
+    // Tracktion's new-edit master default is -3 dB; neutralise it so the export
+    // measures the *clip* normalisation, not the master trim.
+    REQUIRE (session.setMasterGainDb (0.0f));
+
+    REQUIRE (session.importAudioFile (wavFile));
+    REQUIRE (session.getNumAudioTracks() == 2);
+
+    const int takeTrack = 1;
+    REQUIRE (session.getTrack (takeTrack) != nullptr);
+    REQUIRE (session.getTrack (takeTrack)->getClips().size() == 1);
+
+    auto* clip = dynamic_cast<te::WaveAudioClip*> (session.getTrack (takeTrack)->getClips()[0]);
+    REQUIRE (clip != nullptr);
+    CHECK (clip->getGainDB() == doctest::Approx (0.0f));
+
+    // Let the session timer attach its meters before exporting (avoids a graph
+    // rebuild racing the render thread).
+    for (int i = 0; i < 15; ++i)
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (20);
+
+    // Reference render at unity clip gain, to prove the normalise actually
+    // scaled the rendered take (not just the stored clip gain).
+    auto pre = dir.getChildFile ("pre.wav");
+    std::atomic<bool> done { false };
+    auto h = WavExport::start (*session.getEdit(), pre,
+                               [&] (bool, juce::File, juce::String) { done = true; });
+    for (int i = 0; i < 400 && ! done.load(); ++i)
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (25);
+    const auto prePeak = readWavPeak (pre);
+
+    REQUIRE (session.normaliseTake (takeTrack));
+
+    // Source peak -20 dBFS -> +19 dB of non-destructive clip gain.
+    INFO ("normalise clip gain " << clip->getGainDB() << " dB");
+    CHECK (clip->getGainDB() == doctest::Approx (19.0f).epsilon (0.5f));
+
+    // Measured: the exported render must peak at ~ -1 dBFS.
+    auto dest = dir.getChildFile ("normalised.wav");
+    std::atomic<bool> finished { false };
+    bool succeeded = false;
+    juce::String error;
+
+    auto handle = WavExport::start (*session.getEdit(), dest,
+                                    [&] (bool success, juce::File, juce::String message)
+                                    {
+                                        succeeded = success;
+                                        error = message;
+                                        finished = true;
+                                    });
+
+    REQUIRE (handle != nullptr);
+
+    for (int i = 0; i < 400 && ! finished.load(); ++i)
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (25);
+
+    REQUIRE (finished.load());
+    INFO ("render error: " << error);
+    REQUIRE (succeeded);
+
+    const auto peak = readWavPeak (dest);
+    const auto peakDb = juce::Decibels::gainToDecibels (peak, -100.0f);
+    INFO ("pre-normalise peak " << prePeak
+          << ", normalised peak " << peakDb << " dBFS");
+    CHECK (prePeak == doctest::Approx (0.1f).epsilon (0.02f));
+    CHECK (peakDb == doctest::Approx (-1.0f).epsilon (0.5f));
 
     session.close();
 }

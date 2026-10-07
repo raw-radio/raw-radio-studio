@@ -23,6 +23,45 @@ namespace rrs
         const juce::Identifier idFirstChannel { "rrsInputFirstChannel" };
         const juce::Identifier idNumChannels  { "rrsInputNumChannels" };
         const juce::Identifier idLayout       { "rrsInputLayout" };
+        const juce::Identifier idInputGainDb  { "rrsInputGainDb" };
+
+        // Record trim range: enough to rescue a quiet mic without absurd boosts.
+        constexpr float minInputGainDb = -24.0f;
+        constexpr float maxInputGainDb =  24.0f;
+
+        /** Peak sample magnitude of an audio file, using the engine's read
+            formats, or 0 when it cannot be read. Runs on the message thread
+            (normalisation is a user action), never on the audio thread. */
+        float readFilePeak (te::Engine& engine, const juce::File& file)
+        {
+            if (! file.existsAsFile())
+                return 0.0f;
+
+            std::unique_ptr<juce::AudioFormatReader> reader (
+                engine.getAudioFileFormatManager().readFormatManager.createReaderFor (file));
+
+            if (reader == nullptr || reader->lengthInSamples <= 0)
+                return 0.0f;
+
+            constexpr int blockSize = 8192;
+            const auto numChannels = juce::jmax (1, (int) reader->numChannels);
+            juce::AudioBuffer<float> buffer (numChannels, blockSize);
+
+            float peak = 0.0f;
+            const auto total = reader->lengthInSamples;
+
+            for (juce::int64 pos = 0; pos < total; pos += blockSize)
+            {
+                const auto n = (int) juce::jmin ((juce::int64) blockSize, total - pos);
+
+                if (! reader->read (&buffer, 0, n, pos, true, true))
+                    break;
+
+                peak = juce::jmax (peak, buffer.getMagnitude (0, n));
+            }
+
+            return peak;
+        }
 
         // Master fader state. Stored on the Edit's root ValueTree so the user's
         // chosen fader gain and the mute state survive save/open independently of
@@ -373,6 +412,118 @@ namespace rrs
     }
 
     //==============================================================================
+    // Per-input-track record gain / trim (FR-REC-4)
+    bool Session::setTrackInputGainDb (int trackIndex, float db)
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (edit == nullptr || track == nullptr || ! isInputTrack (*track))
+        {
+            lastError = "Only input tracks have a record trim.";
+            return false;
+        }
+
+        const auto clamped = juce::jlimit (minInputGainDb, maxInputGainDb, db);
+        track->state.setProperty (idInputGainDb, (double) clamped, nullptr);
+
+        // Apply to the live device now so monitoring and the next take both pick
+        // it up without a reconfigure. The engine applies it on the audio thread
+        // (plain gain multiply), so this is RT-safe.
+        if (auto* waveIn = resolveInputDeviceFor (readTrackMapping (trackIndex)))
+            waveIn->setInputGainDb (clamped);
+
+        save();
+        sendChangeMessage();
+        return true;
+    }
+
+    float Session::getTrackInputGainDb (int trackIndex) const
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (track == nullptr)
+            return 0.0f;
+
+        return juce::jlimit (minInputGainDb, maxInputGainDb,
+                             (float) (double) track->state.getProperty (idInputGainDb, 0.0));
+    }
+
+    //==============================================================================
+    // Take normalisation (peak-normalise a recorded clip, non-destructive).
+    bool Session::normaliseTake (int trackIndex, float targetPeakDb)
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (edit == nullptr || track == nullptr)
+        {
+            lastError = "No such track.";
+            return false;
+        }
+
+        // The most recent wave clip on the track is the take to normalise.
+        te::WaveAudioClip* take = nullptr;
+
+        for (auto* clip : track->getClips())
+            if (auto* wave = dynamic_cast<te::WaveAudioClip*> (clip))
+                take = wave;
+
+        if (take == nullptr)
+        {
+            lastError = "No recorded take to normalise on this track.";
+            return false;
+        }
+
+        const auto peak = readFilePeak (edit->engine, take->getOriginalFile());
+
+        if (peak <= 0.0f)
+        {
+            lastError = "Could not read the take's audio to normalise it.";
+            return false;
+        }
+
+        const auto peakDb = juce::Decibels::gainToDecibels (peak, -100.0f);
+        take->setGainDB (juce::jlimit (-100.0f, 24.0f, targetPeakDb - peakDb));
+
+        edit->restartPlayback();
+        save();
+        sendChangeMessage();
+        clearLastError();
+        return true;
+    }
+
+    bool Session::normaliseLatestTake (float targetPeakDb)
+    {
+        if (edit == nullptr)
+            return false;
+
+        const auto rows = te::getAudioTracks (*edit);
+        const auto inputIndices = inputTrackIndices();
+
+        auto hasWaveClip = [] (te::AudioTrack* track)
+        {
+            for (auto* clip : track->getClips())
+                if (dynamic_cast<te::WaveAudioClip*> (clip) != nullptr)
+                    return true;
+
+            return false;
+        };
+
+        // Prefer the tracked takes (input tracks), newest channel last.
+        for (int i = inputIndices.size() - 1; i >= 0; --i)
+            if (auto* track = rows[inputIndices[i]])
+                if (hasWaveClip (track))
+                    return normaliseTake (inputIndices[i], targetPeakDb);
+
+        // Fall back to any track that carries a wave clip.
+        for (int i = rows.size() - 1; i >= 0; --i)
+            if (hasWaveClip (rows[i]))
+                return normaliseTake (i, targetPeakDb);
+
+        lastError = "No recorded take to normalise.";
+        return false;
+    }
+
+    //==============================================================================
     bool Session::applyInputChannelConfiguration (int trackIndex, te::WaveInputDevice*& resolvedOut)
     {
         auto mapping = readTrackMapping (trackIndex);
@@ -394,6 +545,15 @@ namespace rrs
         // silently re-enable monitoring the engineer had turned off.
         waveIn->setMonitorMode (monitoringEnabled ? te::InputDevice::MonitorMode::on
                                                   : te::InputDevice::MonitorMode::off);
+
+        // Record trim (FR-REC-4): applied to the input buffer before monitoring
+        // *and* before the take is written to disk, so what is heard is what is
+        // recorded. The engine applies it on the audio thread (a plain gain
+        // multiply); re-applied here on every (re)configure so it survives
+        // save/open. When two input tracks share one wave device the last one
+        // wins — in practice mono multitrack splits devices per channel, so the
+        // mapping is 1:1.
+        waveIn->setInputGainDb (getTrackInputGainDb (trackIndex));
 
         resolvedOut = waveIn;
         return true;
