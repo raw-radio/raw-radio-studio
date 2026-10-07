@@ -53,6 +53,17 @@ Pinned source dependencies (git submodules — exact commits; see DEPENDENCIES.m
   is compiled against the pinned JUCE above (its own bundled `modules/juce`
   submodule is intentionally not used). See DEPENDENCIES.md.
 
+Vendored (test-only) dependencies:
+
+  | Component | Pinned revision (by content)                         | Version | License (SPDX) | Role                     |
+  |-----------|------------------------------------------------------|---------|----------------|--------------------------|
+  | doctest   | `third_party/doctest/doctest.h` @ v2.4.11            | 2.4.11  | MIT            | Unit-test framework      |
+
+  * doctest — https://github.com/doctest/doctest
+    License: MIT. Vendored as a single header under `third_party/doctest/`
+    (no configure-time download). Used only by the `raw_radio_studio_tests`
+    target; it is not linked into the shipped application.
+
 Not yet vendored (future epics — pinned similarly when adopted):
 
   | Component           | Expected license          | Role                        | Status     |

@@ -159,7 +159,43 @@ elseif(UNIX)
 endif()
 
 # -----------------------------------------------------------------------------
-# Tests: no testable code yet (Epic 0). CTest is enabled so test targets added
-# in later epics are picked up.
+# Tests (Epic 1)
+#
+# Small unit tests for pure/testable logic:
+#   * audio-device error classification (FR-MON-5 / NFR-IO-4),
+#   * ALSA `hw` device-name policy,
+#   * 24-bit WAV writer round-trip (FR-EXP-1 / NFR-A-1).
+#
+# doctest is vendored (pinned by content) under third_party/doctest/ — no
+# configure-time network access is required. See NOTICE for the inventory entry.
 # -----------------------------------------------------------------------------
 enable_testing()
+
+add_library(raw_radio_studio_doctest INTERFACE)
+target_include_directories(raw_radio_studio_doctest INTERFACE
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/doctest")
+
+juce_add_console_app(raw_radio_studio_tests
+    PRODUCT_NAME "raw-radio-studio-tests")
+
+target_sources(raw_radio_studio_tests PRIVATE tests/test_studio.cpp)
+
+target_include_directories(raw_radio_studio_tests PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src")
+
+target_compile_features(raw_radio_studio_tests PRIVATE cxx_std_20)
+
+target_compile_definitions(raw_radio_studio_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    JUCE_STANDALONE_APPLICATION=1)
+
+target_link_libraries(raw_radio_studio_tests PRIVATE
+    raw_radio_studio_doctest
+    juce::juce_audio_formats
+    juce::juce_core
+    juce::juce_recommended_warning_flags)
+
+juce_generate_juce_header(raw_radio_studio_tests)
+
+add_test(NAME raw_radio_studio_tests COMMAND raw_radio_studio_tests)

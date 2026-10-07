@@ -107,6 +107,9 @@ jobs:
         if: runner.os == 'Linux'
         run: build/raw_radio_studio_artefacts/Release/raw-radio-studio --version
 
+      - name: Run unit tests (CTest)
+        run: ctest --test-dir build -C Release --output-on-failure
+
       # --- Packaging --------------------------------------------------------
       # Unsigned artifacts only (notarization/code-signing deferred, §8.5).
 

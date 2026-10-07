@@ -118,5 +118,15 @@ raw-radio-studio --version
 
 ## Tests
 
-No testable code yet (Epic 0). CTest is enabled so later epics' tests are picked
-up automatically.
+Epic 1 adds unit tests for pure/testable logic (device-error classification,
+ALSA `hw` name policy, 24-bit WAV round-trip). The test framework is
+**doctest 2.4.11**, vendored (pinned by content, no configure-time download) as
+`third_party/doctest/doctest.h` — see [`NOTICE`](NOTICE).
+
+```bash
+ctest --test-dir build --output-on-failure
+```
+
+The test target (`raw_radio_studio_tests`) links only `juce_core` +
+`juce_audio_formats`; hardware-dependent behaviour (recording, monitoring) is
+verified manually.
