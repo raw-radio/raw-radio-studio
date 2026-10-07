@@ -9,6 +9,11 @@ directory:
 - `Lucide.txt` — Lucide icon set (`assets/icons/`, pinned to tag **1.21.0**):
   ISC, with an MIT section for the Feather-derived icons. Vendored and compiled
   into the binary via `juce_add_binary_data` (see `assets/icons/README.md`).
+- `Inter-OFL.txt` — Inter typeface (`assets/fonts/Inter-*.ttf`, pinned to tag
+  **v4.1**): SIL Open Font License 1.1.
+- `JetBrainsMono-OFL.txt` — JetBrains Mono typeface
+  (`assets/fonts/JetBrainsMono-*.ttf`, pinned to tag **v2.304**): SIL Open Font
+  License 1.1.
 
 ## Licensing composition
 

@@ -5,6 +5,7 @@
 #include "studio/AppPaths.h"
 #include "studio/AudioImport.h"
 #include "ui/BrandColours.h"
+#include "ui/BrandFonts.h"
 #include "ui/DevicePanelLayout.h"
 
 #include <array>
@@ -26,10 +27,12 @@ namespace rrs
     {
         loadSettings();
 
-        titleLabel.setFont (juce::Font { juce::FontOptions { 18.0f, juce::Font::bold } });
+        titleLabel.setFont (brand::uiSemiBold (18.0f));
         titleLabel.setColour (juce::Label::textColourId, brand::textPrimary);
+        transportLabel.setFont (brand::monoRegular (13.0f));
         transportLabel.setColour (juce::Label::textColourId, brand::textSecondary);
         transportLabel.setJustificationType (juce::Justification::centredLeft);
+        statusLabel.setFont (brand::uiRegular (13.0f));
         statusLabel.setColour (juce::Label::textColourId, brand::textSecondary);
         statusLabel.setJustificationType (juce::Justification::centredLeft);
 
@@ -758,7 +761,7 @@ namespace rrs
                 if (tracks.isEmpty())
                 {
                     g.setColour (brand::textSecondary);
-                    g.setFont (13.0f);
+                    g.setFont (brand::uiRegular (13.0f));
                     g.drawText ("No session loaded", lanes, juce::Justification::centred);
                 }
 
@@ -797,12 +800,12 @@ namespace rrs
                     auto clipArea = inner.removeFromTop (16);
 
                     g.setColour (brand::textPrimary);
-                    g.setFont (13.0f);
+                    g.setFont (brand::uiMedium (13.0f));
                     g.drawText (track->getName() + (armed ? "   [ARMED]" : ""),
                                 nameArea, juce::Justification::centredLeft);
 
                     g.setColour (brand::textTertiary);
-                    g.setFont (11.0f);
+                    g.setFont (brand::uiRegular (11.0f));
                     g.drawText (juce::String (track->getClips().size()) + " clip(s)",
                                 clipArea, juce::Justification::centredLeft);
 
@@ -812,7 +815,7 @@ namespace rrs
             else
             {
                 g.setColour (brand::textSecondary);
-                g.setFont (13.0f);
+                g.setFont (brand::uiRegular (13.0f));
                 g.drawText ("No session loaded", lanes, juce::Justification::centred);
             }
         }

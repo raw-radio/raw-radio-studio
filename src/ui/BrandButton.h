@@ -12,6 +12,7 @@
 #include <JuceHeader.h>
 
 #include "BrandColours.h"
+#include "BrandFonts.h"
 
 namespace rrs
 {
@@ -61,7 +62,7 @@ namespace rrs
         bool iconOnly = false;
         int iconOnlySize = 32;
         float cornerRadius = 8.0f;
-        juce::Font labelFont { juce::FontOptions { 14.0f } };
+        juce::Font labelFont { brand::uiMedium (14.0f) };
 
         juce::Colour onBackground { brand::accentMuted };
         juce::Colour onBorder { brand::accent };

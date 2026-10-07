@@ -14,6 +14,7 @@
 
 #include "studio/DeviceError.h"
 #include "studio/AppPaths.h"
+#include "ui/BrandFonts.h"
 #include "ui/DevicePanelLayout.h"
 #include "ui/IconCache.h"
 
@@ -42,6 +43,42 @@ TEST_CASE ("brand icon cache parses and tints the vendored Lucide SVGs")
 
     // Unknown names are handled gracefully (no crash, null image).
     CHECK_FALSE (cache.getIconImage ("not-a-real-icon", juce::Colours::white, 16).isValid());
+}
+
+//==============================================================================
+TEST_CASE ("brand fonts register the vendored Inter + JetBrains Mono typefaces")
+{
+    using namespace rrs::brand;
+
+    struct Case
+    {
+        FontFamily family;
+        FontWeight weight;
+        const char* familySubstring;
+    };
+
+    const Case cases[] =
+    {
+        { FontFamily::Inter,         FontWeight::Regular,  "Inter" },
+        { FontFamily::Inter,         FontWeight::Medium,   "Inter" },
+        { FontFamily::Inter,         FontWeight::SemiBold, "Inter" },
+        { FontFamily::Inter,         FontWeight::Bold,     "Inter" },
+        { FontFamily::JetBrainsMono, FontWeight::Regular,  "JetBrains Mono" },
+        { FontFamily::JetBrainsMono, FontWeight::Medium,   "JetBrains Mono" },
+    };
+
+    for (const auto& c : cases)
+    {
+        const auto typeface = getTypeface (c.family, c.weight);
+        REQUIRE (typeface != nullptr);
+        CHECK (typeface->getName().containsIgnoreCase (c.familySubstring));
+
+        // The Font built for a role must actually resolve to the vendored face
+        // (not silently fall back to the default sans).
+        const auto resolved = font (c.family, c.weight, 14.0f).getTypefacePtr();
+        REQUIRE (resolved != nullptr);
+        CHECK (resolved->getName().containsIgnoreCase (c.familySubstring));
+    }
 }
 
 //==============================================================================

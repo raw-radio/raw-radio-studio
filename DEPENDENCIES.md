@@ -127,9 +127,10 @@ ALSA `hw` name policy, 24-bit WAV round-trip). The test framework is
 ctest --test-dir build --output-on-failure
 ```
 
-The test target (`raw_radio_studio_tests`) links only `juce_core` +
-`juce_audio_formats`; hardware-dependent behaviour (recording, monitoring) is
-verified manually.
+The test target (`raw_radio_studio_tests`) links `juce_core` + `juce_graphics` +
+`juce_audio_formats` and the vendored `RawRadioStudioAssets` (icons/fonts, for
+the icon-parse and font-registration tests); hardware-dependent behaviour
+(recording, monitoring) is verified manually.
 
 ## Vendored UI assets
 
@@ -139,11 +140,21 @@ are compiled into the application binary (no runtime or build-time download):
 | Component | Location | Pinned revision | License (SPDX) | Role |
 |-----------|----------|-----------------|----------------|------|
 | **Lucide** | `assets/icons/*.svg` | tag `1.21.0` | ISC (MIT for Feather-derived icons) | UI icon set |
+| **Inter** | `assets/fonts/Inter-*.ttf` | tag `v4.1` | OFL-1.1 | UI typeface (400/500/600/700) |
+| **JetBrains Mono** | `assets/fonts/JetBrainsMono-*.ttf` | tag `v2.304` | OFL-1.1 | Monospace (timecodes / dB) |
 
 * Lucide (<https://github.com/lucide-icons/lucide>) is pinned to the tag
   matching the RAW Radio admin/app `lucide-react` family. The SVGs are normalised
   at vendor time (`currentColor` → `#FFFFFF`, since JUCE does not resolve SVG
   `currentColor`) and tinted at runtime by `src/ui/IconCache`.
-* Full licence text: [`LICENSES/Lucide.txt`](LICENSES/Lucide.txt); provenance and
-  refresh instructions: [`assets/icons/README.md`](assets/icons/README.md).
+* Inter (<https://github.com/rsms/inter>) and JetBrains Mono
+  (<https://github.com/JetBrains/JetBrainsMono>) static TTFs are registered at
+  startup by `src/ui/BrandFonts` via `Typeface::createSystemTypefaceFor`. Fonts
+  are built from the registered `Typeface::Ptr` rather than by family name,
+  because the static Inter Medium/SemiBold files report the family
+  `Inter Medium`/`Inter SemiBold`.
+* Full licence texts: [`LICENSES/Lucide.txt`](LICENSES/Lucide.txt),
+  [`LICENSES/Inter-OFL.txt`](LICENSES/Inter-OFL.txt),
+  [`LICENSES/JetBrainsMono-OFL.txt`](LICENSES/JetBrainsMono-OFL.txt). Provenance
+  and refresh instructions: `assets/icons/README.md`, `assets/fonts/README.md`.
 

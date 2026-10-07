@@ -26,6 +26,11 @@ DCO text eol=lf
 *.hxx text eol=lf
 *.in text eol=lf
 
+# Vendored brand assets
+*.svg text eol=lf
+*.ttf binary
+*.otf binary
+
 # Binary — never diff/merge textually
 *.png binary
 *.jpg binary

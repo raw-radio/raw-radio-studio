@@ -10,8 +10,11 @@ namespace rrs
 {
     IconCache& IconCache::getInstance()
     {
-        static IconCache cache;
-        return cache;
+        // Intentionally leaked: the cache holds JUCE images/drawables that must
+        // not be destroyed after JUCE's global state has shut down (static
+        // destruction order is otherwise undefined and aborts at exit).
+        static IconCache* cache = new IconCache();
+        return *cache;
     }
 
     juce::String IconCache::resourceNameFor (const juce::String& iconName)

@@ -69,6 +69,8 @@ Vendored UI assets (compiled into the application binary — no runtime download
   | Component | Location / pinned revision                  | Version | License (SPDX)                          | Role                        |
   |-----------|---------------------------------------------|---------|-----------------------------------------|-----------------------------|
   | Lucide    | `assets/icons/*.svg` @ tag `1.21.0`         | 1.21.0  | ISC (MIT for Feather-derived icons)     | UI icon set                 |
+  | Inter     | `assets/fonts/Inter-*.ttf` @ tag `v4.1`     | 4.1     | OFL-1.1                                 | UI typeface (400/500/600/700) |
+  | JetBrains Mono | `assets/fonts/JetBrainsMono-*.ttf` @ tag `v2.304` | 2.304 | OFL-1.1                             | Monospace for timecodes/dB  |
 
   * Lucide — https://github.com/lucide-icons/lucide
     License: ISC, with an MIT section for the icons derived from Feather.
@@ -76,6 +78,17 @@ Vendored UI assets (compiled into the application binary — no runtime download
     binary via `juce_add_binary_data`; `currentColor` is normalised to
     `#FFFFFF` because JUCE does not resolve SVG `currentColor`. Full licence
     text: `LICENSES/Lucide.txt`. Provenance: `assets/icons/README.md`.
+
+  * Inter — https://github.com/rsms/inter
+    License: SIL Open Font License v1.1 (OFL-1.1). The static TTFs
+    (Regular/Medium/SemiBold/Bold) are vendored and compiled into the binary.
+    Full licence text: `LICENSES/Inter-OFL.txt`. Provenance:
+    `assets/fonts/README.md`.
+
+  * JetBrains Mono — https://github.com/JetBrains/JetBrainsMono
+    License: SIL Open Font License v1.1 (OFL-1.1). The Regular/Medium static
+    TTFs are vendored and compiled into the binary. Full licence text:
+    `LICENSES/JetBrainsMono-OFL.txt`. Provenance: `assets/fonts/README.md`.
 
 Not yet vendored (future epics — pinned similarly when adopted):
 

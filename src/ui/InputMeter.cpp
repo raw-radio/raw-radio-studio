@@ -4,6 +4,7 @@
 
 #include "../studio/Session.h"
 #include "BrandColours.h"
+#include "BrandFonts.h"
 
 namespace rrs
 {
@@ -62,7 +63,7 @@ namespace rrs
         auto titleRow = bounds.removeFromTop (16);
 
         g.setColour (brand::textSecondary);
-        g.setFont (12.0f);
+        g.setFont (brand::uiMedium (12.0f));
         g.drawText ("Input", titleRow, juce::Justification::centredLeft);
 
         const auto barHeight = juce::jmax (8, bounds.getHeight() / 2 - 2);
@@ -81,7 +82,7 @@ namespace rrs
         auto barArea = area.reduced (1, 2);
 
         g.setColour (brand::textTertiary);
-        g.setFont (11.0f);
+        g.setFont (brand::uiRegular (11.0f));
         g.drawText (name, labelArea, juce::Justification::centred);
 
         g.setColour (brand::meterTrough);
@@ -108,7 +109,7 @@ namespace rrs
 
         const auto peakDb = juce::Decibels::gainToDecibels (state.peak, minDb);
         g.setColour (brand::textSecondary);
-        g.setFont (11.0f);
+        g.setFont (brand::monoRegular (11.0f));
         g.drawText (juce::String (peakDb, 1) + " dB",
                     valueArea, juce::Justification::centredRight);
     }

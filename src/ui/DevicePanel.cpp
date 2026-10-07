@@ -3,6 +3,7 @@
 #include "DevicePanel.h"
 
 #include "BrandColours.h"
+#include "BrandFonts.h"
 #include "DevicePanelLayout.h"
 
 namespace rrs
@@ -13,6 +14,7 @@ namespace rrs
         for (auto* label : { &typeLabel, &deviceLabel, &rateLabel, &bufferLabel })
         {
             label->setJustificationType (juce::Justification::centredLeft);
+            label->setFont (brand::uiRegular (13.0f));
             label->setColour (juce::Label::textColourId, brand::textSecondary);
             addAndMakeVisible (*label);
         }
@@ -30,10 +32,12 @@ namespace rrs
         addAndMakeVisible (rescanButton);
 
         statusLabel.setJustificationType (juce::Justification::centredLeft);
+        statusLabel.setFont (brand::uiRegular (12.0f));
         statusLabel.setColour (juce::Label::textColourId, brand::textSecondary);
         addAndMakeVisible (statusLabel);
 
         errorLabel.setJustificationType (juce::Justification::topLeft);
+        errorLabel.setFont (brand::uiRegular (12.0f));
         errorLabel.setColour (juce::Label::textColourId, brand::errorText);
         errorLabel.setMinimumHorizontalScale (1.0f);
         addAndMakeVisible (errorLabel);
@@ -215,7 +219,7 @@ namespace rrs
         g.fillRoundedRectangle (getLocalBounds().toFloat(), 8.0f);
 
         g.setColour (brand::textPrimary);
-        g.setFont (14.0f);
+        g.setFont (brand::uiSemiBold (14.0f));
         g.drawText ("Audio device", getLocalBounds().reduced (12).removeFromTop (18),
                     juce::Justification::centredLeft);
     }

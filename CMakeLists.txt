@@ -100,16 +100,18 @@ add_subdirectory("${RAW_RADIO_STUDIO_TRACKTION_DIR}" "${CMAKE_BINARY_DIR}/_deps/
 #   * assets/icons/*.svg — Lucide icons (ISC), stroke normalised to #FFFFFF
 #     because JUCE does not resolve SVG `currentColor`. Tinted at runtime by
 #     IconCache via Drawable::replaceColour.
-#
-# Fonts are added to this same target when vendored (Inter / JetBrains Mono).
+#   * assets/fonts/*.ttf — Inter + JetBrains Mono (OFL-1.1), registered at
+#     startup by BrandFonts via Typeface::createSystemTypefaceFor.
 # -----------------------------------------------------------------------------
 file(GLOB RAW_RADIO_STUDIO_ICON_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons/*.svg")
+file(GLOB RAW_RADIO_STUDIO_FONT_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/*.ttf")
 
 juce_add_binary_data(RawRadioStudioAssets
     HEADER_NAME RawRadioStudioAssets.h
     NAMESPACE RawRadioStudioAssets
-    SOURCES ${RAW_RADIO_STUDIO_ICON_SOURCES})
+    SOURCES ${RAW_RADIO_STUDIO_ICON_SOURCES} ${RAW_RADIO_STUDIO_FONT_SOURCES})
 
 # -----------------------------------------------------------------------------
 # Application target: opens an empty JUCE window; links JUCE + Tracktion Engine.
@@ -143,6 +145,7 @@ target_sources(raw_radio_studio PRIVATE
     src/ui/InputMeter.cpp
     src/ui/BrandButton.cpp
     src/ui/BrandLookAndFeel.cpp
+    src/ui/BrandFonts.cpp
     src/ui/IconCache.cpp
     src/ui/MainComponent.cpp)
 
@@ -213,6 +216,7 @@ juce_add_console_app(raw_radio_studio_tests
 
 target_sources(raw_radio_studio_tests PRIVATE
     tests/test_studio.cpp
+    src/ui/BrandFonts.cpp
     src/ui/IconCache.cpp)
 
 target_include_directories(raw_radio_studio_tests PRIVATE

@@ -14,6 +14,7 @@
 #include <memory>
 
 #include "studio/AudioEngine.h"
+#include "ui/BrandFonts.h"
 #include "ui/BrandLookAndFeel.h"
 #include "ui/MainComponent.h"
 
@@ -411,10 +412,14 @@ public:
             return;
         }
 
-        // Brand theme: install the RAW Radio LookAndFeel before any window (and
-        // therefore before any child component) is created, so the DocumentWindow
-        // background and every stock component resolve the brand colour IDs.
+        // Brand theme: register the vendored Inter / JetBrains Mono typefaces and
+        // install the RAW Radio LookAndFeel before any window (and therefore
+        // before any child component) is created.
+        rrs::brand::initialiseFonts();
+
         brandLookAndFeel = std::make_unique<rrs::BrandLookAndFeel>();
+        brandLookAndFeel->setDefaultSansSerifTypeface (
+            rrs::brand::getTypeface (rrs::brand::FontFamily::Inter, rrs::brand::FontWeight::Regular));
         juce::LookAndFeel::setDefaultLookAndFeel (brandLookAndFeel.get());
 
         mainWindow = std::make_unique<MainWindow>();
