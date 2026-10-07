@@ -1,4 +1,4 @@
-// raw-radio-studio — session model (Epic 1).
+// raw-radio-studio — session model (Epic 1 walking skeleton + Epic 2 multitrack).
 
 #include "Session.h"
 
@@ -8,10 +8,22 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
+#include <set>
 
 namespace rrs
 {
     namespace te = tracktion;
+
+    namespace
+    {
+        // Per-track state properties. Stored on the Track's ValueTree so the
+        // input mapping survives save/open in the native project format.
+        const juce::Identifier idInputTrack   { "rrsInputTrack" };
+        const juce::Identifier idFirstChannel { "rrsInputFirstChannel" };
+        const juce::Identifier idNumChannels  { "rrsInputNumChannels" };
+        const juce::Identifier idLayout       { "rrsInputLayout" };
+    }
 
     //==============================================================================
     void InputLevels::reset() noexcept
@@ -98,7 +110,7 @@ namespace rrs
             return false;
 
         writeInterruptionMarker();
-        configureSingleStereoTrack();
+        configureTracks();
         save();
         sendChangeMessage();
         return true;
@@ -116,7 +128,7 @@ namespace rrs
             return false;
 
         writeInterruptionMarker();
-        configureSingleStereoTrack();
+        configureTracks();
         sendChangeMessage();
         return true;
     }
@@ -163,18 +175,380 @@ namespace rrs
     }
 
     //==============================================================================
-    tracktion::AudioTrack* Session::getTrack() const
+    tracktion::AudioTrack* Session::getTrack (int index) const
     {
         if (edit == nullptr)
             return nullptr;
 
         const auto tracks = te::getAudioTracks (*edit);
-        return tracks.isEmpty() ? nullptr : tracks[0];
+
+        if (! juce::isPositiveAndBelow (index, tracks.size()))
+            return nullptr;
+
+        return tracks[index];
+    }
+
+    tracktion::AudioTrack* Session::getTrack() const
+    {
+        return getTrack (0);
     }
 
     int Session::getNumAudioTracks() const
     {
         return edit != nullptr ? te::getAudioTracks (*edit).size() : 0;
+    }
+
+    juce::String Session::getTrackName (int index) const
+    {
+        if (auto* track = getTrack (index))
+            return track->getName();
+
+        return {};
+    }
+
+    bool Session::setTrackName (int index, const juce::String& name)
+    {
+        auto* track = getTrack (index);
+
+        if (track == nullptr)
+            return false;
+
+        track->setName (name);
+        sendChangeMessage();
+        return true;
+    }
+
+    //==============================================================================
+    bool Session::isInputTrack (const te::AudioTrack& track) const
+    {
+        return (bool) track.state.getProperty (idInputTrack, false);
+    }
+
+    juce::Array<int> Session::inputTrackIndices() const
+    {
+        juce::Array<int> indices;
+
+        if (edit == nullptr)
+            return indices;
+
+        const auto tracks = te::getAudioTracks (*edit);
+
+        for (int i = 0; i < tracks.size(); ++i)
+            if (isInputTrack (*tracks[i]))
+                indices.add (i);
+
+        // Back-compat: an Epic 1 session (or one opened before this version)
+        // has no markers; the first track is the record track.
+        if (indices.isEmpty() && ! tracks.isEmpty())
+            indices.add (0);
+
+        return indices;
+    }
+
+    tracktion::WaveInputDevice* Session::resolveInputDeviceFor (const InputMapping& mapping) const
+    {
+        auto& dm = audio.deviceManager();
+        const auto numDevices = dm.getNumWaveInDevices();
+
+        if (numDevices <= 0)
+            return nullptr;
+
+        // Prefer the device that actually carries the requested hardware channel
+        // (with mono grouping every channel is its own device; with the default
+        // stereo-pair grouping both channels of a pair resolve to one device).
+        for (int i = 0; i < numDevices; ++i)
+            if (auto* device = dm.getWaveInDevice (i))
+                if (device->getChannels().containsDeviceChannel (mapping.firstChannel))
+                    return device;
+
+        // Fallback: clamp to a real device index.
+        return dm.getWaveInDevice (juce::jlimit (0, numDevices - 1, mapping.firstChannel));
+    }
+
+    InputMapping Session::readTrackMapping (int trackIndex) const
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (track == nullptr)
+            return {};
+
+        const auto indices = inputTrackIndices();
+        const auto ordinal = juce::jmax (0, indices.indexOf (trackIndex));
+
+        InputMapping mapping;
+        mapping.firstChannel = (int) track->state.getProperty (idFirstChannel, ordinal);
+        mapping.numChannels  = juce::jmax (1, (int) track->state.getProperty (idNumChannels, 1));
+
+        const auto layoutText = track->state.getProperty (idLayout, ordinal == 0 ? "auto" : "mono").toString();
+        mapping.layout = inputLayoutFromString (layoutText);
+
+        // A track created outside addAudioTrack (e.g. a crash-recovered Epic 1
+        // session) still maps to a real channel.
+        mapping.firstChannel = juce::jmax (0, mapping.firstChannel);
+        return mapping;
+    }
+
+    void Session::writeTrackMapping (te::AudioTrack& track, const InputMapping& mapping)
+    {
+        track.state.setProperty (idInputTrack, true, nullptr);
+        track.state.setProperty (idFirstChannel, mapping.firstChannel, nullptr);
+        track.state.setProperty (idNumChannels, juce::jmax (1, mapping.numChannels), nullptr);
+        track.state.setProperty (idLayout, inputLayoutToString (mapping.layout), nullptr);
+    }
+
+    InputMapping Session::getTrackInputMapping (int trackIndex) const
+    {
+        return readTrackMapping (trackIndex);
+    }
+
+    bool Session::setTrackInputMapping (int trackIndex, const InputMapping& mapping)
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (edit == nullptr || track == nullptr)
+        {
+            lastError = "No such track.";
+            return false;
+        }
+
+        writeTrackMapping (*track, mapping);
+        inputsConfigured = false;
+        configureTracks();
+        edit->restartPlayback();
+        save();
+        sendChangeMessage();
+        return true;
+    }
+
+    //==============================================================================
+    bool Session::applyInputChannelConfiguration (int trackIndex, te::WaveInputDevice*& resolvedOut)
+    {
+        auto mapping = readTrackMapping (trackIndex);
+        auto* waveIn = resolveInputDeviceFor (mapping);
+
+        if (waveIn == nullptr)
+            return false;
+
+        // The channel indices in the mapping are *absolute hardware channels*,
+        // so the configuration must be built against the total number of active
+        // hardware inputs, not the wave device's own (possibly mono) channel
+        // count. Tracktion passes the full hardware buffer to every wave device,
+        // so an absolute index is valid even for a single-channel device.
+        const auto hardwareChannels = juce::jmax (1, audio.getNumActiveInputChannels());
+        waveIn->setChannelConfiguration (inputChannelConfigurationForMapping (mapping, hardwareChannels));
+        waveIn->setMonitorMode (te::InputDevice::MonitorMode::on);
+
+        resolvedOut = waveIn;
+        return true;
+    }
+
+    // Splits the wave-device grouping to one channel per device when two input
+    // tracks would otherwise share a device and the interface has enough inputs.
+    // This is what lets a 4-in interface record four independent mono tracks;
+    // a single input track (Epic 1) is never regrouped, so stereo capture keeps
+    // working.
+    static bool maybeSplitInputGrouping (rrs::AudioEngine& audio,
+                                         const juce::Array<int>& inputIndices,
+                                         const std::function<tracktion::WaveInputDevice* (int)>& resolve)
+    {
+        if (inputIndices.size() < 2)
+            return false;
+
+        auto& dm = audio.deviceManager();
+        const auto devices = dm.getNumWaveInDevices();
+        const auto totalChannels = audio.getNumActiveInputChannels();
+
+        if (totalChannels <= devices)
+            return false;
+
+        std::set<tracktion::InputDevice*> used;
+        bool duplicate = false;
+
+        for (auto index : inputIndices)
+            if (auto* device = resolve (index))
+                if (! used.insert (device).second)
+                    duplicate = true;
+
+        if (! duplicate)
+            return false;
+
+        dm.setAllWaveInputsToNumChannels (1);
+        return true;
+    }
+
+    bool Session::configureTracks()
+    {
+        if (edit == nullptr)
+            return false;
+
+        // Epic 1: a brand-new session starts with one input track. Note that
+        // `createEmptyEdit` already adds a default track, so we mark/rename the
+        // existing first track rather than only handling the zero-track case.
+        {
+            auto tracks = te::getAudioTracks (*edit);
+
+            if (tracks.isEmpty())
+            {
+                auto track = edit->insertNewAudioTrack (te::TrackInsertPoint::getEndOfTracks (*edit), nullptr, true);
+
+                if (track == nullptr)
+                {
+                    lastError = "Could not create the audio track.";
+                    return false;
+                }
+
+                track->setName ("Input 1");
+                writeTrackMapping (*track, InputMapping { 0, 1, InputLayout::Auto });
+            }
+            else
+            {
+                bool anyMarked = false;
+
+                for (auto* track : tracks)
+                    if (isInputTrack (*track))
+                        anyMarked = true;
+
+                // An opened Epic 1 session (or a default edit) has no markers:
+                // track 0 is the record track.
+                if (! anyMarked)
+                {
+                    tracks[0]->setName ("Input 1");
+                    writeTrackMapping (*tracks[0], InputMapping { 0, 1, InputLayout::Auto });
+                }
+            }
+        }
+
+        const auto indices = inputTrackIndices();
+
+        // Splitting the device grouping rebuilds the wave-device list
+        // asynchronously; stop this pass and let timerCallback retry once the
+        // new devices exist.
+        if (maybeSplitInputGrouping (audio, indices,
+                                     [this] (int index) { return resolveInputDeviceFor (readTrackMapping (index)); }))
+            return false;
+
+        bool anyAssigned = false;
+
+        for (auto index : indices)
+        {
+            auto* track = getTrack (index);
+
+            if (track == nullptr)
+                continue;
+
+            auto mapping = readTrackMapping (index);
+            auto* waveIn = resolveInputDeviceFor (mapping);
+
+            if (waveIn == nullptr)
+                continue;
+
+            waveIn->setEnabled (true);
+
+            // `setEnabled` can (asynchronously) rebuild the wave-device list,
+            // destroying this device object; re-resolve before using it.
+            waveIn = resolveInputDeviceFor (mapping);
+
+            if (waveIn == nullptr)
+                continue;
+
+            applyInputChannelConfiguration (index, waveIn);
+
+            if (waveIn == nullptr)
+                continue;
+
+            for (auto* instance : edit->getAllInputDevices())
+                if (&instance->getInputDevice() == waveIn)
+                    if (auto result = instance->setTarget (track->itemID, true, &edit->getUndoManager(), 0);
+                        ! result)
+                        lastError = result.error();
+
+            anyAssigned = true;
+        }
+
+        // An empty device list (headless tests / no interface) is not an error:
+        // inputsConfigured stays false and timerCallback retries.
+        if (! anyAssigned)
+            return false;
+
+        edit->getTransport().ensureContextAllocated();
+        edit->restartPlayback();
+
+        inputsConfigured = true;
+        ensureMeterAttached();
+        clearLastError();
+        return true;
+    }
+
+    int Session::addAudioTrack (const juce::String& name)
+    {
+        if (edit == nullptr)
+        {
+            lastError = "Open a session before adding tracks.";
+            return -1;
+        }
+
+        const auto ordinal = inputTrackIndices().size();
+
+        // Going multitrack: a lone Epic 1 record track maps the whole device
+        // (Auto -> stereo); once a second track is added it must become an
+        // explicit single hardware channel so the tracks do not overlap.
+        if (ordinal >= 1)
+        {
+            for (auto existing : inputTrackIndices())
+            {
+                auto mapping = readTrackMapping (existing);
+
+                if (mapping.layout == InputLayout::Auto)
+                {
+                    mapping.layout = InputLayout::Mono;
+                    writeTrackMapping (*getTrack (existing), mapping);
+                }
+            }
+        }
+
+        auto track = edit->insertNewAudioTrack (te::TrackInsertPoint::getEndOfTracks (*edit), nullptr, true);
+
+        if (track == nullptr)
+        {
+            lastError = "Could not create the audio track.";
+            return -1;
+        }
+
+        InputMapping mapping;
+        mapping.firstChannel = ordinal;
+        mapping.numChannels = 1;
+        mapping.layout = ordinal == 0 ? InputLayout::Auto : InputLayout::Mono;
+
+        writeTrackMapping (*track, mapping);
+        track->setName (name.isNotEmpty() ? name : ("Input " + juce::String (ordinal + 1)));
+
+        inputsConfigured = false;
+        configureTracks();
+        save();
+        sendChangeMessage();
+
+        return getNumAudioTracks() - 1;
+    }
+
+    bool Session::removeAudioTrack (int index)
+    {
+        if (edit == nullptr)
+            return false;
+
+        auto* track = getTrack (index);
+
+        if (track == nullptr || getNumAudioTracks() <= 1)
+        {
+            lastError = "Cannot remove the last track.";
+            return false;
+        }
+
+        edit->deleteTrack (track);
+        inputsConfigured = false;
+        configureTracks();
+        save();
+        sendChangeMessage();
+        return true;
     }
 
     //==============================================================================
@@ -205,97 +579,12 @@ namespace rrs
         return true;
     }
 
-    bool Session::configureSingleStereoTrack()
-    {
-        if (edit == nullptr)
-            return false;
-
-        edit->ensureNumberOfAudioTracks (1);
-
-        auto* track = getTrack();
-
-        if (track == nullptr)
-        {
-            lastError = "Could not create the audio track.";
-            return false;
-        }
-
-        track->setName ("Input 1 (Stereo)");
-
-        // The wave device list is rebuilt asynchronously by the engine on
-        // startup / device change; until it exists we simply retry (see
-        // timerCallback). This is not an error state.
-        auto* waveIn = getSelectedWaveInputDevice();
-
-        if (waveIn == nullptr)
-            return false;
-
-        waveIn->setEnabled (true);
-
-        // `setEnabled` can (asynchronously) rebuild the wave-device list, which
-        // replaces — and destroys — this device object. Re-resolve it so the
-        // routing, monitoring and target assignment below always act on the live
-        // device and never on a stale pointer.
-        waveIn = getSelectedWaveInputDevice();
-
-        if (waveIn == nullptr)
-            return false;
-
-        applyInputChannelConfiguration();
-
-        // `applyInputChannelConfiguration()` re-resolves internally; pick up the
-        // device it configured so monitoring/target assignment are consistent.
-        waveIn = getSelectedWaveInputDevice();
-
-        if (waveIn == nullptr)
-            return false;
-
-        waveIn->setMonitorMode (te::InputDevice::MonitorMode::on);
-
-        edit->getTransport().ensureContextAllocated();
-
-        bool assigned = false;
-        for (auto* instance : edit->getAllInputDevices())
-        {
-            if (&instance->getInputDevice() == waveIn)
-            {
-                if (auto result = instance->setTarget (track->itemID, true, &edit->getUndoManager(), 0))
-                    assigned = true;
-                else
-                    lastError = result.error();
-            }
-        }
-
-        if (! assigned)
-            return false;
-
-        edit->restartPlayback();
-        ensureMeterAttached();
-        inputsConfigured = true;
-        clearLastError();
-        return true;
-    }
-
-    bool Session::applyInputChannelConfiguration()
-    {
-        auto* waveIn = getSelectedWaveInputDevice();
-
-        if (waveIn == nullptr)
-            return false;
-
-        // Route the (possibly mono) input to the track. A 1-channel source is
-        // duplicated to L+R so monitoring/recording are centred; a stereo source
-        // keeps its L/R mapping. See InputRouting.h for the full rationale.
-        waveIn->setChannelConfiguration (inputChannelConfigurationFor (audio.getNumActiveInputChannels()));
-        return true;
-    }
-
     //==============================================================================
     void Session::reconfigureInputs()
     {
         inputsConfigured = false;
 
-        if (configureSingleStereoTrack())
+        if (configureTracks())
             save();
 
         sendChangeMessage();
@@ -315,9 +604,9 @@ namespace rrs
     }
 
     //==============================================================================
-    bool Session::setTrackArmed (bool shouldBeArmed)
+    bool Session::setTrackArmed (int trackIndex, bool shouldBeArmed)
     {
-        auto* track = getTrack();
+        auto* track = getTrack (trackIndex);
 
         if (edit == nullptr || track == nullptr)
         {
@@ -326,6 +615,7 @@ namespace rrs
         }
 
         bool found = false;
+
         for (auto* instance : edit->getAllInputDevices())
         {
             if (te::isOnTargetTrack (*instance, *track, 0))
@@ -345,9 +635,9 @@ namespace rrs
         return true;
     }
 
-    bool Session::isTrackArmed() const
+    bool Session::isTrackArmed (int trackIndex) const
     {
-        auto* track = getTrack();
+        auto* track = getTrack (trackIndex);
 
         if (edit == nullptr || track == nullptr)
             return false;
@@ -360,23 +650,46 @@ namespace rrs
         return false;
     }
 
-    bool Session::setMonitoringEnabled (bool shouldMonitor)
+    bool Session::isAnyTrackArmed() const
     {
-        if (auto* waveIn = getSelectedWaveInputDevice())
-        {
-            waveIn->setMonitorMode (shouldMonitor ? te::InputDevice::MonitorMode::on
-                                                   : te::InputDevice::MonitorMode::off);
-            sendChangeMessage();
-            return true;
-        }
+        for (auto index : inputTrackIndices())
+            if (isTrackArmed (index))
+                return true;
 
         return false;
     }
 
+    bool Session::setMonitoringEnabled (bool shouldMonitor)
+    {
+        const auto mode = shouldMonitor ? te::InputDevice::MonitorMode::on
+                                        : te::InputDevice::MonitorMode::off;
+
+        std::set<te::InputDevice*> devices;
+
+        for (auto index : inputTrackIndices())
+            if (auto* device = resolveInputDeviceFor (readTrackMapping (index)))
+                devices.insert (device);
+
+        if (devices.empty())
+            if (auto* fallback = getSelectedWaveInputDevice())
+                devices.insert (fallback);
+
+        for (auto* device : devices)
+            device->setMonitorMode (mode);
+
+        sendChangeMessage();
+        return ! devices.empty();
+    }
+
     bool Session::isMonitoringEnabled() const
     {
-        if (auto* waveIn = getSelectedWaveInputDevice())
-            return waveIn->getMonitorMode() != te::InputDevice::MonitorMode::off;
+        for (auto index : inputTrackIndices())
+            if (auto* device = resolveInputDeviceFor (readTrackMapping (index)))
+                if (device->getMonitorMode() != te::InputDevice::MonitorMode::off)
+                    return true;
+
+        if (auto* device = getSelectedWaveInputDevice())
+            return device->getMonitorMode() != te::InputDevice::MonitorMode::off;
 
         return false;
     }
@@ -398,9 +711,9 @@ namespace rrs
         if (edit == nullptr)
             return false;
 
-        if (! isTrackArmed())
+        if (! isAnyTrackArmed())
         {
-            lastError = "Arm the track before recording.";
+            lastError = "Arm a track before recording.";
             return false;
         }
 
@@ -416,6 +729,116 @@ namespace rrs
     bool Session::isRecording() const
     {
         return edit != nullptr && edit->getTransport().isRecording();
+    }
+
+    //==============================================================================
+    // Basic mixer (FR-MIX-1/3)
+    bool Session::setTrackGainDb (int trackIndex, float db)
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (auto* volume = track != nullptr ? track->getVolumePlugin() : nullptr)
+        {
+            volume->setVolumeDb (juce::jlimit (-100.0f, 12.0f, db));
+            sendChangeMessage();
+            return true;
+        }
+
+        return false;
+    }
+
+    float Session::getTrackGainDb (int trackIndex) const
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (auto* volume = track != nullptr ? track->getVolumePlugin() : nullptr)
+            return volume->getVolumeDb();
+
+        return 0.0f;
+    }
+
+    bool Session::setTrackPan (int trackIndex, float pan)
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (auto* volume = track != nullptr ? track->getVolumePlugin() : nullptr)
+        {
+            volume->setPan (juce::jlimit (-1.0f, 1.0f, pan));
+            sendChangeMessage();
+            return true;
+        }
+
+        return false;
+    }
+
+    float Session::getTrackPan (int trackIndex) const
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (auto* volume = track != nullptr ? track->getVolumePlugin() : nullptr)
+            return volume->getPan();
+
+        return 0.0f;
+    }
+
+    bool Session::setTrackMute (int trackIndex, bool shouldMute)
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (track == nullptr)
+            return false;
+
+        track->setMute (shouldMute);
+        sendChangeMessage();
+        return true;
+    }
+
+    bool Session::isTrackMuted (int trackIndex) const
+    {
+        auto* track = getTrack (trackIndex);
+        return track != nullptr && track->isMuted (true);
+    }
+
+    bool Session::setTrackSolo (int trackIndex, bool shouldSolo)
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (track == nullptr)
+            return false;
+
+        track->setSolo (shouldSolo);
+        sendChangeMessage();
+        return true;
+    }
+
+    bool Session::isTrackSolo (int trackIndex) const
+    {
+        auto* track = getTrack (trackIndex);
+        return track != nullptr && track->isSolo (true);
+    }
+
+    bool Session::setMasterGainDb (float db)
+    {
+        if (edit == nullptr)
+            return false;
+
+        if (auto volume = edit->getMasterVolumePlugin())
+        {
+            volume->setVolumeDb (juce::jlimit (-100.0f, 12.0f, db));
+            sendChangeMessage();
+            return true;
+        }
+
+        return false;
+    }
+
+    float Session::getMasterGainDb() const
+    {
+        if (edit != nullptr)
+            if (auto volume = edit->getMasterVolumePlugin())
+                return volume->getVolumeDb();
+
+        return 0.0f;
     }
 
     //==============================================================================
@@ -709,7 +1132,7 @@ namespace rrs
         // (asynchronous) wave device list. Retry until it succeeds, then persist.
         if (! inputsConfigured)
         {
-            if (configureSingleStereoTrack())
+            if (configureTracks())
             {
                 save();
                 sendChangeMessage();
@@ -720,13 +1143,28 @@ namespace rrs
             // The device can (re)open or be rebuilt after the session was
             // configured, leaving the input routing at the hardware default (a
             // mono source would then be hard-left). Re-apply whenever the live
-            // routing differs from the centred/plain route for this channel count.
-            auto* waveIn = getSelectedWaveInputDevice();
+            // routing differs from the mapping's route for this device.
+            bool changed = false;
 
-            if (waveIn != nullptr
-                 && waveIn->getChannels() != inputChannelConfigurationFor (audio.getNumActiveInputChannels()))
+            for (auto index : inputTrackIndices())
             {
-                applyInputChannelConfiguration();
+                auto mapping = readTrackMapping (index);
+                auto* waveIn = resolveInputDeviceFor (mapping);
+
+                if (waveIn == nullptr)
+                    continue;
+
+                const auto hardwareChannels = juce::jmax (1, audio.getNumActiveInputChannels());
+
+                if (waveIn->getChannels() != inputChannelConfigurationForMapping (mapping, hardwareChannels))
+                {
+                    applyInputChannelConfiguration (index, waveIn);
+                    changed = true;
+                }
+            }
+
+            if (changed)
+            {
                 edit->restartPlayback();
                 save();
                 sendChangeMessage();
@@ -737,7 +1175,7 @@ namespace rrs
 
         const bool playing = isPlaying();
         const bool recording = isRecording();
-        const bool armed = isTrackArmed();
+        const bool armed = isAnyTrackArmed();
 
         if (playing != lastPlaying || recording != lastRecording || armed != lastArmed)
         {

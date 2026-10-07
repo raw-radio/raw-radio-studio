@@ -1,9 +1,10 @@
-// raw-radio-studio — session model (Epic 1).
+// raw-radio-studio — session model (Epic 1 walking skeleton + Epic 2 multitrack).
 //
-// Owns the Tracktion `Edit` (the session), the single stereo track, transport
-// state, input assignment/monitoring, autosave, and crash recovery. All heavy
-// audio-thread work goes through the engine; the only audio-thread function we
-// own is the RT-safe `acceptInputBuffer` level accumulator.
+// Owns the Tracktion `Edit` (the session), the audio tracks, transport state,
+// per-track input assignment/monitoring, the basic mixer (gain/pan/mute/solo +
+// master), autosave, and crash recovery. All heavy audio-thread work goes
+// through the engine; the only audio-thread function we own is the RT-safe
+// `acceptInputBuffer` level accumulator.
 
 #pragma once
 
@@ -13,8 +14,10 @@
 
 #include <atomic>
 #include <memory>
+#include <vector>
 
 #include "AudioEngine.h"
+#include "InputMapping.h"
 
 namespace rrs
 {
@@ -29,7 +32,7 @@ namespace rrs
         void push (const choc::buffer::ChannelArrayView<float>& buffer) noexcept;
     };
 
-    /** The application session: one `Edit`, one stereo track. */
+    /** The application session: one `Edit` with 1..N audio tracks. */
     class Session final : public juce::ChangeBroadcaster,
                           private juce::Timer,
                           public tracktion::InputDeviceInstance::Consumer
@@ -61,8 +64,27 @@ namespace rrs
         juce::File getEditFile() const noexcept                 { return editFile; }
         juce::String getSessionName() const;
         tracktion::Edit* getEdit() const noexcept               { return edit.get(); }
+
+        //==============================================================================
+        // Tracks (Epic 1: one stereo track; Epic 2: 1..N)
+        /** Track 0 (Epic 1 convenience; the first *input* track). */
         tracktion::AudioTrack* getTrack() const;
+        /** Track at `index` in engine order. */
+        tracktion::AudioTrack* getTrack (int index) const;
         int getNumAudioTracks() const;
+        juce::String getTrackName (int index) const;
+        bool setTrackName (int index, const juce::String&);
+
+        /** Adds a new input/record track mapped to the next free hardware input.
+            Returns the new track index, or -1 on failure. */
+        int addAudioTrack (const juce::String& name = {});
+        /** Removes a track (and its clips). Returns false for the last track. */
+        bool removeAudioTrack (int index);
+
+        //==============================================================================
+        // Per-track device-agnostic input mapping (FR-REC-3, Epic 2)
+        bool setTrackInputMapping (int trackIndex, const InputMapping&);
+        InputMapping getTrackInputMapping (int trackIndex) const;
 
         //==============================================================================
         // Audio import (Epic 1 backing-track playback)
@@ -74,9 +96,12 @@ namespace rrs
         bool importAudioFile (const juce::File& sourceFile);
 
         //==============================================================================
-        // Recording / monitoring
-        bool setTrackArmed (bool shouldBeArmed);
-        bool isTrackArmed() const;
+        // Recording / monitoring (per-track, Epic 2; track 0 singular forms keep
+        // the Epic 1 API)
+        bool setTrackArmed (int trackIndex, bool shouldBeArmed);
+        bool isTrackArmed (int trackIndex) const;
+        bool setTrackArmed (bool shouldBeArmed)          { return setTrackArmed (0, shouldBeArmed); }
+        bool isTrackArmed() const                        { return isTrackArmed (0); }
 
         bool setMonitoringEnabled (bool);
         bool isMonitoringEnabled() const;
@@ -84,16 +109,37 @@ namespace rrs
         void play();
         void stop();
         bool record();
+        bool isAnyTrackArmed() const;
 
         bool isPlaying() const;
         bool isRecording() const;
 
-        /** Returns the wave input device currently assigned to the track. */
+        /** Returns the wave input device currently assigned to track 0. */
         tracktion::WaveInputDevice* getSelectedWaveInputDevice() const;
 
         /** Re-resolves the input device and re-assigns it to the track. Call after
             the audio device changes (wave devices are rebuilt). */
         void reconfigureInputs();
+
+        /** True once every input track has been bound to a live input device. */
+        bool isInputConfigured() const noexcept                 { return inputsConfigured; }
+
+        /** Engine-order indices of the record/input tracks. */
+        juce::Array<int> getInputTrackIndices() const           { return inputTrackIndices(); }
+
+        //==============================================================================
+        // Basic mixer (FR-MIX-1/3, Epic 2)
+        bool setTrackGainDb (int trackIndex, float db);
+        float getTrackGainDb (int trackIndex) const;
+        bool setTrackPan (int trackIndex, float pan);      ///< -1 (L) .. 0 (centre) .. 1 (R)
+        float getTrackPan (int trackIndex) const;
+        bool setTrackMute (int trackIndex, bool shouldMute);
+        bool isTrackMuted (int trackIndex) const;
+        bool setTrackSolo (int trackIndex, bool shouldSolo);
+        bool isTrackSolo (int trackIndex) const;
+
+        bool setMasterGainDb (float db);
+        float getMasterGainDb() const;
 
         //==============================================================================
         // Metering
@@ -114,11 +160,6 @@ namespace rrs
             bool uncleanShutdown = false;                ///< Startup sentinel was present.
             juce::Array<juce::File> candidateRecordings; ///< Unreferenced WAV candidates.
 
-            /** True when the previous run did not end cleanly: the startup
-                sentinel (session.lock) is still present, or an unsaved temp
-                version was left behind. This is the authoritative signal that
-                must ALWAYS trigger the recovery prompt — it is not inferred
-                from transient autosave state. */
             bool interrupted() const noexcept
             {
                 return uncleanShutdown || hasTempEdit;
@@ -152,20 +193,33 @@ namespace rrs
         //==============================================================================
         void timerCallback() override;
         bool createOrOpenEdit (const juce::File&, bool loadIfExists);
-        bool configureSingleStereoTrack();
 
-        /** Applies the input device's channel routing for the current number of
-            active input channels (mono -> centred L+R, stereo -> L/R). Returns
-            false when no wave input device is available yet. Does not touch
-            monitoring/enabled state. */
-        bool applyInputChannelConfiguration();
+        /** Ensures at least one input track exists, then resolves and binds the
+            input device(s) for every input track (Epic 1: the single stereo track).
+            Returns false while the engine has not yet built its wave-device list
+            (retried from timerCallback). */
+        bool configureTracks();
+
+        /** Re-applies each input track's channel routing from its mapping. */
+        bool applyInputChannelConfiguration (int trackIndex, tracktion::WaveInputDevice*& resolvedOut);
+
+        /** Reads/writes the per-track input mapping stored on the track's state. */
+        InputMapping readTrackMapping (int trackIndex) const;
+        void writeTrackMapping (tracktion::AudioTrack&, const InputMapping&);
+
+        /** True when the track is a record/input track (marked at creation). */
+        bool isInputTrack (const tracktion::AudioTrack&) const;
+
+        /** Engine-order indices of the record/input tracks (Epic 1 back-compat:
+            a session with no markers treats track 0 as the input track). */
+        juce::Array<int> inputTrackIndices() const;
+
+        /** Resolves the wave input device that carries `channel`, or the best
+            available fallback. */
+        tracktion::WaveInputDevice* resolveInputDeviceFor (const InputMapping&) const;
 
         void ensureMeterAttached();
         void detachMeter();
-        /** Writes/removes the interrupted-session sentinel (AppPaths::lockFile).
-            Written when a session becomes active; cleared by a clean shutdown
-            and by Session::close(), so its presence on the next launch
-            deterministically means "the previous run was interrupted". */
         void writeInterruptionMarker();
         void clearInterruptionMarker();
         juce::Array<juce::File> findReferencedRecordings() const;

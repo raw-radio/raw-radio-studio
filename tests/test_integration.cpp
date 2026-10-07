@@ -14,12 +14,37 @@
 // No audio hardware is opened: the engine is constructed with a behaviour that
 // disables device auto-initialisation, so the tests are hermetic and CI-safe.
 
-#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+// Custom test main (instead of DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN).
+//
+// On macOS, JUCE 9's `Desktop::~Desktop` tears down its
+// `NSDistributedNotificationCenter` dark-mode observer during static
+// destruction. In a headless *console* test process (no NSApplication run),
+// that observer is already gone and the teardown crashes with EXC_BAD_ACCESS
+// inside objc_msgSend. The application (a normal GUI app) exits through
+// `JUCEApplicationBase::main`, which tears JUCE down cleanly; only this
+// console binary hits the issue. After the tests have run and the streams are
+// flushed we therefore skip the static destructors with `_Exit`.
+#define DOCTEST_CONFIG_IMPLEMENT
 #include <doctest.h>
+
+#include <cstdlib>
+#include <iostream>
+
+int main (int argc, char** argv)
+{
+    doctest::Context context;
+    context.applyCommandLine (argc, argv);
+    const int result = context.run();
+
+    std::cout.flush();
+    std::fflush (nullptr);
+    std::_Exit (result);
+}
 
 #include <JuceHeader.h>
 
 #include <tracktion_engine/tracktion_engine.h>
+#include <tracktion_engine/testing/tracktion_EnginePlayer.h>
 
 #include "studio/AppPaths.h"
 #include "studio/AudioEngine.h"
@@ -34,6 +59,7 @@
 #include <chrono>
 #include <cmath>
 #include <memory>
+#include <set>
 #include <thread>
 #include <vector>
 
@@ -771,6 +797,157 @@ TEST_CASE ("arbitrary-channel input mapping routes the selected channels (measur
         CHECK (capture.l == doctest::Approx (0.1f));
         CHECK (capture.r == doctest::Approx (0.2f));
     }
+}
+
+//==============================================================================
+// FR-REC-1 / FR-REC-3 / FR-REC-6 (Epic 2): N tracks, each mapped to its own
+// hardware input, recorded simultaneously. Driven by the real engine with a
+// hosted 4-in / 2-out device, since no 4-in interface is attached.
+TEST_CASE ("multitrack: four tracks map to four inputs and record simultaneously (measured)")
+{
+    auto dir = scratchDirectory ("multitrack-record");
+
+    AudioEngine audio (false);
+    Session session (audio);
+
+    REQUIRE (session.createNew (dir.getChildFile ("Multi.tracktionedit")));
+    REQUIRE (session.getNumAudioTracks() == 1);
+
+    while (session.getNumAudioTracks() < 4)
+        REQUIRE (session.addAudioTrack() >= 0);
+
+    REQUIRE (session.getNumAudioTracks() == 4);
+
+    CHECK (session.getInputTrackIndices().size() == 4);
+
+    // Hosted 4-in / 2-out device: distinct per-channel amplitudes and no real
+    // hardware. This is the Epic 2 "4 separate tracks mapped to 4 inputs" path.
+    te::HostedAudioDeviceInterface::Parameters params;
+    params.sampleRate = 48000.0;
+    params.blockSize = 256;
+    params.inputChannels = 4;
+    params.outputChannels = 2;
+
+    auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+
+    auto& dm = audio.deviceManager();
+
+    // Split the interface so each hardware input is addressable as its own
+    // wave device, then let the engine rebuild its device list.
+    dm.setAllWaveInputsToNumChannels (1);
+
+    for (int i = 0; i < 300; ++i)
+    {
+        dm.dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+        if (session.isInputConfigured() && dm.getNumWaveInDevices() >= 4)
+            break;
+
+        session.reconfigureInputs();
+    }
+
+    REQUIRE (dm.getNumWaveInDevices() >= 4);
+    REQUIRE (session.isInputConfigured());
+
+    // Each input track resolves to a distinct hardware channel/device (the 4-in
+    // mapping acceptance) and can be armed independently.
+    std::set<int> channels;
+
+    for (auto index : session.getInputTrackIndices())
+    {
+        const auto mapping = session.getTrackInputMapping (index);
+        channels.insert (mapping.firstChannel);
+        REQUIRE (session.setTrackArmed (index, true));
+        CHECK (session.isTrackArmed (index));
+    }
+
+    CHECK (channels.size() == 4u);
+
+    // Record a distinct constant amplitude on each input.
+    const float amps[4] = { 0.5f, 0.25f, 0.125f, 0.0625f };
+
+    session.getEdit()->getTransport().setPosition (te::TimePosition {});
+    REQUIRE (session.record());
+
+    juce::AudioBuffer<float> input (4, 256);
+
+    for (int block = 0; block < 80; ++block)
+    {
+        for (int ch = 0; ch < 4; ++ch)
+            for (int s = 0; s < input.getNumSamples(); ++s)
+                input.setSample (ch, s, amps[ch]);
+
+        player->process (input);
+    }
+
+    session.stop();
+
+    // Let the recording writers flush their files.
+    for (int i = 0; i < 300; ++i)
+    {
+        session.getEdit()->dispatchPendingUpdatesSynchronously();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (20);
+    }
+
+    // Disarm + stop monitoring so the recording threads are fully released
+    // before the engine is torn down.
+    for (auto index : session.getInputTrackIndices())
+        session.setTrackArmed (index, false);
+
+    session.setMonitoringEnabled (false);
+
+    // Every track received its own take, with the recorded level matching the
+    // input it was mapped to (RMS of a constant-amplitude signal == amplitude).
+    std::set<int> recordedChannels;
+
+    for (auto index : session.getInputTrackIndices())
+    {
+        auto* track = session.getTrack (index);
+
+        REQUIRE (track != nullptr);
+        REQUIRE (track->getClips().size() >= 1);
+
+        auto* clip = dynamic_cast<te::WaveAudioClip*> (track->getClips()[0]);
+        REQUIRE (clip != nullptr);
+
+        const auto file = clip->getOriginalFile();
+        REQUIRE (file.existsAsFile());
+
+        te::AudioFile audioFile (session.getEdit()->engine, file);
+        REQUIRE (audioFile.isValid());
+        REQUIRE (audioFile.getLength() > 0.1);
+
+        // Measure the recorded level from the middle of the take (away from any
+        // clip-start fade). The constant-amplitude input means peak == the
+        // amplitude of the hardware channel this track was mapped to.
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::AudioFormatReader> reader (
+            wav.createReaderFor (new juce::FileInputStream (file), true));
+        REQUIRE (reader != nullptr);
+        REQUIRE (reader->lengthInSamples > 0);
+
+        const auto total = (juce::int64) reader->lengthInSamples;
+        const auto start = total / 2;
+        const auto numToRead = (int) juce::jmin ((juce::int64) 2048, total - start);
+        juce::AudioBuffer<float> recorded ((int) reader->numChannels, numToRead);
+        REQUIRE (reader->read (&recorded, 0, numToRead, start, true, true));
+
+        const auto inputChannel = session.getTrackInputMapping (index).firstChannel;
+        REQUIRE (juce::isPositiveAndBelow (inputChannel, 4));
+        const auto peak = recorded.getMagnitude (0, numToRead);
+
+        INFO ("track " << index << " mapped to input " << inputChannel
+                       << " recorded peak " << peak << " expected " << amps[inputChannel]);
+        CHECK (peak == doctest::Approx (amps[inputChannel]).epsilon (0.02f));
+
+        recordedChannels.insert (index);
+    }
+
+    CHECK (recordedChannels.size() == 4u);
+
+    // Tear the edit down before the hosted device is removed by ~EnginePlayer.
+    session.close();
 }
 
 //==============================================================================
