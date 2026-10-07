@@ -1,4 +1,4 @@
-// raw-radio-studio — Material icon cache (see IconCache.h).
+// raw-radio-studio — Phosphor icon cache (see IconCache.h).
 
 #include "IconCache.h"
 
@@ -20,12 +20,12 @@ namespace rrs
     juce::String IconCache::resourceNameFor (const juce::String& iconName)
     {
         // Must match JUCE's `makeBinaryDataIdentifierName()` mangling exactly:
-        // JUCE replaces spaces and '.' with '_', then **retains** letters,
-        // digits and underscores. So "play_arrow" -> "play_arrow_svg" (the
-        // underscore is significant), while the old "file-plus" -> "fileplus"
-        // (the dash is dropped). Keeping underscores is why the Material names
-        // (note_add, folder_open, ...) resolve; stripping them would silently
-        // yield a blank button.
+        // JUCE replaces spaces and '.' with '_' and then *drops* characters
+        // outside [A-Za-z0-9_]. So a Phosphor file name like "file-plus.svg"
+        // becomes the symbol "fileplus_svg" (the dash is dropped, the dot
+        // becomes an underscore), while "play_pause" would keep its underscore.
+        // Dropping the dash here too is why the dashed Phosphor names resolve;
+        // not doing so would silently yield a blank button.
         juce::String resource;
 
         for (auto character : iconName)
@@ -58,9 +58,9 @@ namespace rrs
         if (drawable == nullptr)
             return {};
 
-        // SVGs are vendored with fill="#FFFFFF" (JUCE cannot resolve
-        // `currentColor`, and Material paths ship without an explicit fill);
-        // recolour the white shapes to the requested tint.
+        // SVGs are vendored with fill="#FFFFFF" on the root and every element
+        // (JUCE cannot resolve `currentColor`); recolour the white shapes to the
+        // requested tint.
         drawable->replaceColour (juce::Colours::white, tint);
 
         // Render at 2x for crisp HiDPI output; drawn back down to `sizePx`.

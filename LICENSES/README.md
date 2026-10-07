@@ -6,10 +6,10 @@ directory:
 - `JUCE.txt` — JUCE Framework (`third_party/JUCE`, pinned to tag **9.0.3**).
 - `tracktion_engine.txt` — Tracktion Engine (`third_party/tracktion_engine`,
   pinned to `develop` commit **2d2d452f**).
-- `Material-Icons.txt` — Material Icons / Material Symbols (Outlined) icon set
-  (`assets/icons/`, vendored from the `@material-design-icons/svg` package,
-  version **0.14.15**): **Apache-2.0**. Vendored and compiled into the binary via
-  `juce_add_binary_data` (see `assets/icons/README.md`).
+- `Phosphor.txt` — Phosphor Icons (regular weight) icon set
+  (`assets/icons/`, vendored from `phosphor-icons/core` at tag **v2.0.8**):
+  **MIT**. Vendored and compiled into the binary via `juce_add_binary_data`
+  (see `assets/icons/README.md`).
 - `Inter-OFL.txt` — Inter typeface (`assets/fonts/Inter-*.ttf`, pinned to tag
   **v4.1**): SIL Open Font License 1.1.
 - `JetBrainsMono-OFL.txt` — JetBrains Mono typeface

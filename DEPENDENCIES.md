@@ -139,26 +139,25 @@ are compiled into the application binary (no runtime or build-time download):
 
 | Component | Location | Pinned revision | License (SPDX) | Role |
 |-----------|----------|-----------------|----------------|------|
-| **Material Icons** | `assets/icons/*.svg` | `@material-design-icons/svg` `0.14.15` | Apache-2.0 | UI icon set |
+| **Phosphor Icons** | `assets/icons/*.svg` | `phosphor-icons/core` tag `v2.0.8` | MIT | UI icon set (regular, 24x24) |
 | **Inter** | `assets/fonts/Inter-*.ttf` | tag `v4.1` | OFL-1.1 | UI typeface (400/500/600/700) |
 | **JetBrains Mono** | `assets/fonts/JetBrainsMono-*.ttf` | tag `v2.304` | OFL-1.1 | Monospace (timecodes / dB) |
 
-* Material Icons / Material Symbols (Outlined) (upstream
-  <https://github.com/google/material-design-icons>, vendored via the optimised
-  `@material-design-icons/svg` package) are consistent with the RAW Radio
-  ecosystem (Material `mic`). The 24x24 Outlined SVGs have every `<path>` pinned
-  to `fill="#FFFFFF"` at vendor time (JUCE does not resolve SVG `currentColor`,
-  and Material ships its paths without a fill) and are tinted at runtime by
-  `src/ui/IconCache`. Understood names map 1:1 to the vendored files
-  (`play_arrow` → `play_arrow.svg`); the cache's resource lookup retains
-  underscores to match JUCE's `makeBinaryDataIdentifierName()`.
+* Phosphor Icons (upstream <https://github.com/phosphor-icons/core>) are
+  vendored from the `regular` (24x24) asset set at tag `v2.0.8`. Phosphor ships
+  `fill="currentColor"` (which JUCE does not resolve) and no per-element fill, so
+  at vendor time the root `fill` and every fill-capable element are normalised to
+  `fill="#FFFFFF"`; the icons are tinted at runtime by `src/ui/IconCache`. The
+  vendored names use Phosphor's dashed file names (`file-plus` →
+  `file-plus.svg`); the cache's resource lookup drops the dash to match JUCE's
+  `makeBinaryDataIdentifierName()` (which retains only `[A-Za-z0-9_]`).
 * Inter (<https://github.com/rsms/inter>) and JetBrains Mono
   (<https://github.com/JetBrains/JetBrainsMono>) static TTFs are registered at
   startup by `src/ui/BrandFonts` via `Typeface::createSystemTypefaceFor`. Fonts
   are built from the registered `Typeface::Ptr` rather than by family name,
   because the static Inter Medium/SemiBold files report the family
   `Inter Medium`/`Inter SemiBold`.
-* Full licence texts: [`LICENSES/Material-Icons.txt`](LICENSES/Material-Icons.txt),
+* Full licence texts: [`LICENSES/Phosphor.txt`](LICENSES/Phosphor.txt),
   [`LICENSES/Inter-OFL.txt`](LICENSES/Inter-OFL.txt),
   [`LICENSES/JetBrainsMono-OFL.txt`](LICENSES/JetBrainsMono-OFL.txt). Provenance
   and refresh instructions: `assets/icons/README.md`, `assets/fonts/README.md`.

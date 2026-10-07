@@ -68,18 +68,18 @@ Vendored UI assets (compiled into the application binary — no runtime download
 
   | Component      | Location / pinned revision                          | Version | License (SPDX)                          | Role                        |
   |----------------|-----------------------------------------------------|---------|-----------------------------------------|-----------------------------|
-  | Material Icons | `assets/icons/*.svg` @ `@material-design-icons/svg` 0.14.15 | 0.14.15 | Apache-2.0                       | UI icon set                 |
+  | Phosphor Icons | `assets/icons/*.svg` @ `phosphor-icons/core` v2.0.8 | 2.0.8   | MIT                                     | UI icon set (regular weight) |
   | Inter          | `assets/fonts/Inter-*.ttf` @ tag `v4.1`             | 4.1     | OFL-1.1                                 | UI typeface (400/500/600/700) |
   | JetBrains Mono | `assets/fonts/JetBrainsMono-*.ttf` @ tag `v2.304`   | 2.304   | OFL-1.1                                 | Monospace for timecodes/dB  |
 
-  * Material Icons / Material Symbols (Outlined) — upstream
-    https://github.com/google/material-design-icons, vendored from the
-    optimised `@material-design-icons/svg` package (v0.14.15).
-    License: Apache-2.0. The Outlined 24x24 SVGs are vendored (not fetched at
-    build time) and compiled into the binary via `juce_add_binary_data`; each
-    `<path>` is normalised to `fill="#FFFFFF"` because JUCE does not resolve SVG
-    `currentColor` and Material ships its paths without a fill. Full licence
-    text: `LICENSES/Material-Icons.txt`. Provenance: `assets/icons/README.md`.
+  * Phosphor Icons — upstream https://github.com/phosphor-icons/core, vendored
+    from the `regular` (24x24) asset set at tag `v2.0.8`
+    (`d42782b2abe747d904b971ccab48b182a1455f86`). License: MIT. The SVGs are
+    vendored (not fetched at build time) and compiled into the binary via
+    `juce_add_binary_data`; the `fill="currentColor"` root fill and every
+    fill-capable element are normalised to `fill="#FFFFFF"` because JUCE does not
+    resolve SVG `currentColor`. Full licence text: `LICENSES/Phosphor.txt`.
+    Provenance: `assets/icons/README.md`.
 
   * Inter — https://github.com/rsms/inter
     License: SIL Open Font License v1.1 (OFL-1.1). The static TTFs

@@ -1,6 +1,6 @@
-// raw-radio-studio — Material icon cache (UI only).
+// raw-radio-studio — Phosphor icon cache (UI only).
 //
-// Parses the vendored Material Symbols / Material Icons (Outlined) SVGs
+// Parses the vendored Phosphor Icons (regular, 24x24) SVGs
 // (compiled in via `RawRadioStudioAssets`), tints them with
 // `Drawable::replaceColour` and rasterises each (name, tint, size) once.
 // `paint()` only ever blits a cached image — no SVG parsing and no allocation

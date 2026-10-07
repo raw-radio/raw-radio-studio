@@ -46,12 +46,13 @@ namespace
 
     /** Counts *fully opaque* pixels whose colour does not match `tint`.
 
-        Guards the tinting contract: an untinted SVG element (Material ships
-        icons with no `fill`, so JUCE renders them black) stays black under
-        `Drawable::replaceColour (white -> tint)` and shows as a dark "hole" on
-        the dark theme. Partial-alpha antialiased edges are skipped (the alpha
-        threshold), because their premultiplied colour is not a reliable signal;
-        every pixel the icon actually paints solid must carry the tint. */
+        Guards the tinting contract: an untinted SVG element (JUCE does not
+        resolve the `currentColor` Phosphor ships, nor a missing fill, so such
+        elements render black) stays black under `Drawable::replaceColour
+        (white -> tint)` and shows as a dark "hole" on the dark theme.
+        Partial-alpha antialiased edges are skipped (the alpha threshold),
+        because their premultiplied colour is not a reliable signal; every pixel
+        the icon actually paints solid must carry the tint. */
     int countOpaquePixelsOffTint (const juce::Image& image, juce::Colour tint,
                                   int tolerance = 16, int alphaThreshold = 250)
     {
@@ -76,12 +77,12 @@ namespace
     }
 }
 
-TEST_CASE ("brand icon cache parses and tints the vendored Material SVGs")
+TEST_CASE ("brand icon cache parses and tints the vendored Phosphor SVGs")
 {
     auto& cache = IconCache::getInstance();
 
     // A vendored icon parses, tints and rasterises at 2x the requested size.
-    const auto icon = cache.getIconImage ("note_add", juce::Colours::red, 16);
+    const auto icon = cache.getIconImage ("file-plus", juce::Colours::red, 16);
     CHECK (icon.isValid());
     CHECK (icon.getWidth() == 32);
     CHECK (icon.getHeight() == 32);
@@ -89,31 +90,32 @@ TEST_CASE ("brand icon cache parses and tints the vendored Material SVGs")
     // ...and actually contains drawn (tinted) pixels, not an empty raster.
     CHECK (countNonTransparentPixels (icon) > 0);
 
-    // Tinting contract: every opaque pixel is the requested tint. An untinted
-    // element (Material icons ship without `fill`, so JUCE renders black) is
-    // left black by `replaceColour (white -> tint)` and shows as a dark dot on
-    // the dark theme.
+    // Tinting contract: every opaque pixel is the requested tint. Phosphor
+    // regular icons ship `fill="currentColor"` (which JUCE cannot resolve) with
+    // no per-element fill, so an unnormalised element would render black and be
+    // left black by `replaceColour (white -> tint)` — a dark dot on the theme.
     CHECK (countOpaquePixelsOffTint (icon, juce::Colours::red) == 0);
 
-    // Regression: `radio_button_checked` used to ship a bare `<circle>` (no
-    // `fill`) alongside its `<path>`; only the path was rewritten at vendor
-    // time, so the inner dot stayed black. Render at a larger size to give the
-    // circle plenty of fully-opaque pixels to inspect.
+    // Regression: a complex multi-subpath glyph (gear-six) and a ring+dot glyph
+    // (record) must be fully tinted too — render larger so there are plenty of
+    // fully-opaque pixels to inspect. This is the Phosphor equivalent of the old
+    // Material `radio_button_checked` bare-`<circle>` guard.
+    for (const auto* name : { "gear-six", "record" })
     {
-        const auto armIcon = cache.getIconImage ("radio_button_checked", juce::Colours::white, 48);
-        REQUIRE (armIcon.isValid());
-        CHECK (countNonTransparentPixels (armIcon) > 0);
-        CHECK (countOpaquePixelsOffTint (armIcon, juce::Colours::white) == 0);
+        const auto complexIcon = cache.getIconImage (name, juce::Colours::white, 48);
+        REQUIRE (complexIcon.isValid());
+        CHECK (countNonTransparentPixels (complexIcon) > 0);
+        CHECK (countOpaquePixelsOffTint (complexIcon, juce::Colours::white) == 0);
     }
 
     // Every vendored resource must resolve — guards against a renamed file
-    // silently yielding a blank button. These are the Material Icons (Outlined)
-    // names now used by the transport / action rows.
-    for (const auto* name : { "note_add", "folder_open", "save", "save_as", "upload_file",
-                              "download", "close", "settings", "info", "radio_button_checked",
-                              "headphones", "fiber_manual_record", "play_arrow", "pause", "stop",
-                              "skip_previous", "timer", "add", "delete", "auto_fix_high",
-                              "refresh" })
+    // silently yielding a blank button. These are the Phosphor Icons (regular)
+    // names used by the transport / action rows and the device panel.
+    for (const auto* name : { "file-plus", "folder-open", "floppy-disk", "floppy-disk-back",
+                              "upload-simple", "download-simple", "x", "gear-six", "info",
+                              "record", "headphones", "play", "pause", "stop", "skip-back",
+                              "metronome", "timer", "plus", "trash", "waveform",
+                              "arrows-clockwise" })
     {
         const auto rendered = cache.getIconImage (name, juce::Colours::white, 16);
         CHECK (rendered.isValid());

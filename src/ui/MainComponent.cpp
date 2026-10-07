@@ -63,43 +63,43 @@ namespace rrs
 
         // Icon-only action buttons (owner request): no text labels, each with a
         // hover tooltip describing the action. 32x32 squares in the action row.
-        newButton.setIconName ("note_add");
+        newButton.setIconName ("file-plus");
         newButton.setIconOnly (true);
         newButton.setTooltip ("New session");
-        openButton.setIconName ("folder_open");
+        openButton.setIconName ("folder-open");
         openButton.setIconOnly (true);
         openButton.setTooltip ("Open session");
-        saveButton.setIconName ("save");
+        saveButton.setIconName ("floppy-disk");
         saveButton.setIconOnly (true);
         saveButton.setTooltip ("Save session");
-        saveAsButton.setIconName ("save_as");
+        saveAsButton.setIconName ("floppy-disk-back");
         saveAsButton.setIconOnly (true);
         saveAsButton.setTooltip ("Save session as...");
-        closeButton.setIconName ("close");
+        closeButton.setIconName ("x");
         closeButton.setIconOnly (true);
         closeButton.setTooltip ("Close session");
-        importButton.setIconName ("upload_file");
+        importButton.setIconName ("upload-simple");
         importButton.setIconOnly (true);
         importButton.setTooltip ("Import an audio file as a backing track");
         // Export keeps its primary (accent) styling, now icon-only.
-        exportButton.setIconName ("download");
+        exportButton.setIconName ("download-simple");
         exportButton.setIconOnly (true);
         exportButton.setTooltip ("Export session to 24-bit WAV");
 
         // Utility buttons are icon-only too (owner request): the action row no
         // longer overflows once Normalize / Add track / Remove track drop their
         // text, and the row matches the icon-only session buttons.
-        normaliseButton.setIconName ("auto_fix_high");
+        normaliseButton.setIconName ("waveform");
         normaliseButton.setIconOnly (true);
         normaliseButton.setTooltip ("Peak-normalise the most recent take to -1 dBFS");
-        addTrackButton.setIconName ("add");
+        addTrackButton.setIconName ("plus");
         addTrackButton.setIconOnly (true);
         addTrackButton.setTooltip ("Add an input track (maps to the next free input)");
-        removeTrackButton.setIconName ("delete");
+        removeTrackButton.setIconName ("trash");
         removeTrackButton.setIconOnly (true);
         removeTrackButton.setTooltip ("Remove the last track");
 
-        settingsButton.setIconName ("settings");
+        settingsButton.setIconName ("gear-six");
         settingsButton.setIconOnly (true);
         settingsButton.setTooltip ("Settings");
         aboutButton.setIconName ("info");
@@ -108,26 +108,26 @@ namespace rrs
 
         // Icon-only transport: square, each with a hover tooltip. Record is a
         // little larger to keep its emphasis; the rest are 36x36 (>= 32x32).
-        armButton.setIconName ("radio_button_checked");
+        armButton.setIconName ("record");
         armButton.setIconOnly (true, 36);
         armButton.setTooltip ("Arm the track for recording");
-        recordButton.setIconName ("fiber_manual_record");
+        recordButton.setIconName ("record");
         recordButton.setIconOnly (true, 40);
         recordButton.setTooltip ("Record / stop recording");
-        playButton.setIconName ("play_arrow");
+        playButton.setIconName ("play");
         playButton.setIconOnly (true, 36);
         playButton.setTooltip ("Play / pause");
         stopButton.setIconName ("stop");
         stopButton.setIconOnly (true, 36);
         stopButton.setTooltip ("Stop (keeps the playhead where it stopped)");
-        goToStartButton.setIconName ("skip_previous");
+        goToStartButton.setIconName ("skip-back");
         goToStartButton.setIconOnly (true, 36);
         goToStartButton.setTooltip ("Go to start (return the playhead to 0)");
         monitorButton.setIconName ("headphones");
         monitorButton.setIconOnly (true, 36);
         monitorButton.setTooltip ("Toggle input monitoring");
 
-        metronomeButton.setIconName ("timer");
+        metronomeButton.setIconName ("metronome");
         metronomeButton.setIconOnly (true, 36);
         metronomeButton.setTooltip ("Metronome / count-in click");
         countInBox.setTooltip ("Count-in before recording starts");
@@ -369,7 +369,7 @@ namespace rrs
 
         recordButton.setButtonText (session.isRecording() ? "Stop rec" : "Record");
         playButton.setButtonText (session.isPlaying() ? "Pause" : "Play");
-        playButton.setIconName (session.isPlaying() ? "pause" : "play_arrow");
+        playButton.setIconName (session.isPlaying() ? "pause" : "play");
         recordButton.setToggleState (session.isRecording(), juce::dontSendNotification);
         playButton.setToggleState (session.isPlaying(), juce::dontSendNotification);
         armButton.setToggleState (session.isTrackArmed(), juce::dontSendNotification);

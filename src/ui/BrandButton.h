@@ -30,7 +30,7 @@ namespace rrs
 
         explicit BrandButton (const juce::String& buttonText, Style style = Style::Secondary);
 
-        /** Material icon name (e.g. "note_add"); empty for a text-only button. */
+        /** Phosphor icon name (e.g. "file-plus"); empty for a text-only button. */
         void setIconName (const juce::String& name);
         void setIconSize (int pixels) noexcept;
         /** Renders as a square icon-only button of `squareSize` px (Settings/About). */
