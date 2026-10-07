@@ -7,6 +7,8 @@
 
 #include <JuceHeader.h>
 
+#include "MeterBallistics.h"
+
 #include <array>
 #include <functional>
 
@@ -34,19 +36,19 @@ namespace rrs
 
         struct ChannelState
         {
-            float peak = 0.0f;
-            float rms = 0.0f;
-            float hold = 0.0f;
-            int holdCountdown = 0;
+            MeterBallistics peak;
+            MeterBallistics rms;
         };
 
-        static float normaliseDb (float linearGain) noexcept;
+        /** Maps a dBFS level to the [0,1] bar position. */
+        static float normaliseDb (float db) noexcept;
         void drawChannel (juce::Graphics&, juce::Rectangle<int>, const ChannelState&,
                           const juce::String& name, int labelWidth);
 
         const InputLevels& inputLevels;
         std::array<ChannelState, 2> channels;
         std::function<int()> numInputChannels;
+        double lastUpdateMs = 0.0;
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (InputMeter)
     };

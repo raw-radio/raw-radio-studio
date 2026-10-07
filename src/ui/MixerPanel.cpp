@@ -18,6 +18,7 @@ namespace rrs
     {
         session.addChangeListener (this);
         rebuildStrips();
+        lastMeterMs = juce::Time::getMillisecondCounterHiRes();
         startTimerHz (30);
     }
 
@@ -119,7 +120,13 @@ namespace rrs
         x += gap; // visual separation before the master strip
         strips.push_back (makeStrip (true, -1, juce::jmax (56, masterWidth - gap)));
 
-        meters.assign (strips.size(), MeterVisual {});
+        // Preserve the meter envelopes across a rebuild when the strip count is
+        // unchanged. Rebuilds are triggered by every Session change message —
+        // including each fader move — so resetting them here made the meters
+        // jump/flicker exactly while the engineer was riding a fader.
+        if (meters.size() != strips.size())
+            meters.assign (strips.size(), MeterVisual {});
+
         stripCount = numTracks;
     }
 
@@ -134,30 +141,22 @@ namespace rrs
         if ((int) meters.size() != (int) strips.size())
             meters.assign (strips.size(), MeterVisual {});
 
+        // dt-based ballistics: smooth and frame-rate independent, so the meter
+        // falls at a fixed dB/s instead of jumping with each UI block.
+        const auto now = juce::Time::getMillisecondCounterHiRes();
+        const auto dt  = lastMeterMs > 0.0 ? (float) ((now - lastMeterMs) / 1000.0)
+                                           : 1.0f / 30.0f;
+        lastMeterMs = now;
+
         for (size_t i = 0; i < strips.size(); ++i)
         {
             const auto& strip = strips[i];
             const auto reading = strip.isMaster ? session.readMasterMeter()
                                                 : session.readTrackMeter (strip.trackIndex);
             const auto peakDb = juce::jmax (reading.peakDb[0], reading.peakDb[1]);
-            const auto level = normaliseDb (peakDb);
 
             auto& visual = meters[i];
-            visual.level = juce::jmax (level, visual.level * 0.80f);
-
-            if (level >= visual.hold)
-            {
-                visual.hold = level;
-                visual.holdCountdown = 30;
-            }
-            else if (visual.holdCountdown > 0)
-            {
-                --visual.holdCountdown;
-            }
-            else
-            {
-                visual.hold *= 0.94f;
-            }
+            visual.ballistics.update (peakDb, dt);
 
             if (reading.clipped)
                 visual.clipHold = 60;
@@ -334,13 +333,16 @@ namespace rrs
         g.setColour (brand::meterTrough);
         g.fillRoundedRectangle (bar, 2.0f);
 
-        const auto fill = bar.getHeight() * meter.level;
+        const auto level = normaliseDb (meter.ballistics.getDb());
+        const auto hold  = normaliseDb (meter.ballistics.getHoldDb());
+
+        const auto fill = bar.getHeight() * level;
         g.setColour (brand::vuGreen);
         g.fillRoundedRectangle (bar.withTrimmedTop (bar.getHeight() - fill), 2.0f);
 
-        const auto holdY = bar.getY() + bar.getHeight() * (1.0f - meter.hold);
+        const auto holdY = bar.getY() + bar.getHeight() * (1.0f - hold);
 
-        if (meter.hold > 0.0f)
+        if (hold > 0.0f)
         {
             g.setColour (brand::vuYellow);
             g.fillRect (juce::Rectangle<float> (bar.getX(), holdY - 1.0f, bar.getWidth(), 2.0f));

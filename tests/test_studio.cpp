@@ -19,6 +19,7 @@
 #include "ui/BrandFonts.h"
 #include "ui/DevicePanelLayout.h"
 #include "ui/IconCache.h"
+#include "ui/MeterBallistics.h"
 
 #include <cmath>
 #include <memory>
@@ -420,6 +421,62 @@ TEST_CASE ("session recovery paths are derived deterministically")
     CHECK (paths::tempEditFileFor (editFile) == juce::File ("/tmp/.tmp_My Session"));
     CHECK (paths::recordingsDirectoryFor (editFile) == juce::File ("/tmp/Recordings"));
     CHECK (paths::tempEditFileFor ({}) == juce::File());
+}
+
+//==============================================================================
+// VU meter ballistics (Epic 2 GUI retest): rise fast to a new peak, then fall
+// smoothly at a bounded dB/s. The old meters multiplied by a fixed per-frame
+// factor with no dt and the mixer reset its state on every change message, so
+// they flickered/jittered while the engineer changed input/master volume.
+TEST_CASE ("meter ballistics rise fast and release smoothly without per-block flicker")
+{
+    MeterBallistics meter;
+    meter.reset();
+
+    constexpr float dt = 1.0f / 30.0f;
+
+    // Fast attack to a steady -6 dBFS.
+    for (int i = 0; i < 20; ++i)
+        meter.update (-6.0f, dt);
+
+    CHECK (meter.getDb() == doctest::Approx (-6.0f).epsilon (0.05f));
+    CHECK (meter.getHoldDb() == doctest::Approx (-6.0f).epsilon (0.05f));
+
+    // Silence: the value must be monotonic non-increasing (never jumps *up*
+    // between blocks — the flicker) and each step is bounded by the release rate.
+    float previous = meter.getDb();
+
+    for (int i = 0; i < 45; ++i) // 1.5 s
+    {
+        meter.update (MeterBallistics::floorDb, dt);
+        const auto value = meter.getDb();
+
+        CHECK (value <= previous + 1.0e-4f);
+        CHECK (previous - value <= MeterBallistics::releaseDbPerSec * dt + 1.0e-3f);
+
+        previous = value;
+    }
+
+    // ~1.5 s at 24 dB/s => ~36 dB of fall (within the 20-40 dB/s window).
+    const auto fallenDb = -6.0f - meter.getDb();
+    INFO ("fallen " << fallenDb << " dB in 1.5 s");
+    CHECK (fallenDb > 30.0f);
+    CHECK (fallenDb < 40.0f);
+}
+
+TEST_CASE ("meter ballistics are frame-rate independent (same duration, same result)")
+{
+    MeterBallistics slow, fast;
+    slow.reset();
+    fast.reset();
+
+    for (int i = 0; i < 30; ++i)  // 1 s at 30 Hz
+        slow.update (-6.0f, 1.0f / 30.0f);
+
+    for (int i = 0; i < 60; ++i)  // 1 s at 60 Hz
+        fast.update (-6.0f, 1.0f / 60.0f);
+
+    CHECK (slow.getDb() == doctest::Approx (fast.getDb()).epsilon (0.1f));
 }
 
 //==============================================================================

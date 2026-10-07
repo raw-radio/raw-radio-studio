@@ -18,17 +18,24 @@ namespace rrs
         : inputLevels (levels)
         , numInputChannels (std::move (channelCountProvider))
     {
+        lastUpdateMs = juce::Time::getMillisecondCounterHiRes();
         startTimerHz (30);
     }
 
-    float InputMeter::normaliseDb (float linearGain) noexcept
+    float InputMeter::normaliseDb (float db) noexcept
     {
-        const auto db = juce::Decibels::gainToDecibels (juce::jmax (linearGain, 1.0e-6f), minDb);
         return juce::jlimit (0.0f, 1.0f, (db - minDb) / (maxDb - minDb));
     }
 
     void InputMeter::timerCallback()
     {
+        // Frame-rate-independent ballistics: use the real elapsed time so the
+        // meter falls at a fixed dB/s regardless of how often the timer fires.
+        const auto now = juce::Time::getMillisecondCounterHiRes();
+        const auto dt  = lastUpdateMs > 0.0 ? (float) ((now - lastUpdateMs) / 1000.0)
+                                            : 1.0f / 30.0f;
+        lastUpdateMs = now;
+
         for (int ch = 0; ch < 2; ++ch)
         {
             auto& state = channels[(size_t) ch];
@@ -36,23 +43,13 @@ namespace rrs
             const auto peak = inputLevels.peak[ch].load (std::memory_order_relaxed);
             const auto rms  = inputLevels.rms[ch].load (std::memory_order_relaxed);
 
-            // UI smoothing: fast attack, slow release.
-            state.peak = juce::jmax (peak, state.peak * 0.82f);
-            state.rms  = juce::jmax (rms, state.rms * 0.90f);
+            const auto peakDb = juce::Decibels::gainToDecibels (juce::jmax (peak, 1.0e-6f),
+                                                                MeterBallistics::floorDb);
+            const auto rmsDb  = juce::Decibels::gainToDecibels (juce::jmax (rms, 1.0e-6f),
+                                                                MeterBallistics::floorDb);
 
-            if (peak >= state.hold)
-            {
-                state.hold = peak;
-                state.holdCountdown = 30; // ~1 s at 30 Hz
-            }
-            else if (state.holdCountdown > 0)
-            {
-                --state.holdCountdown;
-            }
-            else
-            {
-                state.hold *= 0.94f;
-            }
+            state.peak.update (peakDb, dt);
+            state.rms.update (rmsDb, dt);
         }
 
         repaint();
@@ -101,10 +98,10 @@ namespace rrs
         g.setColour (brand::meterTrough);
         g.fillRoundedRectangle (barArea.toFloat(), 2.0f);
 
-        const auto barWidth = (float) barArea.getWidth();
-        const auto rmsWidth  = barWidth * normaliseDb (state.rms);
-        const auto peakWidth = barWidth * normaliseDb (state.peak);
-        const auto holdX     = (float) barArea.getX() + barWidth * normaliseDb (state.hold);
+        const auto barWidth  = (float) barArea.getWidth();
+        const auto rmsWidth  = barWidth * normaliseDb (state.rms.getDb());
+        const auto peakWidth = barWidth * normaliseDb (state.peak.getDb());
+        const auto holdX     = (float) barArea.getX() + barWidth * normaliseDb (state.peak.getHoldDb());
 
         g.setColour (brand::vuGreen);
         g.fillRoundedRectangle (barArea.toFloat().withWidth (rmsWidth), 2.0f);
@@ -113,14 +110,14 @@ namespace rrs
         g.fillRect (juce::Rectangle<float> ((float) barArea.getX() + peakWidth - 1.0f,
                                             (float) barArea.getY(), 2.0f, (float) barArea.getHeight()));
 
-        if (state.hold > 0.0f)
+        if (state.peak.getHoldDb() > minDb)
         {
             g.setColour (brand::vuRed);
             g.fillRect (juce::Rectangle<float> (holdX, (float) barArea.getY(),
                                                 2.0f, (float) barArea.getHeight()));
         }
 
-        const auto peakDb = juce::Decibels::gainToDecibels (state.peak, minDb);
+        const auto peakDb = state.peak.getDb();
         g.setColour (brand::textSecondary);
         g.setFont (brand::monoRegular (11.0f));
         g.drawText (juce::String (peakDb, 1) + " dB",

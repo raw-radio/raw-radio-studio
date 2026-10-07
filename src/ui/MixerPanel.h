@@ -14,6 +14,7 @@
 
 #include <vector>
 
+#include "MeterBallistics.h"
 #include "studio/Session.h"
 
 namespace rrs
@@ -59,9 +60,7 @@ namespace rrs
 
         struct MeterVisual
         {
-            float level = 0.0f;      ///< 0..1 normalised (from peak dBFS).
-            float hold = 0.0f;
-            int holdCountdown = 0;
+            MeterBallistics ballistics; ///< smoothed dBFS level + peak hold.
             bool clipped = false;
             int clipHold = 0;
         };
@@ -85,6 +84,9 @@ namespace rrs
         enum class DragTarget { None, Fader, Pan };
         DragTarget dragTarget = DragTarget::None;
         int dragIndex = -1;
+
+        /** Timestamp of the previous meter update, for dt-based ballistics. */
+        double lastMeterMs = 0.0;
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MixerPanel)
     };
