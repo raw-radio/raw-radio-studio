@@ -837,14 +837,18 @@ namespace rrs
                     g.drawText ("No session loaded", lanes, juce::Justification::centred);
                 }
 
+                // Lane rects were computed in rebuildTrackLaneRects(); each one is
+                // clickable (arm/disarm its track) in mouseDown().
+                rebuildTrackLaneRects();
+
                 int index = 0;
 
                 for (auto* track : tracks)
                 {
-                    if (lanes.getHeight() <= 0)
+                    if (index >= (int) trackLaneRects.size())
                         break;
 
-                    auto lane = lanes.removeFromTop (juce::jmin (46, lanes.getHeight()));
+                    auto lane = trackLaneRects[(size_t) index];
                     const auto armed = session.isTrackArmed (index);
 
                     // Neutral zebra: never encode "armed" as a blue tint. Armed
@@ -959,6 +963,48 @@ namespace rrs
         inputMeter.setBounds (middle.removeFromRight (180).reduced (2));
         middle.removeFromRight (6);
         trackLaneArea = middle;
+
+        rebuildTrackLaneRects();
+    }
+
+    void MainComponent::rebuildTrackLaneRects()
+    {
+        trackLaneRects.clear();
+
+        if (trackLaneArea.isEmpty() || session.getEdit() == nullptr)
+            return;
+
+        auto lanes = trackLaneArea.reduced (8, 6);
+        const auto numTracks = session.getNumAudioTracks();
+
+        trackLaneRects.reserve ((size_t) juce::jmax (0, numTracks));
+
+        for (int i = 0; i < numTracks && lanes.getHeight() > 0; ++i)
+            trackLaneRects.push_back (lanes.removeFromTop (juce::jmin (46, lanes.getHeight())));
+    }
+
+    void MainComponent::mouseDown (const juce::MouseEvent& e)
+    {
+        if (exportInProgress)
+            return;
+
+        // Empty areas (below the lanes) are ignored; only a real lane toggles.
+        for (size_t i = 0; i < trackLaneRects.size(); ++i)
+        {
+            if (! trackLaneRects[i].contains (e.getPosition()))
+                continue;
+
+            const auto index = (int) i;
+            const auto nowArmed = ! session.isTrackArmed (index);
+
+            if (session.setTrackArmed (index, nowArmed))
+                showStatus ((nowArmed ? "Armed: " : "Disarmed: ") + session.getTrackName (index));
+            else
+                showStatus (session.getLastError(), true);
+
+            refreshTransportUi();
+            return;
+        }
     }
 
     int MainComponent::layoutActionRow (juce::Rectangle<int> area)

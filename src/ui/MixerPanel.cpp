@@ -62,6 +62,10 @@ namespace rrs
 
             auto inner = c.strip.reduced (4, 4);
             c.name = inner.removeFromTop (16);
+
+            if (! isMaster)
+                c.arm = inner.removeFromTop (18).reduced (1, 1);
+
             c.meter = inner.removeFromRight (12);
             inner.removeFromRight (4);
 
@@ -183,13 +187,14 @@ namespace rrs
             const auto pan = strip.isMaster ? 0.0f : session.getTrackPan (strip.trackIndex);
             const auto muted = ! strip.isMaster && session.isTrackMuted (strip.trackIndex);
             const auto soloed = ! strip.isMaster && session.isTrackSolo (strip.trackIndex);
+            const auto armed = ! strip.isMaster && session.isTrackArmed (strip.trackIndex);
 
-            drawStrip (g, strip, meters[i], gainDb, pan, muted, soloed);
+            drawStrip (g, strip, meters[i], gainDb, pan, muted, soloed, armed);
         }
     }
 
     void MixerPanel::drawStrip (juce::Graphics& g, const StripControls& strip, const MeterVisual& meter,
-                                float gainDb, float pan, bool muted, bool soloed)
+                                float gainDb, float pan, bool muted, bool soloed, bool armed)
     {
         // Card background.
         g.setColour (strip.isMaster ? brand::bgElevated : brand::bgTertiary);
@@ -200,6 +205,19 @@ namespace rrs
         g.setFont (brand::uiMedium (11.0f));
         g.drawText (strip.isMaster ? "Master" : session.getTrackName (strip.trackIndex),
                     strip.name, juce::Justification::centred, true);
+
+        // Record-arm chip (FR-REC-2). Only track strips are armable.
+        if (! strip.isMaster && ! strip.arm.isEmpty())
+        {
+            const auto a = strip.arm;
+            g.setColour (armed ? brand::accentMuted : brand::bgPanel);
+            g.fillRoundedRectangle (a.toFloat(), 4.0f);
+            g.setColour (armed ? brand::accent : brand::border);
+            g.drawRoundedRectangle (a.toFloat().reduced (0.5f), 4.0f, 1.0f);
+            g.setColour (armed ? brand::accent : brand::textSecondary);
+            g.setFont (brand::uiSemiBold (11.0f));
+            g.drawText ("R", a, juce::Justification::centred);
+        }
 
         drawMeter (g, strip.meter, meter);
 
@@ -297,6 +315,12 @@ namespace rrs
         for (size_t i = 0; i < strips.size(); ++i)
         {
             const auto& strip = strips[i];
+
+            if (! strip.isMaster && strip.arm.contains (e.getPosition()))
+            {
+                session.setTrackArmed (strip.trackIndex, ! session.isTrackArmed (strip.trackIndex));
+                return;
+            }
 
             if (strip.mute.contains (e.getPosition()))
             {

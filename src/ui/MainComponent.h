@@ -35,6 +35,7 @@ namespace rrs
 
         void paint (juce::Graphics&) override;
         void resized() override;
+        void mouseDown (const juce::MouseEvent&) override;
 
     private:
         void changeListenerCallback (juce::ChangeBroadcaster*) override;
@@ -64,6 +65,11 @@ namespace rrs
             second line when the window is too narrow. Records the group-divider
             rectangles for paint() and returns the total height consumed. */
         int layoutActionRow (juce::Rectangle<int> area);
+
+        /** Recomputes the per-track lane rectangles inside `trackLaneArea`.
+            One rect per engine audio track (up to the available height), in
+            engine order, so lane clicks map straight onto track indices. */
+        void rebuildTrackLaneRects();
 
         static juce::String formatTime (double seconds);
 
@@ -104,6 +110,10 @@ namespace rrs
         bool statusIsError = false;
 
         juce::Rectangle<int> trackLaneArea;
+
+        /** Lane rectangles in `trackLaneArea`, engine-track order (FR-REC-2:
+            click a lane to arm/disarm it). */
+        std::vector<juce::Rectangle<int>> trackLaneRects;
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)
     };
