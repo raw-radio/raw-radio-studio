@@ -153,6 +153,13 @@ namespace rrs
         void timerCallback() override;
         bool createOrOpenEdit (const juce::File&, bool loadIfExists);
         bool configureSingleStereoTrack();
+
+        /** Applies the input device's channel routing for the current number of
+            active input channels (mono -> centred L+R, stereo -> L/R). Returns
+            false when no wave input device is available yet. Does not touch
+            monitoring/enabled state. */
+        bool applyInputChannelConfiguration();
+
         void ensureMeterAttached();
         void detachMeter();
         /** Writes/removes the interrupted-session sentinel (AppPaths::lockFile).

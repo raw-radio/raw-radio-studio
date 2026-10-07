@@ -4,6 +4,7 @@
 
 #include "AppPaths.h"
 #include "AudioImport.h"
+#include "InputRouting.h"
 
 #include <algorithm>
 #include <cmath>
@@ -230,7 +231,7 @@ namespace rrs
             return false;
 
         waveIn->setEnabled (true);
-        waveIn->setChannelConfiguration (te::ChannelConfiguration::stereo());
+        applyInputChannelConfiguration();
         waveIn->setMonitorMode (te::InputDevice::MonitorMode::on);
 
         edit->getTransport().ensureContextAllocated();
@@ -254,6 +255,20 @@ namespace rrs
         ensureMeterAttached();
         inputsConfigured = true;
         clearLastError();
+        return true;
+    }
+
+    bool Session::applyInputChannelConfiguration()
+    {
+        auto* waveIn = getSelectedWaveInputDevice();
+
+        if (waveIn == nullptr)
+            return false;
+
+        // Route the (possibly mono) input to the track. A 1-channel source is
+        // duplicated to L+R so monitoring/recording are centred; a stereo source
+        // keeps its L/R mapping. See InputRouting.h for the full rationale.
+        waveIn->setChannelConfiguration (inputChannelConfigurationFor (audio.getNumActiveInputChannels()));
         return true;
     }
 
@@ -678,6 +693,23 @@ namespace rrs
         {
             if (configureSingleStereoTrack())
             {
+                save();
+                sendChangeMessage();
+            }
+        }
+        else
+        {
+            // The device can (re)open or be rebuilt after the session was
+            // configured, leaving the input routing at the hardware default (a
+            // mono source would then be hard-left). Re-apply whenever the live
+            // routing differs from the centred/plain route for this channel count.
+            auto* waveIn = getSelectedWaveInputDevice();
+
+            if (waveIn != nullptr
+                 && waveIn->getChannels() != inputChannelConfigurationFor (audio.getNumActiveInputChannels()))
+            {
+                applyInputChannelConfiguration();
+                edit->restartPlayback();
                 save();
                 sendChangeMessage();
             }

@@ -25,6 +25,7 @@
 #include "studio/AudioEngine.h"
 #include "studio/AudioImport.h"
 #include "studio/DeviceError.h"
+#include "studio/InputRouting.h"
 #include "studio/Session.h"
 #include "studio/WavExport.h"
 
@@ -509,6 +510,65 @@ TEST_CASE ("applyInputDeviceSetup keeps the output side and reports a missing in
     CHECK (error.isNotEmpty());
     CHECK (audio.getLastError() == error);
     CHECK_FALSE (audio.hasActiveDevice());
+}
+
+//==============================================================================
+// Monitoring routing: a mono (1-channel) input must be duplicated to both L and
+// R so it is heard centred, not hard-left. This mirrors Tracktion's
+// `WaveInputDeviceInstance::copyIncomingDataIntoBuffer`, which fills each
+// destination channel (by type) from the device channel named by its
+// ChannelIndex — two entries pointing at device channel 0 therefore yield L == R.
+TEST_CASE ("mono input is routed to both L and R (centred), stereo is unchanged")
+{
+    using te::ChannelConfiguration;
+
+    // --- mono ---------------------------------------------------------------
+    const auto mono = inputChannelConfigurationFor (1);
+    REQUIRE (mono.getNumChannels() == 2);
+    CHECK (mono[0].indexInDevice == 0);
+    CHECK (mono[1].indexInDevice == 0);
+    CHECK (mono[0].channel == juce::AudioChannelSet::left);
+    CHECK (mono[1].channel == juce::AudioChannelSet::right);
+
+    // The destination is a genuine stereo pair (two distinct channels)...
+    const auto destSet = mono.toChannelSet();
+    REQUIRE (destSet == juce::AudioChannelSet::stereo());
+
+    // ...and both halves read device channel 0, so a mono sample lands equally in
+    // L and R (centred) instead of only in L.
+    juce::AudioBuffer<float> dest (2, 4);
+    dest.clear();
+    const float monoInput[4] = { 0.5f, -0.25f, 0.0f, 0.75f };
+
+    for (const auto& ci : mono)
+    {
+        if (ci.indexInDevice != 0)
+            continue;
+
+        const auto destChannel = destSet.getChannelIndexForType (ci.channel);
+        REQUIRE (destChannel >= 0);
+        auto* out = dest.getWritePointer (destChannel);
+
+        for (int i = 0; i < 4; ++i)
+            out[i] = monoInput[i];
+    }
+
+    for (int i = 0; i < 4; ++i)
+        CHECK (dest.getSample (0, i) == doctest::Approx (dest.getSample (1, i)));
+
+    CHECK (dest.getSample (0, 0) == doctest::Approx (0.5f));
+    CHECK (dest.getSample (1, 0) == doctest::Approx (0.5f));
+
+    // No device open yet (0 channels) defaults to centred, never hard-left.
+    const auto unknown = inputChannelConfigurationFor (0);
+    CHECK (unknown[0].indexInDevice == 0);
+    CHECK (unknown[1].indexInDevice == 0);
+
+    // --- stereo (unchanged: L <- device ch 0, R <- device ch 1, no doubling) -
+    const auto stereo = inputChannelConfigurationFor (2);
+    CHECK (stereo == ChannelConfiguration::stereo());
+    CHECK (stereo[0].indexInDevice == 0);
+    CHECK (stereo[1].indexInDevice == 1);
 }
 
 //==============================================================================
