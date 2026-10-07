@@ -23,6 +23,7 @@
 #include "ui/MeterBallistics.h"
 
 #include <cmath>
+#include <cstdlib>
 #include <memory>
 
 using namespace rrs;
@@ -42,6 +43,37 @@ namespace
 
         return count;
     }
+
+    /** Counts *fully opaque* pixels whose colour does not match `tint`.
+
+        Guards the tinting contract: an untinted SVG element (Material ships
+        icons with no `fill`, so JUCE renders them black) stays black under
+        `Drawable::replaceColour (white -> tint)` and shows as a dark "hole" on
+        the dark theme. Partial-alpha antialiased edges are skipped (the alpha
+        threshold), because their premultiplied colour is not a reliable signal;
+        every pixel the icon actually paints solid must carry the tint. */
+    int countOpaquePixelsOffTint (const juce::Image& image, juce::Colour tint,
+                                  int tolerance = 16, int alphaThreshold = 250)
+    {
+        int count = 0;
+        const juce::Image::BitmapData data (image, juce::Image::BitmapData::readOnly);
+
+        for (int y = 0; y < image.getHeight(); ++y)
+            for (int x = 0; x < image.getWidth(); ++x)
+            {
+                const auto pixel = data.getPixelColour (x, y);
+
+                if (pixel.getAlpha() < alphaThreshold)
+                    continue;
+
+                if (std::abs ((int) pixel.getRed() - (int) tint.getRed()) > tolerance
+                    || std::abs ((int) pixel.getGreen() - (int) tint.getGreen()) > tolerance
+                    || std::abs ((int) pixel.getBlue() - (int) tint.getBlue()) > tolerance)
+                    ++count;
+            }
+
+        return count;
+    }
 }
 
 TEST_CASE ("brand icon cache parses and tints the vendored Material SVGs")
@@ -57,6 +89,23 @@ TEST_CASE ("brand icon cache parses and tints the vendored Material SVGs")
     // ...and actually contains drawn (tinted) pixels, not an empty raster.
     CHECK (countNonTransparentPixels (icon) > 0);
 
+    // Tinting contract: every opaque pixel is the requested tint. An untinted
+    // element (Material icons ship without `fill`, so JUCE renders black) is
+    // left black by `replaceColour (white -> tint)` and shows as a dark dot on
+    // the dark theme.
+    CHECK (countOpaquePixelsOffTint (icon, juce::Colours::red) == 0);
+
+    // Regression: `radio_button_checked` used to ship a bare `<circle>` (no
+    // `fill`) alongside its `<path>`; only the path was rewritten at vendor
+    // time, so the inner dot stayed black. Render at a larger size to give the
+    // circle plenty of fully-opaque pixels to inspect.
+    {
+        const auto armIcon = cache.getIconImage ("radio_button_checked", juce::Colours::white, 48);
+        REQUIRE (armIcon.isValid());
+        CHECK (countNonTransparentPixels (armIcon) > 0);
+        CHECK (countOpaquePixelsOffTint (armIcon, juce::Colours::white) == 0);
+    }
+
     // Every vendored resource must resolve — guards against a renamed file
     // silently yielding a blank button. These are the Material Icons (Outlined)
     // names now used by the transport / action rows.
@@ -69,6 +118,7 @@ TEST_CASE ("brand icon cache parses and tints the vendored Material SVGs")
         const auto rendered = cache.getIconImage (name, juce::Colours::white, 16);
         CHECK (rendered.isValid());
         CHECK (countNonTransparentPixels (rendered) > 0);
+        CHECK (countOpaquePixelsOffTint (rendered, juce::Colours::white) == 0);
     }
 
     // Unknown names are handled gracefully (no crash, null image).

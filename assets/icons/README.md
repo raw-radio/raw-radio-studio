@@ -53,9 +53,13 @@ Semantic mapping used by the UI (`src/ui/MainComponent.cpp`,
 ## Local modification
 
 JUCE does not resolve the SVG `currentColor` keyword, and Material ships its
-`<path>` elements with **no** fill (rendered black by default), so every path is
-rewritten at vendor time to carry a literal `fill="#FFFFFF"`. The icons are
-tinted at runtime by `src/ui/IconCache` via `Drawable::replaceColour`
+drawable elements with **no** fill (rendered black by default), so at vendor time
+**every fill-capable element** — `<path>`, `<circle>`, `<rect>`, `<ellipse>`,
+`<polygon>`, `<polyline>` and `<g>` — is rewritten to carry a literal
+`fill="#FFFFFF"`. Rewriting only `<path>` is not enough: `radio_button_checked`
+also ships a bare `<circle>` for its inner dot, which then stayed black (a dark
+"hole" on the dark theme) because `replaceColour` only remaps white. The icons
+are tinted at runtime by `src/ui/IconCache` via `Drawable::replaceColour`
 (`#FFFFFF` → requested tint).
 
 `IconCache::resourceNameFor` must retain underscores in the lookup key because
@@ -72,10 +76,21 @@ for name in note_add folder_open save save_as upload_file download close \
             settings info radio_button_checked headphones fiber_manual_record \
             play_arrow pause stop skip_previous timer add delete auto_fix_high refresh; do
   python3 - "$name" <<'PY'
-import sys
-s = open(f"/tmp/package/outlined/{sys.argv[1]}.svg").read().strip()
-s = s.replace("<path ", '<path fill="#FFFFFF" ')
-open(f"assets/icons/{sys.argv[1]}.svg", "w").write(s + "\n")
+import re, sys
+name = sys.argv[1]
+s = open(f"/tmp/package/outlined/{name}.svg").read().strip()
+
+# Rewrite `fill` on *every* fill-capable element, not just <path>. Material
+# ships `radio_button_checked` with a bare <circle> whose missing fill renders
+# black and survives `Drawable::replaceColour` (which only remaps white).
+def add_fill(match):
+    tag, attrs = match.group(1), match.group(2)
+    if "fill=" in attrs:
+        return match.group(0)
+    return f'<{tag} fill="#FFFFFF"{attrs}>'
+
+s = re.sub(r"<(path|circle|rect|ellipse|polygon|polyline|g)\b([^>]*)>", add_fill, s)
+open(f"assets/icons/{name}.svg", "w").write(s + "\n")
 PY
 done
 ```
