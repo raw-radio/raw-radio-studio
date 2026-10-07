@@ -5,8 +5,8 @@
 > authoritative record of *what* was decided and *why*. Anything not marked as a hard requirement is a
 > target and may move.
 >
-> **Document version:** 1.2.1
-> **Last updated:** 2026 (clarified hardware — Fifine Ampli1 as Epic 1 test device)
+> **Document version:** 1.3.0
+> **Last updated:** 2026 (Epic 2 progress recorded; FR-MIX-1 master-solo qualified; cue-mix gap linked)
 > **Owner:** raw-radio project owner
 > **Repository:** https://github.com/raw-radio/raw-radio-studio
 > **Local project dir (to be bootstrapped in Epic 0):** `/Users/mac/projects/raw_radio/raw-radio-studio`
@@ -209,7 +209,7 @@ Requirements are tagged:
 
 | ID | Requirement | Priority | Phase |
 |----|-------------|----------|-------|
-| FR-MIX-1 | Multitrack mixer: fader, pan, mute, solo per track and master. | [hard] | Epic 2/3 |
+| FR-MIX-1 | Multitrack mixer: fader, pan, mute per track **and master**; solo per track (master solo **N/A**). | [hard] | Epic 2/3 |
 | FR-MIX-2 | Flexible routing: track → bus/group → master; sends (at least one aux/cue send). | [hard] | Epic 3 |
 | FR-MIX-3 | Metring per track and master (peak/RMS), clip indication. | [hard] | Epic 2/3 |
 | FR-MIX-4 | Plugin hosting: **VST3** (default), **LV2 opt-in**, **AU on macOS only**. | [hard] | Epic 3 |
@@ -218,6 +218,12 @@ Requirements are tagged:
 | FR-MIX-7 | **Out-of-process plugin scanning** (crash isolation during scan). | [hard] | Epic 3, hardened Epic 7 |
 | FR-MIX-8 | CLAP support. | **EXCLUDED** (NG4) | — |
 | FR-MIX-9 | Automation of mixer/plugin parameters. | [target] | Epic 4 |
+
+> **FR-MIX-1 note — master solo is intentionally N/A.** Solo isolates a channel against its sibling
+> tracks; the **master bus has no sibling to isolate against**, so a master solo control would be a
+> no-op. Master **fader, pan, and mute** are provided, and **solo is per track**. This is the
+> delivered behaviour, recorded as a deliberate qualification of FR-MIX-1 (see
+> [`docs/EPIC2_GAPS.md`](EPIC2_GAPS.md)).
 
 ### 3.4 Editing
 
@@ -755,20 +761,34 @@ The epic order below is **agreed and frozen**. Dependencies are explicit.
 
 ### Epic 2 — Multitrack + Device-Agnostic I/O
 
+**Status: ⚠️ substantially delivered, not complete.** Every deliverable below is implemented
+**except software cue mixes**, which are **deferred** to the Epic 3 routing foundation (FR-MIX-2
+sends) and remain an **explicit open gap**. The full delivered/deferred breakdown, rationale, and
+planned approach live in [`docs/EPIC2_GAPS.md`](EPIC2_GAPS.md).
+
 **Goal:** 1..N channels; multiple tracks; software cue mixes.
 
 **Deliverables**
-- Input mapping for arbitrary channel counts (mono/stereo/N).
-- Multitrack recording + overdub.
-- Basic mixer (fader/pan/mute/solo per track + master), metering.
-- **Software cue mixes** per performer (vendor mixers unavailable on Linux).
-- Count-in/metronome (target).
+- ✅ **Input mapping** for arbitrary channel counts (mono/stereo/N) — **FR-REC-3** (device-agnostic
+  per-track input mapping; mixer-strip UI + persistence).
+- ✅ **Multitrack recording + overdub** — **FR-REC-1/7 (partial)**: multitrack + overdub landed;
+  **punch-in/out and loop-recording remain open** (FR-REC-7 [target], see gaps doc).
+- ✅ **Basic mixer** (fader/pan/mute per track **and master**; **solo per track** — master solo N/A,
+  per the FR-MIX-1 note in [§3.3](#33-mixing-routing--plugins)), metering (peak + clip) —
+  **FR-MIX-1/3** (**RMS metering** still open).
+- ⛔ **Software cue mixes** per performer (vendor mixers unavailable on Linux) — **FR-MON-3 / FR-MON-4
+  [hard]** — **OPEN / DEFERRED** to Epic 3 (routing: AuxSend → AuxReturn → output-to-device). This is
+  the one **hard** Epic 2 requirement not yet met; tracked in [`docs/EPIC2_GAPS.md`](EPIC2_GAPS.md).
+- ✅ **Count-in/metronome** (target) — **FR-REC-10** (measured; excluded from WAV export).
 
-**Acceptance criteria**
-- [ ] Record on a 4-in interface with 4 separate tracks mapped to 4 inputs.
-- [ ] Two independent cue mixes are audible and distinct.
-- [ ] 16-track playback target not exceeded; no xruns under defined load (target).
-- [ ] Monitoring latency < 10 ms on blessed hardware (target).
+**Acceptance criteria** — ⚠️ **partially met**; see [`docs/EPIC2_GAPS.md`](EPIC2_GAPS.md).
+- [x] Record on a 4-in interface with 4 separate tracks mapped to 4 inputs. *(verified against a
+      hosted device; on-hardware run pending a true multichannel interface — D21)*
+- [ ] Two independent cue mixes are audible and distinct. *(**deferred** — Epic 3 routing)*
+- [ ] 16-track playback target not exceeded; no xruns under defined load (target). *(needs the
+      reference machines/interface — Epic 7)*
+- [ ] Monitoring latency < 10 ms on blessed hardware (target). *(needs the reference machines —
+      Epic 7)*
 
 **Depends on:** Epic 1.
 
@@ -1084,6 +1104,18 @@ requirements. Format follows [Keep a Changelog](https://keepachangelog.com/) loo
 ### [Unreleased]
 
 - (nothing yet)
+
+### [1.3.0] — 2026 — Epic 2 progress recorded; FR-MIX-1 master-solo qualified
+
+- **Epic 2 (§9) marked as substantially delivered but not complete.** Marked as implemented the
+  device-agnostic per-track input mapping (FR-REC-3), multitrack + overdub (FR-REC-1/7-partial),
+  the basic mixer (FR-MIX-1/3), and count-in/metronome (FR-REC-10); annotated acceptance criteria.
+- **Software cue mixes (FR-MON-3/FR-MON-4 [hard]) recorded as an explicit open gap**, deferred to
+  the Epic 3 routing foundation (FR-MIX-2 sends); Epic 2 is **not** marked fully complete. Points to
+  [`docs/EPIC2_GAPS.md`](EPIC2_GAPS.md).
+- **Amended FR-MIX-1 (§3.3):** fader/pan/mute per track **and master**; **solo per track** —
+  **master solo is N/A** (a master bus has no sibling to isolate against). Added a rationale note.
+- Bumped document version to **1.3.0**.
 
 ### [1.2.1] — 2026 — Clarified hardware: Fifine Ampli1 as Epic 1 test device
 
