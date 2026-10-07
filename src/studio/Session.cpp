@@ -793,10 +793,29 @@ namespace rrs
             edit->getTransport().play (false);
     }
 
-    void Session::stop()
+    void Session::pause()
     {
         if (edit != nullptr)
             edit->getTransport().stop (false, false);
+    }
+
+    void Session::stop()
+    {
+        if (edit == nullptr)
+            return;
+
+        edit->getTransport().stop (false, false);
+
+        // Stop rewinds: the owner expects the playhead back at the top so a take
+        // can be started over (previously Stop left it at the stop position, so
+        // Play resumed mid-take — the reported "glitch"/continuation).
+        edit->getTransport().setPosition (te::TimePosition());
+    }
+
+    void Session::goToStart()
+    {
+        if (edit != nullptr)
+            edit->getTransport().setPosition (te::TimePosition());
     }
 
     bool Session::record()

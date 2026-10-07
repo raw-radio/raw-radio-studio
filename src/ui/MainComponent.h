@@ -101,6 +101,7 @@ namespace rrs
         BrandButton recordButton { "Record", BrandButton::Style::Record };
         BrandButton playButton { "Play", BrandButton::Style::Transport };
         BrandButton stopButton { "Stop", BrandButton::Style::Transport };
+        BrandButton goToStartButton { "Start", BrandButton::Style::Transport };
         BrandButton monitorButton { "Monitor", BrandButton::Style::Chip };
         BrandButton metronomeButton { "Click", BrandButton::Style::Chip };
         juce::ComboBox countInBox;

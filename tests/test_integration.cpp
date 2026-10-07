@@ -1566,6 +1566,45 @@ TEST_CASE ("mixer: gain and mute change the measured master level (measured)")
 }
 
 //==============================================================================
+// Transport (Epic 2 GUI retest): Stop must return the playhead to the start so
+// a take can be restarted from the top; Pause must stop in place (unchanged
+// Play/Pause semantics), and "Go to start" moves the playhead to 0.
+TEST_CASE ("transport: Stop rewinds, Pause holds, Go to start seeks to 0")
+{
+    auto dir = scratchDirectory ("transport");
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Transport.tracktionedit")));
+
+    // A real 2 s clip so the transport has a non-zero length to seek within.
+    auto tone = writeSineWav (dir.getChildFile ("tone.wav"), 48000.0, 2.0);
+    REQUIRE (tone.existsAsFile());
+    REQUIRE (session.importAudioFile (tone));
+
+    auto& transport = session.getEdit()->getTransport();
+    const auto position = [&] { return transport.getPosition().inSeconds(); };
+
+    // Pause stops in place: it must NOT rewind (unchanged Play/Pause semantics).
+    transport.setPosition (te::TimePosition::fromSeconds (1.5));
+    REQUIRE (position() == doctest::Approx (1.5).epsilon (0.01));
+    session.pause();
+    CHECK (position() == doctest::Approx (1.5).epsilon (0.01));
+
+    // Stop rewinds to the very start (the owner's "Stop returns to start").
+    session.stop();
+    CHECK (position() == doctest::Approx (0.0).epsilon (0.001));
+
+    // "Go to start" seeks to 0 without changing the transport state.
+    transport.setPosition (te::TimePosition::fromSeconds (1.5));
+    REQUIRE (position() == doctest::Approx (1.5).epsilon (0.01));
+    session.goToStart();
+    CHECK (position() == doctest::Approx (0.0).epsilon (0.001));
+
+    session.close();
+}
+
+//==============================================================================
 // FR-REC-10 (target): the built-in metronome/count-in click must be audible
 // while the transport plays and silent when disabled. Measured through the
 // master meter of the running engine.

@@ -59,7 +59,7 @@ TEST_CASE ("brand icon cache parses and tints the vendored Lucide SVGs")
     // silently yielding a blank button.
     for (const auto* name : { "file-plus", "folder-open", "save", "save-all", "file-input",
                               "file-output", "x", "settings", "info", "circle-dot", "headphones",
-                              "circle", "play", "pause", "square", "refresh-cw" })
+                              "circle", "play", "pause", "square", "refresh-cw", "skip-back" })
     {
         const auto rendered = cache.getIconImage (name, juce::Colours::white, 16);
         CHECK (rendered.isValid());

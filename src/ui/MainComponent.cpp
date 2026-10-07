@@ -46,8 +46,8 @@ namespace rrs
         for (auto* button : { &newButton, &openButton, &closeButton, &saveButton, &saveAsButton,
                               &importButton, &exportButton, &addTrackButton, &removeTrackButton,
                               &settingsButton, &aboutButton,
-                              &armButton, &recordButton, &playButton, &stopButton, &monitorButton,
-                              &metronomeButton })
+                              &armButton, &recordButton, &playButton, &stopButton, &goToStartButton,
+                              &monitorButton, &metronomeButton })
             addAndMakeVisible (*button);
 
         addAndMakeVisible (countInBox);
@@ -86,7 +86,9 @@ namespace rrs
         playButton.setIconName ("play");
         playButton.setTooltip ("Play / pause");
         stopButton.setIconName ("square");
-        stopButton.setTooltip ("Stop");
+        stopButton.setTooltip ("Stop and return to the start");
+        goToStartButton.setIconName ("skip-back");
+        goToStartButton.setTooltip ("Go to start");
         monitorButton.setIconName ("headphones");
         monitorButton.setTooltip ("Toggle input monitoring");
         metronomeButton.setIconName ("clock");
@@ -242,7 +244,7 @@ namespace rrs
                 return;
 
             if (session.isPlaying())
-                session.stop();
+                session.pause(); // pause in place; Stop is the rewind action
             else
                 session.play();
 
@@ -255,6 +257,15 @@ namespace rrs
                 return;
 
             session.stop();
+            refreshTransportUi();
+        };
+
+        goToStartButton.onClick = [this]
+        {
+            if (exportInProgress)
+                return;
+
+            session.goToStart();
             refreshTransportUi();
         };
     }
@@ -275,8 +286,8 @@ namespace rrs
         devicePanel.setEnabled (! busy);
 
         for (auto* button : { &saveButton, &saveAsButton, &importButton, &exportButton,
-                              &armButton, &recordButton, &playButton, &stopButton, &monitorButton,
-                              &metronomeButton })
+                              &armButton, &recordButton, &playButton, &stopButton, &goToStartButton,
+                              &monitorButton, &metronomeButton })
             button->setEnabled (hasEdit && ! busy);
 
         countInBox.setEnabled (hasEdit && ! busy);
@@ -955,6 +966,8 @@ namespace rrs
         placeTransport (playButton,    84, 36);
         transportRow.removeFromLeft (8);
         placeTransport (stopButton,    80, 36);
+        transportRow.removeFromLeft (8);
+        placeTransport (goToStartButton, 80, 36);
         transportRow.removeFromLeft (16);
         placeTransport (monitorButton, 96, 36);
         transportRow.removeFromLeft (8);
