@@ -123,7 +123,11 @@ jobs:
 
       - name: Package Linux .deb (dpkg-deb, unsigned)
         if: runner.os == 'Linux'
-        run: bash packaging/linux/make-deb.sh build "${STUDIO_VERSION}" dist
+        run: |
+          bash packaging/linux/make-deb.sh \
+            "build/raw_radio_studio_artefacts/Release/raw-radio-studio" \
+            "${STUDIO_VERSION}" \
+            dist
 
       - name: Package Linux AppImage (linuxdeploy, unsigned)
         if: runner.os == 'Linux'

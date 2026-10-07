@@ -19,18 +19,26 @@
 # unavailable/fails, we fall back to a static Ubuntu 24.04 dependency list.
 #
 # Usage:
-#   packaging/linux/make-deb.sh <path/to/raw-radio-studio> <version> <output-dir>
+#   packaging/linux/make-deb.sh <binary|build-root> <version> <output-dir>
+#
+# The first argument is the built executable. A CMake build root
+# (e.g. `build`, as produced by `cmake -B build`) is also accepted and resolved
+# to the standard artefact path (see packaging/linux/lib.sh).
 #
 # Output:
 #   <output-dir>/raw-radio-studio-<version>-<arch>.deb   (arch: amd64 / arm64)
 # -----------------------------------------------------------------------------
 set -euo pipefail
 
-BIN="${1:?usage: make-deb.sh <binary> <version> <output-dir>}"
-VERSION="${2:?usage: make-deb.sh <binary> <version> <output-dir>}"
-OUTDIR="${3:?usage: make-deb.sh <binary> <version> <output-dir>}"
+BIN_ARG="${1:?usage: make-deb.sh <binary|build-root> <version> <output-dir>}"
+VERSION="${2:?usage: make-deb.sh <binary|build-root> <version> <output-dir>}"
+OUTDIR="${3:?usage: make-deb.sh <binary|build-root> <version> <output-dir>}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=packaging/linux/lib.sh
+source "${SCRIPT_DIR}/lib.sh"
+
+BIN="$(rrs_resolve_binary "${BIN_ARG}")" || exit 1
 BIN="$(cd "$(dirname "${BIN}")" && pwd)/$(basename "${BIN}")"
 mkdir -p "${OUTDIR}"
 OUTDIR="$(cd "${OUTDIR}" && pwd)"
