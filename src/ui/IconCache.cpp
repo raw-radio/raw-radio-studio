@@ -1,4 +1,4 @@
-// raw-radio-studio — Lucide icon cache (see IconCache.h).
+// raw-radio-studio — Material icon cache (see IconCache.h).
 
 #include "IconCache.h"
 
@@ -19,12 +19,17 @@ namespace rrs
 
     juce::String IconCache::resourceNameFor (const juce::String& iconName)
     {
-        // JUCE mangles resource symbols to alphanumerics only, e.g.
-        // "file-plus" -> "fileplus_svg", "circle-dot" -> "circledot_svg".
+        // Must match JUCE's `makeBinaryDataIdentifierName()` mangling exactly:
+        // JUCE replaces spaces and '.' with '_', then **retains** letters,
+        // digits and underscores. So "play_arrow" -> "play_arrow_svg" (the
+        // underscore is significant), while the old "file-plus" -> "fileplus"
+        // (the dash is dropped). Keeping underscores is why the Material names
+        // (note_add, folder_open, ...) resolve; stripping them would silently
+        // yield a blank button.
         juce::String resource;
 
         for (auto character : iconName)
-            if (juce::CharacterFunctions::isLetterOrDigit (character))
+            if (juce::CharacterFunctions::isLetterOrDigit (character) || character == '_')
                 resource << character;
 
         return resource + "_svg";
@@ -53,8 +58,9 @@ namespace rrs
         if (drawable == nullptr)
             return {};
 
-        // SVGs are vendored with stroke="#FFFFFF" (JUCE cannot resolve
-        // `currentColor`); recolour the white strokes to the requested tint.
+        // SVGs are vendored with fill="#FFFFFF" (JUCE cannot resolve
+        // `currentColor`, and Material paths ship without an explicit fill);
+        // recolour the white shapes to the requested tint.
         drawable->replaceColour (juce::Colours::white, tint);
 
         // Render at 2x for crisp HiDPI output; drawn back down to `sizePx`.

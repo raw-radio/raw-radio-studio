@@ -1,10 +1,10 @@
-// raw-radio-studio — Lucide icon cache (UI only).
+// raw-radio-studio — Material icon cache (UI only).
 //
-// Parses the vendored Lucide SVGs (compiled in via `RawRadioStudioAssets`),
-// tints them with `Drawable::replaceColour` and rasterises each (name, tint,
-// size) once. `paint()` only ever blits a cached image — no SVG parsing and no
-// allocation on a hot repaint path, and nothing here ever touches the audio
-// thread.
+// Parses the vendored Material Symbols / Material Icons (Outlined) SVGs
+// (compiled in via `RawRadioStudioAssets`), tints them with
+// `Drawable::replaceColour` and rasterises each (name, tint, size) once.
+// `paint()` only ever blits a cached image — no SVG parsing and no allocation
+// on a hot repaint path, and nothing here ever touches the audio thread.
 
 #pragma once
 

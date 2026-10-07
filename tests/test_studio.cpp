@@ -44,12 +44,12 @@ namespace
     }
 }
 
-TEST_CASE ("brand icon cache parses and tints the vendored Lucide SVGs")
+TEST_CASE ("brand icon cache parses and tints the vendored Material SVGs")
 {
     auto& cache = IconCache::getInstance();
 
     // A vendored icon parses, tints and rasterises at 2x the requested size.
-    const auto icon = cache.getIconImage ("file-plus", juce::Colours::red, 16);
+    const auto icon = cache.getIconImage ("note_add", juce::Colours::red, 16);
     CHECK (icon.isValid());
     CHECK (icon.getWidth() == 32);
     CHECK (icon.getHeight() == 32);
@@ -58,11 +58,13 @@ TEST_CASE ("brand icon cache parses and tints the vendored Lucide SVGs")
     CHECK (countNonTransparentPixels (icon) > 0);
 
     // Every vendored resource must resolve — guards against a renamed file
-    // silently yielding a blank button.
-    for (const auto* name : { "file-plus", "folder-open", "save", "save-all", "file-input",
-                              "file-output", "x", "settings", "info", "circle-dot", "headphones",
-                              "circle", "play", "pause", "square", "refresh-cw", "skip-back",
-                              "activity" })
+    // silently yielding a blank button. These are the Material Icons (Outlined)
+    // names now used by the transport / action rows.
+    for (const auto* name : { "note_add", "folder_open", "save", "save_as", "upload_file",
+                              "download", "close", "settings", "info", "radio_button_checked",
+                              "headphones", "fiber_manual_record", "play_arrow", "pause", "stop",
+                              "skip_previous", "timer", "add", "delete", "auto_fix_high",
+                              "refresh" })
     {
         const auto rendered = cache.getIconImage (name, juce::Colours::white, 16);
         CHECK (rendered.isValid());

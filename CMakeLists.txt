@@ -97,9 +97,9 @@ add_subdirectory("${RAW_RADIO_STUDIO_TRACKTION_DIR}" "${CMAKE_BINARY_DIR}/_deps/
 # -----------------------------------------------------------------------------
 # Brand assets — vendored, compiled into the binary (no runtime file I/O).
 #
-#   * assets/icons/*.svg — Lucide icons (ISC), stroke normalised to #FFFFFF
-#     because JUCE does not resolve SVG `currentColor`. Tinted at runtime by
-#     IconCache via Drawable::replaceColour.
+#   * assets/icons/*.svg — Material Icons (Outlined, Apache-2.0); each <path>
+#     pinned to fill="#FFFFFF" because JUCE does not resolve SVG `currentColor`.
+#     Tinted at runtime by IconCache via Drawable::replaceColour.
 #   * assets/fonts/*.ttf — Inter + JetBrains Mono (OFL-1.1), registered at
 #     startup by BrandFonts via Typeface::createSystemTypefaceFor.
 # -----------------------------------------------------------------------------

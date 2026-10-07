@@ -139,21 +139,26 @@ are compiled into the application binary (no runtime or build-time download):
 
 | Component | Location | Pinned revision | License (SPDX) | Role |
 |-----------|----------|-----------------|----------------|------|
-| **Lucide** | `assets/icons/*.svg` | tag `1.21.0` | ISC (MIT for Feather-derived icons) | UI icon set |
+| **Material Icons** | `assets/icons/*.svg` | `@material-design-icons/svg` `0.14.15` | Apache-2.0 | UI icon set |
 | **Inter** | `assets/fonts/Inter-*.ttf` | tag `v4.1` | OFL-1.1 | UI typeface (400/500/600/700) |
 | **JetBrains Mono** | `assets/fonts/JetBrainsMono-*.ttf` | tag `v2.304` | OFL-1.1 | Monospace (timecodes / dB) |
 
-* Lucide (<https://github.com/lucide-icons/lucide>) is pinned to the tag
-  matching the RAW Radio admin/app `lucide-react` family. The SVGs are normalised
-  at vendor time (`currentColor` → `#FFFFFF`, since JUCE does not resolve SVG
-  `currentColor`) and tinted at runtime by `src/ui/IconCache`.
+* Material Icons / Material Symbols (Outlined) (upstream
+  <https://github.com/google/material-design-icons>, vendored via the optimised
+  `@material-design-icons/svg` package) are consistent with the RAW Radio
+  ecosystem (Material `mic`). The 24x24 Outlined SVGs have every `<path>` pinned
+  to `fill="#FFFFFF"` at vendor time (JUCE does not resolve SVG `currentColor`,
+  and Material ships its paths without a fill) and are tinted at runtime by
+  `src/ui/IconCache`. Understood names map 1:1 to the vendored files
+  (`play_arrow` → `play_arrow.svg`); the cache's resource lookup retains
+  underscores to match JUCE's `makeBinaryDataIdentifierName()`.
 * Inter (<https://github.com/rsms/inter>) and JetBrains Mono
   (<https://github.com/JetBrains/JetBrainsMono>) static TTFs are registered at
   startup by `src/ui/BrandFonts` via `Typeface::createSystemTypefaceFor`. Fonts
   are built from the registered `Typeface::Ptr` rather than by family name,
   because the static Inter Medium/SemiBold files report the family
   `Inter Medium`/`Inter SemiBold`.
-* Full licence texts: [`LICENSES/Lucide.txt`](LICENSES/Lucide.txt),
+* Full licence texts: [`LICENSES/Material-Icons.txt`](LICENSES/Material-Icons.txt),
   [`LICENSES/Inter-OFL.txt`](LICENSES/Inter-OFL.txt),
   [`LICENSES/JetBrainsMono-OFL.txt`](LICENSES/JetBrainsMono-OFL.txt). Provenance
   and refresh instructions: `assets/icons/README.md`, `assets/fonts/README.md`.

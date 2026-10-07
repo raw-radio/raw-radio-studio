@@ -76,7 +76,7 @@ namespace rrs
         applyButton.onClick = [this] { applySelection(); };
         rescanButton.onClick = [this] { refreshAll(); };
 
-        rescanButton.setIconName ("refresh-cw");
+        rescanButton.setIconName ("refresh");
         applyButton.setTooltip ("Apply the selected input device, output device, "
                                 "sample rate and buffer size");
         rescanButton.setTooltip ("Rescan audio devices");
