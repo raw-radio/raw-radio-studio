@@ -319,6 +319,13 @@ namespace rrs
         void clearInterruptionMarker();
         juce::Array<juce::File> findReferencedRecordings() const;
 
+        // Record-pass clip muting (owner request): a new take must not play the
+        // previous take back on the same track, so the armed record tracks'
+        // existing clips are muted for the duration of the pass and restored on
+        // stop/pause/close. Other (backing/minus) tracks are untouched.
+        void beginRecordPassMutes();
+        void endRecordPassMutes();
+
         // Per-track and master level metering (FR-MIX-3).
         void attachMeters();
         void detachMeters();
@@ -366,6 +373,18 @@ namespace rrs
         juce::WeakReference<tracktion::InputDeviceInstance> meterInstance;
 
         bool lastPlaying = false, lastRecording = false, lastArmed = false;
+
+        /** Existing clips muted for the current record pass, with the mute state
+            to restore. Holds a ref-counted pointer so the clip cannot be freed
+            under us before the pass ends. */
+        struct RecordPassClip
+        {
+            tracktion::Clip::Ptr clip;
+            bool wasMuted = false;
+        };
+
+        std::vector<RecordPassClip> recordPassClips;
+        bool recordPassActive = false;
 
         juce::String lastError;
 

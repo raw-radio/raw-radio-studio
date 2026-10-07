@@ -1610,6 +1610,87 @@ TEST_CASE ("transport: Stop rewinds, Pause holds, Go to start seeks to 0")
 }
 
 //==============================================================================
+// Owner request: recording a new take on a track must not play the previous take
+// back to the performer. The record track's existing clips are muted for the
+// duration of the pass and restored on stop; other (minus/backing) tracks keep
+// playing.
+TEST_CASE ("recording mutes the record track's existing clips for the pass (owner request)")
+{
+    auto dir = scratchDirectory ("record-pass-mute");
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Take.tracktionedit")));
+
+    auto take  = writeSineWav (dir.getChildFile ("take.wav"), 48000.0, 0.5);
+    auto minus = writeSineWav (dir.getChildFile ("minus.wav"), 48000.0, 0.5);
+    REQUIRE (take.existsAsFile());
+    REQUIRE (minus.existsAsFile());
+
+    // An existing take on the record track (track 0)...
+    auto* recordTrack = session.getTrack (0);
+    REQUIRE (recordTrack != nullptr);
+    REQUIRE (recordTrack->insertWaveClip ("take", take,
+                                          { { te::TimePosition(), te::TimeDuration::fromSeconds (0.5) }, {} },
+                                          false) != nullptr);
+    REQUIRE (recordTrack->getClips().size() == 1);
+    auto* existingTake = recordTrack->getClips()[0];
+    CHECK_FALSE (existingTake->isMuted());
+
+    // ...and a "minus" on its own (backing) track, which must remain audible.
+    REQUIRE (session.importAudioFile (minus));
+    REQUIRE (session.getNumAudioTracks() == 2);
+    auto* minusTrack = session.getTrack (1);
+    REQUIRE (minusTrack != nullptr);
+    REQUIRE (minusTrack->getClips().size() == 1);
+    auto* minusClip = minusTrack->getClips()[0];
+    CHECK_FALSE (minusClip->isMuted());
+
+    // A hosted device so the track can be armed/recorded without real hardware.
+    te::HostedAudioDeviceInterface::Parameters params;
+    params.sampleRate = 48000.0;
+    params.blockSize = 256;
+    params.inputChannels = 2;
+    params.outputChannels = 2;
+
+    auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+
+    for (int i = 0; i < 200; ++i)
+    {
+        audio.deviceManager().dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+        if (session.isInputConfigured())
+            break;
+
+        session.reconfigureInputs();
+    }
+
+    REQUIRE (session.isInputConfigured());
+    REQUIRE (session.setTrackArmed (0, true));
+
+    session.getEdit()->getTransport().setPosition (te::TimePosition {});
+    REQUIRE (session.record());
+
+    // During the pass the previous take is muted; the minus is untouched.
+    CHECK (existingTake->isMuted());
+    CHECK_FALSE (minusClip->isMuted());
+
+    juce::AudioBuffer<float> input (2, 256);
+    input.clear();
+
+    for (int block = 0; block < 8; ++block)
+        player->process (input);
+
+    // Stopping restores the pre-pass mute state exactly.
+    session.stop();
+    CHECK_FALSE (existingTake->isMuted());
+    CHECK_FALSE (minusClip->isMuted());
+
+    session.close();
+}
+
+//==============================================================================
 // FR-REC-4 (Epic 2 GUI retest): the per-input-track record trim must scale the
 // signal written to disk (it is applied to the input buffer on the record path,
 // before monitoring and recording). Two tracks, two trims, one pass.

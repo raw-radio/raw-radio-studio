@@ -166,6 +166,7 @@ namespace rrs
         stopTimer();
         detachMeter();
         detachMeters();
+        endRecordPassMutes();
 
         if (edit != nullptr)
         {
@@ -235,6 +236,7 @@ namespace rrs
     // "Open" passes true so an existing session is loaded.
     bool Session::createOrOpenEdit (const juce::File& file, bool loadIfExists)
     {
+        endRecordPassMutes();
         detachMeter();
         edit.reset();
 
@@ -1019,7 +1021,10 @@ namespace rrs
     void Session::pause()
     {
         if (edit != nullptr)
+        {
+            endRecordPassMutes();
             edit->getTransport().stop (false, false);
+        }
     }
 
     void Session::stop()
@@ -1027,6 +1032,7 @@ namespace rrs
         if (edit == nullptr)
             return;
 
+        endRecordPassMutes();
         edit->getTransport().stop (false, false);
 
         // Stop rewinds: the owner expects the playhead back at the top so a take
@@ -1053,7 +1059,50 @@ namespace rrs
         }
 
         edit->getTransport().record (false);
+
+        // A new take on the same track must not play the previous take back to
+        // the performer. Mute the armed record tracks' existing clips for the
+        // duration of the pass; other (backing/minus) tracks keep playing.
+        beginRecordPassMutes();
         return true;
+    }
+
+    void Session::beginRecordPassMutes()
+    {
+        if (edit == nullptr || recordPassActive)
+            return;
+
+        recordPassActive = true;
+
+        for (auto index : inputTrackIndices())
+        {
+            if (! isTrackArmed (index))
+                continue;
+
+            auto* track = getTrack (index);
+
+            if (track == nullptr)
+                continue;
+
+            for (auto* clip : track->getClips())
+            {
+                if (clip == nullptr || clip->isMuted())
+                    continue; // already muted: leave it (and don't restore it)
+
+                clip->setMuted (true);
+                recordPassClips.push_back ({ tracktion::Clip::Ptr (clip), false });
+            }
+        }
+    }
+
+    void Session::endRecordPassMutes()
+    {
+        for (auto& entry : recordPassClips)
+            if (entry.clip != nullptr)
+                entry.clip->setMuted (entry.wasMuted);
+
+        recordPassClips.clear();
+        recordPassActive = false;
     }
 
     bool Session::isPlaying() const
@@ -1369,6 +1418,10 @@ namespace rrs
         stopTimer();
         detachMeter();
         detachMeters();
+
+        // Restore any clips muted for an in-progress record pass before the Edit
+        // is torn down, so the saved/closed state never carries a stale mute.
+        endRecordPassMutes();
 
         // Halt playback/recording before the Edit is torn down.
         edit->getTransport().stop (false, false);
