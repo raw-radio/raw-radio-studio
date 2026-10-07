@@ -168,9 +168,16 @@ namespace rrs
 
     void PluginBrowser::refreshTrackList()
     {
+        // Preserve the user's current track selection across a refresh (e.g. a
+        // timer/`refresh()` or a session change): only fall back to the first
+        // track when the previous selection no longer exists.
+        const auto previousId = trackBox.getSelectedId();
+
         trackBox.clear (juce::dontSendNotification);
 
-        for (int i = 0; i < session.getNumAudioTracks(); ++i)
+        const auto numTracks = session.getNumAudioTracks();
+
+        for (int i = 0; i < numTracks; ++i)
         {
             auto name = session.getTrackName (i);
 
@@ -180,8 +187,13 @@ namespace rrs
             trackBox.addItem (name, i + 1);
         }
 
-        if (session.getNumAudioTracks() > 0)
-            trackBox.setSelectedId (1, juce::dontSendNotification);
+        if (numTracks > 0)
+        {
+            const auto idToSelect = juce::isPositiveAndBelow (previousId - 1, numTracks)
+                                        ? previousId
+                                        : 1;
+            trackBox.setSelectedId (idToSelect, juce::dontSendNotification);
+        }
     }
 
     void PluginBrowser::refreshKnownList()

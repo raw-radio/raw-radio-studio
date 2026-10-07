@@ -137,6 +137,10 @@ namespace rrs
             spec.includeTails      = false;
             spec.usePlugins        = true;
             spec.useMasterPlugins  = false;   // stems are pre-master
+            // Render each stem as it sounds in the full mix: sidechain/aux-send
+            // source tracks the stem depends on are added to the graph (muted)
+            // so, e.g., a sidechain compressor still gets its key signal.
+            spec.includeSourceTracks = true;
             spec.tracks            = { track->itemID };
             addSpec (std::move (spec));
         }
@@ -183,8 +187,30 @@ namespace rrs
             if (alive == nullptr || ! alive->load (std::memory_order_acquire))
                 return;
 
-            if (callback)
-                callback (state->error.isEmpty(), directory, state->finished, state->error);
+            if (! callback)
+                return;
+
+            // `onFinished` is invoked synchronously from inside RenderQueue's
+            // `startNextJob()` stack, so calling the completion directly would let
+            // the owner destroy the queue (its Handle) while that method is still
+            // running -> use-after-free. Hop to the message queue first, exactly
+            // like WavExport does, so the handle reset happens outside the stack.
+            const bool success = state->error.isEmpty();
+            const int numFiles = state->finished;
+            const auto error = state->error;
+
+            juce::MessageManager::callAsync ([alive, callback, directory, success, numFiles, error]
+                                             {
+                                                 // Re-check liveness at delivery time:
+                                                 // a handle cancelled between the queue
+                                                 // finishing and the message running
+                                                 // must skip completion work.
+                                                 if (alive == nullptr
+                                                     || ! alive->load (std::memory_order_acquire))
+                                                     return;
+
+                                                 callback (success, directory, numFiles, error);
+                                             });
         };
 
         queue->start();

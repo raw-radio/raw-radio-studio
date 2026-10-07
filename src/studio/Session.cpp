@@ -1516,16 +1516,46 @@ namespace rrs
             return nullptr;
         }
 
+        /** The hardware output pair a cue return is currently routed to (stable
+            device ID), or an empty string when it uses the default/main output. */
+        juce::String cueReturnOutputDeviceID (te::AudioTrack& track)
+        {
+            if (auto* device = track.getOutput().getOutputDevice (false))
+                return device->getDeviceID();
+
+            return {};
+        }
+
         /** Default cue output pair: device 0 is the control-room/main out, so a
-            cue takes the next pair when the interface exposes one. Returns an
-            empty string when only the main output exists (the cue then falls
-            back to it — "not physically separable" per EPIC2_GAPS). */
-        juce::String defaultCueOutputDeviceID (AudioEngine& audio, int cueIndex)
+            cue takes the first output pair not already claimed by another cue
+            return. Returns an empty string when no free pair exists (the cue then
+            falls back to the main output — "not physically separable" per
+            EPIC2_GAPS).
+
+            Choosing the first *free* pair (rather than `returns.size() + 1`)
+            means that after a cue is removed a newly added cue reuses the freed
+            pair instead of colliding with another cue's output. */
+        juce::String defaultCueOutputDeviceID (AudioEngine& audio,
+                                               const std::vector<CueReturn>& returns)
         {
             const auto devices = audio.deviceManager().getWaveOutputDevices();
+            const auto numDevices = devices.size();
 
-            if ((int) devices.size() > cueIndex + 1)
-                return devices[(size_t) cueIndex + 1]->getDeviceID();
+            // Only the main out exists: no separable cue pair is available.
+            if (numDevices <= 1)
+                return {};
+
+            // Device 0 is the control room / main out — never hand it to a cue.
+            juce::StringArray claimed;
+            claimed.add (devices[0]->getDeviceID());
+
+            for (auto& cue : returns)
+                if (cue.track != nullptr)
+                    claimed.addIfNotAlreadyThere (cueReturnOutputDeviceID (*cue.track));
+
+            for (size_t i = 1; i < numDevices; ++i)
+                if (! claimed.contains (devices[i]->getDeviceID()))
+                    return devices[i]->getDeviceID();
 
             return {};
         }
@@ -1792,8 +1822,8 @@ namespace rrs
         if (plugin != nullptr)
             track->pluginList.insertPlugin (plugin, -1, nullptr);
 
-        // Route to the next free hardware output pair when present.
-        if (auto deviceID = defaultCueOutputDeviceID (audio, (int) returns.size()); deviceID.isNotEmpty())
+        // Route to the first free hardware output pair when present.
+        if (auto deviceID = defaultCueOutputDeviceID (audio, returns); deviceID.isNotEmpty())
             track->getOutput().setOutputToDeviceID (deviceID);
 
         edit->restartPlayback();

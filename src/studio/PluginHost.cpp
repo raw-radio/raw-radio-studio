@@ -27,6 +27,12 @@ namespace rrs
 
     PluginHost::~PluginHost()
     {
+        // Abort an in-flight probe *before* waiting: a scan can block inside the
+        // (child-process) plugin probe for longer than the join timeout. Without
+        // cancelling first, stopThread() could time out and let the destructor
+        // proceed to destroy `engine`/members while the worker is still running,
+        // which the worker would then touch -> use-after-free / hang on exit.
+        cancelScan();
         stopThread (5000);
     }
 

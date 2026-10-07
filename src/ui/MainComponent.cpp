@@ -711,7 +711,9 @@ namespace rrs
 
     void MainComponent::exportSession()
     {
-        if (exportInProgress)
+        // Defense-in-depth: never start a WAV export while a stems batch (or
+        // another WAV export) is already consuming the Edit.
+        if (exportInProgress || stemsInProgress)
             return;
 
         if (session.getEdit() == nullptr)

@@ -633,9 +633,14 @@ int main (int argc, char* argv[])
         {
             const juce::ScopedJuceInitialiser_GUI juceInit;
 
-            if (tracktion::PluginManager::startChildProcessPluginScan (commandLine))
-                for (;;)
-                    juce::MessageManager::getInstance()->runDispatchLoopUntil (100);
+            // If we cannot connect back to the coordinator this is a broken child
+            // scan, not a normal launch. Exit non-zero rather than falling through
+            // to the single-instance gate and spawning a full GUI instance.
+            if (! tracktion::PluginManager::startChildProcessPluginScan (commandLine))
+                return 1;
+
+            for (;;)
+                juce::MessageManager::getInstance()->runDispatchLoopUntil (100);
         }
     }
 

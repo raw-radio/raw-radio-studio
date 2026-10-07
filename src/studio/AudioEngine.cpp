@@ -80,8 +80,8 @@ namespace rrs
                     setContentOwned (editor.release(), false);
                     setResizable (editorPtr->allowWindowResizing(), false);
 
-                    if (auto* constrainer = editorPtr->getBoundsConstrainer())
-                        setConstrainer (constrainer);
+                    if (auto* boundsConstrainer = editorPtr->getBoundsConstrainer())
+                        setConstrainer (boundsConstrainer);
 
                     setSize (juce::jmax (40, editorPtr->getWidth()),
                              juce::jmax (40, editorPtr->getHeight()));
