@@ -49,7 +49,10 @@ namespace
     //   * `--list-devices`                    enumerate the audio backends and
     //                                         their input/output device names;
     //   * `--selftest-record <s> <out.wav>`   capture <s> seconds from the
-    //                                         selected input and write a WAV.
+    //                                         selected input and write a WAV;
+    //   * `--selftest-multitrack <s> <out>`   same, plus one mono WAV per input
+    //                                         channel + per-channel stats (the
+    //                                         4-in Epic 2 hardware acceptance).
     //
     // They deliberately reuse `rrs::AudioEngine` (the same Tracktion
     // Engine + DeviceManager path the GUI uses), so a green self-test means the
@@ -57,9 +60,11 @@ namespace
     // single-instance gate, mirroring `--version`.
     // =========================================================================
 
-    // Audio-thread capture sink for `--selftest-record`. All storage is
-    // pre-allocated before the callback is registered, so the callback itself
-    // performs no allocation/locking/I/O.
+    // Audio-thread capture sink for `--selftest-record` / `--selftest-multitrack`.
+    // All storage is pre-allocated before the callback is registered, so the
+    // callback itself performs no allocation/locking/I/O.
+    constexpr int maxCaptureChannels = 32;
+
     class CaptureCallback final : public juce::AudioIODeviceCallback
     {
     public:
@@ -104,6 +109,7 @@ namespace
             {
                 auto* dst = captureBuffer.getWritePointer (ch) + written;
                 const auto* src = ch < numInputChannels ? inputChannelData[ch] : nullptr;
+                const auto statChannel = juce::jmin (ch, maxCaptureChannels - 1);
 
                 for (int i = 0; i < n; ++i)
                 {
@@ -114,6 +120,10 @@ namespace
                     peak = juce::jmax (peak, magnitude);
                     sumOfSquares += static_cast<double> (sample) * static_cast<double> (sample);
                     ++sampleCount;
+
+                    channelPeak[statChannel] = juce::jmax (channelPeak[statChannel], magnitude);
+                    channelSumSquares[statChannel] += static_cast<double> (sample) * static_cast<double> (sample);
+                    ++channelSamples[statChannel];
                 }
             }
 
@@ -133,6 +143,13 @@ namespace
         float peak = 0.0f;
         double sumOfSquares = 0.0;
         juce::int64 sampleCount = 0;
+
+        // Per-channel stats, so a multichannel interface can be verified input by
+        // input (the 4-in Epic 2 acceptance). Fixed storage — no allocation in
+        // the callback.
+        float channelPeak[maxCaptureChannels] {};
+        double channelSumSquares[maxCaptureChannels] {};
+        juce::int64 channelSamples[maxCaptureChannels] {};
 
         std::atomic<bool> finished { false };
     };
@@ -211,9 +228,14 @@ namespace
 
     // `--selftest-record <seconds> <out.wav> [--device "<name substring>"]`:
     // open the input, capture synchronously, write a 24-bit WAV, print stats.
+    // `--selftest-multitrack` reuses the same capture and additionally writes one
+    // mono 24-bit WAV per active input channel (`<out>_chN.wav`) and prints
+    // per-channel peak/RMS, so a multichannel interface can be verified input by
+    // input (the 4-in Epic 2 acceptance).
     int runSelfTestRecord (const juce::String& secondsText,
                            const juce::String& outputPath,
-                           const juce::String& deviceSubstring)
+                           const juce::String& deviceSubstring,
+                           bool multitrack)
     {
         const auto seconds = secondsText.getDoubleValue();
 
@@ -395,6 +417,54 @@ namespace
                   << " dBFS (linear " << juce::String (rms, 6) << ")\n"
                   << "  output file:      " << outputFile.getFullPathName() << std::endl;
 
+        if (multitrack)
+        {
+            std::cout << "Per-input channels (one mono 24-bit WAV each):\n";
+
+            const auto base = outputFile.getFileNameWithoutExtension();
+            const auto dir = outputFile.getParentDirectory();
+
+            for (int ch = 0; ch < channels && ch < maxCaptureChannels; ++ch)
+            {
+                const auto channelRms = capture.channelSamples[ch] > 0
+                                            ? std::sqrt (capture.channelSumSquares[ch]
+                                                         / (double) capture.channelSamples[ch])
+                                            : 0.0;
+
+                const auto channelFile = dir.getChildFile (base + "_ch" + juce::String (ch + 1) + ".wav");
+                channelFile.deleteFile();
+
+                juce::AudioBuffer<float> mono (1, capturedFrames);
+                mono.copyFrom (0, 0, capture.captureBuffer, ch, 0, capturedFrames);
+
+                auto channelStream = channelFile.createOutputStream();
+                std::unique_ptr<juce::OutputStream> outStream = std::move (channelStream);
+
+                auto channelWriter = wavFormat.createWriterFor (
+                    outStream,
+                    juce::AudioFormatWriterOptions{}
+                        .withSampleRate (sampleRate)
+                        .withNumChannels (1)
+                        .withBitsPerSample (24));
+
+                if (channelWriter != nullptr)
+                {
+                    channelWriter->writeFromAudioSampleBuffer (mono, 0, capturedFrames);
+                    channelWriter->flush();
+                    channelWriter.reset();
+                }
+
+                std::cout << "  ch " << (ch + 1) << ": peak "
+                          << juce::String (linearToDb (capture.channelPeak[ch]), 2) << " dBFS, RMS "
+                          << juce::String (linearToDb ((float) channelRms), 2) << " dBFS -> "
+                          << channelFile.getFileName() << std::endl;
+            }
+
+            if (channels > 1)
+                std::cout << "  (verify each input separately; the 4-in Epic 2 acceptance "
+                             "expects four non-silent channels)\n";
+        }
+
         return 0;
     }
 }
@@ -521,13 +591,17 @@ int main (int argc, char* argv[])
     if (args.contains ("--list-devices"))
         return runListDevices();
 
-    if (args.contains ("--selftest-record"))
+    const bool multitrack = args.contains ("--selftest-multitrack");
+    const auto selfTestFlag = multitrack ? juce::String ("--selftest-multitrack")
+                                         : juce::String ("--selftest-record");
+
+    if (args.contains ("--selftest-record") || multitrack)
     {
-        const auto index = args.indexOf ("--selftest-record");
+        const auto index = args.indexOf (selfTestFlag);
 
         if (index + 2 >= args.size())
         {
-            std::cerr << "error: usage: --selftest-record <seconds> <out.wav> "
+            std::cerr << "error: usage: " << selfTestFlag << " <seconds> <out.wav> "
                          "[--device \"<name substring>\"]\n";
             return 2;
         }
@@ -541,7 +615,7 @@ int main (int argc, char* argv[])
         if (deviceIndex >= 0 && deviceIndex + 1 < args.size())
             deviceSubstring = args[deviceIndex + 1];
 
-        return runSelfTestRecord (secondsText, outputPath, deviceSubstring);
+        return runSelfTestRecord (secondsText, outputPath, deviceSubstring, multitrack);
     }
 
     juce::JUCEApplicationBase::createInstance = &juce_CreateApplication;
