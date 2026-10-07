@@ -393,7 +393,7 @@ namespace
                   << " dBFS (linear " << juce::String (capture.peak, 6) << ")\n"
                   << "  RMS:              " << juce::String (linearToDb ((float) rms), 2)
                   << " dBFS (linear " << juce::String (rms, 6) << ")\n"
-                  << "  output:           " << outputFile.getFullPathName() << std::endl;
+                  << "  output file:      " << outputFile.getFullPathName() << std::endl;
 
         return 0;
     }

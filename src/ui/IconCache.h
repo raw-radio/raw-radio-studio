@@ -35,6 +35,9 @@ namespace rrs
 
         std::unordered_map<std::string, juce::Image> imageCache;
 
-        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (IconCache)
+        // Deliberately leaked singleton (see getInstance()): the leak detector
+        // would fire a jassertfalse in Debug builds for that intentional leak,
+        // so use the plain non-copyable macro without the leak counter.
+        JUCE_DECLARE_NON_COPYABLE (IconCache)
     };
 }

@@ -291,6 +291,22 @@ TEST_CASE ("device selection keeps input and output independent")
         CHECK (sel.input == bt);
         CHECK (sel.output == bt);
     }
+
+    SUBCASE ("a stale current name is passed through unchanged")
+    {
+        // The resolver has no view of the enumerated device list: it is a pure
+        // "empty request keeps current" pass-through. If the current input is
+        // stale (unplugged / renamed), it is returned verbatim; validating it
+        // against the live list is the caller's job (AudioEngine::
+        // applyDeviceSetup), which leaves the working device running instead of
+        // tearing it down (FR-MON-5).
+        const juce::String stale = "Unplugged USB Interface";
+
+        const auto sel = resolveDeviceNames ({}, {}, stale, macSpeakers);
+
+        CHECK (sel.input == stale);
+        CHECK (sel.output == macSpeakers);
+    }
 }
 
 //==============================================================================
