@@ -7,11 +7,12 @@
 //   <app data>/raw-radio-studio/
 //       Projects/                  — .tracktionedit session files
 //       session.lock               — interrupted-session sentinel: written when
-//                                    a session becomes active, removed only on a
-//                                    clean shutdown. Its presence at startup is
-//                                    the authoritative "previous run was
-//                                    interrupted" signal (see MainComponent's
-//                                    startup recovery).
+//                                    a session becomes active, removed on a
+//                                    clean shutdown and by Session::close()
+//                                    (a deliberately-closed project). Its
+//                                    presence at startup is the authoritative
+//                                    "previous run was interrupted" signal (see
+//                                    MainComponent's startup recovery).
 //       Projects/Recordings/       — recorded takes (crash-safe, incremental WAV)
 //
 // App settings (autosave interval, last session) are not handled here: they are
@@ -42,7 +43,8 @@ namespace rrs::paths
         return projectsDirectory().getChildFile ("Untitled Session.tracktionedit");
     }
 
-    /** Sentinel written at startup and removed on a clean shutdown. */
+    /** Sentinel written at startup and removed on a clean shutdown (or by
+        Session::close()). */
     inline juce::File lockFile()
     {
         return appDataDirectory().getChildFile ("session.lock");

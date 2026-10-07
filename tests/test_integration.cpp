@@ -338,6 +338,35 @@ TEST_CASE ("autosave writes the .tmp_ sibling and detectRecovery finds it")
 }
 
 //==============================================================================
+TEST_CASE ("a successful save consumes the autosave temp version (no spurious recovery)")
+{
+    // Regression: Session::save() runs the same `ops.save(true, true, false)`
+    // path. An explicit save must move the `.tmp_` over the session file so a
+    // later crash-recovery scan does NOT report a stale temp edit.
+    auto dir = scratchDirectory ("save-consumes-temp");
+    auto editFile = dir.getChildFile ("Consume.tracktionedit");
+
+    auto wavFile = writeSineWav (dir.getChildFile ("sine.wav"), 48000.0, 0.5);
+    REQUIRE (wavFile.existsAsFile());
+
+    auto edit = makeEditWithClip (editFile, wavFile);
+    REQUIRE (edit != nullptr);
+
+    te::EditFileOperations ops (*edit);
+
+    // Autosave writes the `.tmp_` sibling (FR-PRJ-2)...
+    REQUIRE (ops.saveTempVersion (true));
+    CHECK (paths::tempEditFileFor (editFile).existsAsFile());
+
+    // ...and the explicit save consumes it.
+    ops.save (true, true, false);
+    CHECK_FALSE (paths::tempEditFileFor (editFile).existsAsFile());
+
+    const auto info = Session::detectRecovery (editFile);
+    CHECK_FALSE (info.hasTempEdit);
+}
+
+//==============================================================================
 TEST_CASE ("interrupted-session detection is deterministic (sentinel or temp always prompts)")
 {
     // The startup decision must key off an explicit marker, never off transient
@@ -373,6 +402,78 @@ TEST_CASE ("detectRecovery treats a leftover temp edit as an interrupted session
     CHECK (info.hasTempEdit);
     CHECK (info.interrupted());
     CHECK (info.hasRecoverables());
+}
+
+//==============================================================================
+TEST_CASE ("the interruption sentinel on disk is detected as an interrupted session")
+{
+    // Regression guard for the startup decision: when the previous run left the
+    // `session.lock` sentinel behind, detectRecovery() must report the session
+    // as interrupted (FR-REC-8).
+    const auto sentinel = paths::lockFile();
+    const bool existedBefore = sentinel.existsAsFile();
+    const auto previousContent = existedBefore ? sentinel.loadFileAsString() : juce::String();
+
+    paths::appDataDirectory().createDirectory();
+    REQUIRE (sentinel.replaceWithText ("raw-radio-studio test sentinel\n"));
+
+    auto dir = scratchDirectory ("sentinel");
+    const auto info = Session::detectRecovery (dir.getChildFile ("Session.tracktionedit"));
+
+    CHECK (info.uncleanShutdown);
+    CHECK (info.interrupted());
+
+    // Restore whatever was there before so running the suite locally does not
+    // leave a false "interrupted" marker behind.
+    if (existedBefore)
+        sentinel.replaceWithText (previousContent);
+    else
+        sentinel.deleteFile();
+}
+
+//==============================================================================
+TEST_CASE ("Session::close resets state and clears the interruption sentinel")
+{
+    auto dir = scratchDirectory ("session-close");
+    auto editFile = dir.getChildFile ("Close Me.tracktionedit");
+
+    // Preserve any pre-existing sentinel (e.g. a concurrently running app) so
+    // this hermetic test does not clobber app-data state.
+    const auto sentinel = paths::lockFile();
+    const bool sentinelExistedBefore = sentinel.existsAsFile();
+    const auto sentinelContentBefore = sentinelExistedBefore ? sentinel.loadFileAsString() : juce::String();
+
+    // Headless engine: no audio hardware is opened.
+    AudioEngine audio (false);
+    Session session (audio);
+
+    REQUIRE (session.createNew (editFile));
+    CHECK (session.getEdit() != nullptr);
+    CHECK (session.getEditFile() == editFile);
+    REQUIRE (editFile.existsAsFile());
+
+    // A freshly created (and saved) session has no unsaved changes, but it does
+    // write the sentinel so an unexpected exit is flagged next launch.
+    CHECK (sentinel.existsAsFile());
+    CHECK_FALSE (session.hasUnsavedChanges());
+
+    // Any real edit flips the unsaved-changes flag (drives the Close guard).
+    session.getEdit()->markAsChanged();
+    CHECK (session.hasUnsavedChanges());
+
+    session.close();
+
+    CHECK (session.getEdit() == nullptr);
+    CHECK (session.getEditFile() == juce::File());
+    CHECK_FALSE (session.hasUnsavedChanges());
+    CHECK_EQ (session.getNumAudioTracks(), 0);
+
+    // A deliberate close leaves no stale recovery state and no hardware monitoring.
+    CHECK_FALSE (sentinel.existsAsFile());
+    CHECK_FALSE (session.isMonitoringEnabled());
+
+    if (sentinelExistedBefore)
+        sentinel.replaceWithText (sentinelContentBefore);
 }
 
 //==============================================================================

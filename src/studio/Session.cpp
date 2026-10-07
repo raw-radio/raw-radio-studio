@@ -439,6 +439,13 @@ namespace rrs
     //==============================================================================
     void Session::close()
     {
+        // Hardware monitoring is a *device-level* setting (WaveInputDevice), not
+        // part of the Edit, so it would survive the teardown below and leave the
+        // microphone live-monitored in the "No session" state (feedback risk).
+        // Turn it off explicitly, before the early-out, so the Monitor button
+        // also ends up OFF in the UI.
+        setMonitoringEnabled (false);
+
         if (edit == nullptr)
             return;
 

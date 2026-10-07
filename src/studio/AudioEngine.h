@@ -22,14 +22,20 @@ namespace rrs
     class StudioEngineBehaviour final : public tracktion::EngineBehaviour
     {
     public:
+        /** @param useAudioDevices  false keeps the device manager inert (used by
+            headless tests so no real hardware is opened). */
+        explicit StudioEngineBehaviour (bool useAudioDevices = true)
+            : audioDevicesEnabled (useAudioDevices) {}
+
         void setRecordingsDirectory (juce::File newDirectory);
 
         juce::File getFileForNewAudioRecording (tracktion::Track&, const juce::String& fileExtension) override;
 
-        bool shouldOpenAudioInputByDefault() override     { return true; }
-        bool autoInitialiseDeviceManager() override       { return true; }
+        bool shouldOpenAudioInputByDefault() override     { return audioDevicesEnabled; }
+        bool autoInitialiseDeviceManager() override       { return audioDevicesEnabled; }
 
     private:
+        bool audioDevicesEnabled = true;
         juce::File recordingsDirectory;
     };
 
@@ -37,7 +43,11 @@ namespace rrs
     class AudioEngine
     {
     public:
-        AudioEngine();
+        /** @param useAudioDevices  when false the device manager is not
+            auto-initialised: the engine is created but no hardware is opened.
+            The application always uses the default (true); tests pass false to
+            stay hermetic. */
+        explicit AudioEngine (bool useAudioDevices = true);
         ~AudioEngine();
 
         tracktion::Engine& engine() noexcept                     { return *enginePtr; }

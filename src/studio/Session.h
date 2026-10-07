@@ -46,9 +46,12 @@ namespace rrs
         bool saveAs (const juce::File&);
 
         /** Closes the current session, returning the app to an empty state.
-            Deletes any autosave temp version and clears the startup sentinel so
-            a deliberately-closed project leaves no stale recovery state. The
-            caller is responsible for warning about unsaved changes first. */
+            Turns hardware input monitoring OFF (it is a device-level setting, so
+            it would otherwise outlive the Edit and leave the mic live in "No
+            session"), deletes any autosave temp version and clears the startup
+            sentinel so a deliberately-closed project leaves no stale recovery
+            state. The caller is responsible for warning about unsaved changes
+            first. */
         void close();
 
         /** True when the current edit has edits not yet written to the session
@@ -153,9 +156,9 @@ namespace rrs
         void ensureMeterAttached();
         void detachMeter();
         /** Writes/removes the interrupted-session sentinel (AppPaths::lockFile).
-            Written when a session becomes active and only cleared on a clean
-            shutdown, so its presence on the next launch deterministically means
-            "the previous run was interrupted". */
+            Written when a session becomes active; cleared by a clean shutdown
+            and by Session::close(), so its presence on the next launch
+            deterministically means "the previous run was interrupted". */
         void writeInterruptionMarker();
         void clearInterruptionMarker();
         juce::Array<juce::File> findReferencedRecordings() const;

@@ -6,6 +6,7 @@
 #include "studio/AudioImport.h"
 #include "ui/DevicePanelLayout.h"
 
+#include <array>
 #include <cmath>
 
 #ifndef RAW_RADIO_STUDIO_VERSION
@@ -214,6 +215,10 @@ namespace rrs
         if (exportInProgress)
             return;
 
+        // NOTE: unlike Close (see closeSession()), New does not yet guard against
+        // losing unsaved changes — `createNew()` replaces the Edit directly. This
+        // inconsistency is known; New/Open should prompt Save/Discard/Cancel once
+        // the Close prompt is factored into a shared helper.
         auto chooser = std::make_shared<juce::FileChooser> ("New session",
                                                             paths::projectsDirectory(), "*.tracktionedit");
 
@@ -242,6 +247,9 @@ namespace rrs
         if (exportInProgress)
             return;
 
+        // NOTE: as with New, Open does not yet guard against losing unsaved
+        // changes (Close does — see closeSession()). Documented known
+        // inconsistency; a shared Save/Discard/Cancel helper is the follow-up.
         auto chooser = std::make_shared<juce::FileChooser> ("Open session",
                                                             paths::projectsDirectory(), "*.tracktionedit");
 
@@ -570,7 +578,15 @@ namespace rrs
         }
 
         juce::String message;
-        message << "The previous session did not close cleanly.\n\n";
+
+        // Only claim an unclean close when the startup sentinel was actually
+        // present. A leftover temp version can also survive a *clean* exit (it
+        // is written by autosave and only consumed by the next save), so use
+        // neutral wording in that case rather than accusing the app of crashing.
+        if (info.uncleanShutdown)
+            message << "The previous session did not close cleanly.\n\n";
+        else
+            message << "An unsaved version of the session was found.\n\n";
 
         if (info.hasTempEdit)
             message << "- An autosaved version of the session is available.\n";
@@ -599,8 +615,10 @@ namespace rrs
 
                 if (result == 0) // Restore
                 {
+                    bool restoreFailed = false;
+
                     if (info.hasTempEdit)
-                        self->session.applyTempEditRecovery (info);
+                        restoreFailed = ! self->session.applyTempEditRecovery (info);
 
                     if (lastSession.existsAsFile())
                         self->session.open (lastSession);
@@ -608,6 +626,13 @@ namespace rrs
                         self->session.createNew (lastSession);
 
                     self->onSessionOpened();
+
+                    // Never silently open the stale file: if the temp version
+                    // could not be applied, say so (the last saved session is
+                    // what was opened above).
+                    if (restoreFailed)
+                        self->showStatus ("Could not restore the autosaved version; "
+                                          "opened the last saved session.", true);
 
                     const auto recovered = self->session.importOrphanedRecordings();
 
@@ -710,17 +735,23 @@ namespace rrs
 
                     const bool armed = track == session.getTrack() && session.isTrackArmed();
 
+                    // Two non-overlapping text rows inside the lane: the track
+                    // name in the top ~20 px, the clip count in the ~16 px below
+                    // it. Split a single inner rectangle (rather than rebuilding
+                    // `lane.reduced(10)` per row) so the rows can never overlap.
+                    auto inner = lane.reduced (10, 4);
+                    auto nameArea = inner.removeFromTop (20);
+                    auto clipArea = inner.removeFromTop (16);
+
                     g.setColour (juce::Colours::white.withAlpha (0.9f));
                     g.setFont (13.0f);
                     g.drawText (track->getName() + (armed ? "   [ARMED]" : ""),
-                                lane.reduced (10).removeFromTop (20),
-                                juce::Justification::centredLeft);
+                                nameArea, juce::Justification::centredLeft);
 
                     g.setColour (juce::Colours::white.withAlpha (0.55f));
                     g.setFont (11.0f);
                     g.drawText (juce::String (track->getClips().size()) + " clip(s)",
-                                lane.reduced (10).removeFromTop (34).removeFromTop (16),
-                                juce::Justification::centredLeft);
+                                clipArea, juce::Justification::centredLeft);
                 }
             }
             else
@@ -764,9 +795,39 @@ namespace rrs
 
         auto actions = area.removeFromTop (30);
 
-        for (auto* button : { &newButton, &openButton, &closeButton, &saveButton, &saveAsButton,
-                              &importButton, &exportButton, &settingsButton, &aboutButton })
-            button->setBounds (actions.removeFromLeft (82).reduced (2));
+        // Content-based widths: a single fixed width per button gave every label
+        // the same box, which cramped the longest ("Export WAV..."). Size each
+        // button to its own text (the LookAndFeel's width-to-fit-text adds a
+        // symmetric border, so the horizontal padding stays consistent) and only
+        // fall back to an equal split when the window is too narrow to fit them.
+        const std::array<juce::TextButton*, 9> actionButtons {
+            &newButton, &openButton, &closeButton, &saveButton, &saveAsButton,
+            &importButton, &exportButton, &settingsButton, &aboutButton };
+
+        constexpr int gap = 6;
+        constexpr int minWidth = 56;
+
+        std::array<int, actionButtons.size()> widths {};
+        int totalWidth = 0;
+
+        for (size_t i = 0; i < actionButtons.size(); ++i)
+        {
+            widths[i] = juce::jmax (minWidth, actionButtons[i]->getBestWidthForHeight (actions.getHeight()));
+            totalWidth += widths[i];
+        }
+
+        const auto available = actions.getWidth() - gap * ((int) actionButtons.size() - 1);
+
+        if (totalWidth > available && available > 0)
+            widths.fill (juce::jmax (minWidth, available / (int) actionButtons.size()));
+
+        int x = actions.getX();
+
+        for (size_t i = 0; i < actionButtons.size(); ++i)
+        {
+            actionButtons[i]->setBounds (x, actions.getY(), widths[i], actions.getHeight());
+            x += widths[i] + gap;
+        }
 
         area.removeFromTop (4);
         statusLabel.setBounds (area.removeFromTop (22));

@@ -45,12 +45,13 @@ namespace rrs
     }
 
     //==============================================================================
-    AudioEngine::AudioEngine()
+    AudioEngine::AudioEngine (bool useAudioDevices)
     {
         // A custom EngineBehaviour directs recordings into the session folder;
         // the default UIBehaviour (nullptr -> default) shows JUCE alert windows
-        // for engine-level warnings.
-        auto behaviour = std::make_unique<StudioEngineBehaviour>();
+        // for engine-level warnings. When `useAudioDevices` is false (tests) the
+        // behaviour also suppresses device auto-initialisation.
+        auto behaviour = std::make_unique<StudioEngineBehaviour> (useAudioDevices);
         enginePtr = std::make_unique<te::Engine> ("raw-radio-studio", nullptr, std::move (behaviour));
 
         enforceDirectAlsaOnStartup();
