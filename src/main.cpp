@@ -19,7 +19,7 @@
 #include "ui/MainComponent.h"
 
 #ifndef RAW_RADIO_STUDIO_VERSION
- #define RAW_RADIO_STUDIO_VERSION "0.0.0-dev"
+ #define RAW_RADIO_STUDIO_VERSION "0.1.0-dev"
 #endif
 
 #ifndef RAW_RADIO_STUDIO_TRACKTION_VERSION

@@ -77,7 +77,7 @@ Evidence:
 - the public symbol `tracktion::engine::Engine::getVersion()` is present in the
   linked binary (the app references it, so the engine is genuinely linked),
 - `raw_radio-studio --version` runs and prints
-  `raw-radio-studio 0.0.0  (JUCE 9.0.3, Tracktion Engine 3.5.0)`.
+  `raw-radio-studio 0.1.0  (JUCE 9.0.3, Tracktion Engine 3.5.0)`.
 
 **Caveat / risk:** Tracktion's own submodule pins JUCE **8.0.13**, so JUCE 9 is
 ahead of the combination upstream tests. It builds cleanly here, but upstream may
