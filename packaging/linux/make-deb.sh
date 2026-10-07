@@ -64,14 +64,27 @@ mkdir -p \
     "${PKG}/DEBIAN" \
     "${PKG}/usr/bin" \
     "${PKG}/usr/share/applications" \
-    "${PKG}/usr/share/icons/hicolor/256x256/apps" \
     "${PKG}/usr/share/doc/raw-radio-studio"
 
 install -m 0755 "${BIN}" "${PKG}/usr/bin/raw-radio-studio"
 install -m 0644 "${SCRIPT_DIR}/raw-radio-studio.desktop" \
     "${PKG}/usr/share/applications/raw-radio-studio.desktop"
-install -m 0644 "${SCRIPT_DIR}/raw-radio-studio.png" \
-    "${PKG}/usr/share/icons/hicolor/256x256/apps/raw-radio-studio.png"
+
+# Application icons: install the full hicolor set (16..512) so launchers pick a
+# crisp size. Generated from assets/brand/app-icon.svg by
+# assets/brand/generate-icons.sh and committed under packaging/linux/icons/.
+for size in 16 24 32 48 64 128 256 512; do
+    src_icon="${SCRIPT_DIR}/icons/hicolor/${size}x${size}/apps/raw-radio-studio.png"
+
+    if [[ ! -f "${src_icon}" ]]; then
+        echo "error: missing packaged icon: ${src_icon}" >&2
+        exit 1
+    fi
+
+    dest_dir="${PKG}/usr/share/icons/hicolor/${size}x${size}/apps"
+    install -d "${dest_dir}"
+    install -m 0644 "${src_icon}" "${dest_dir}/raw-radio-studio.png"
+done
 
 # Ship the license texts (AGPLv3 + NOTICE) in the package.
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"

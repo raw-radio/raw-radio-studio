@@ -151,6 +151,33 @@ target_sources(raw_radio_studio PRIVATE
     src/ui/IconCache.cpp
     src/ui/MainComponent.cpp)
 
+# macOS app icon: the raster `.icns` generated from assets/brand/app-icon.svg by
+# assets/brand/generate-icons.sh (committed so CI bundles are reproducible). It
+# is copied into the bundle's Resources and referenced from Info.plist, so
+# Finder/Dock show the RAW Radio icon rather than a generic app glyph. The SVG
+# itself lives under assets/brand/ (not assets/icons/) so the RawRadioStudioAssets
+# BinaryData glob does not pull it in — it is not a runtime icon.
+#
+# Note: JUCE generates its own Info.plist through `juceaide` and ignores CMake's
+# MACOSX_BUNDLE_ICON_FILE property, so we also patch `CFBundleIconFile` into the
+# copied plist after the bundle is assembled. MACOSX_BUNDLE_ICON_FILE is still
+# set for tooling that reads it.
+if(APPLE)
+    set(_rrs_app_icon "${CMAKE_CURRENT_SOURCE_DIR}/assets/brand/AppIcon.icns")
+
+    target_sources(raw_radio_studio PRIVATE "${_rrs_app_icon}")
+    set_source_files_properties("${_rrs_app_icon}" PROPERTIES
+        MACOSX_PACKAGE_LOCATION "Resources")
+    set_target_properties(raw_radio_studio PROPERTIES
+        MACOSX_BUNDLE_ICON_FILE AppIcon.icns)
+
+    add_custom_command(TARGET raw_radio_studio POST_BUILD
+        COMMAND /usr/libexec/PlistBuddy -c
+                "Set :CFBundleIconFile AppIcon.icns"
+                "$<TARGET_BUNDLE_CONTENT_DIR:raw_radio_studio>/Info.plist"
+        VERBATIM)
+endif()
+
 juce_generate_juce_header(raw_radio_studio)
 
 target_include_directories(raw_radio_studio PRIVATE

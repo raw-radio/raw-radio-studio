@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  RAW Radio Studio — application icon.
+
+  Style matches the RAW Radio broadcast app launcher icon
+  (client_app «RAW Radio Эфир»: solid #FF6B35 + flat white glyph),
+  swapping the microphone for a vinyl record.
+
+  Palette (RAW Radio brand — packages/ui/src/tokens/tokens.ts):
+    brand orange  #FF6B35  (accent.primary / background)
+    white         #FFFFFF
+
+  Full-bleed square master (1024). The OS applies the corner mask
+  (Android adaptive / iOS / macOS squircle). Safe-zone friendly:
+  the record occupies ~59% of the canvas.
+-->
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="1024"
+  height="1024"
+  viewBox="0 0 1024 1024"
+  role="img"
+  aria-labelledby="appIconTitle appIconDesc"
+>
+  <title id="appIconTitle">RAW Radio Studio</title>
+  <desc id="appIconDesc">RAW Radio Studio app icon: brand-orange background with a white vinyl record.</desc>
+
+  <!-- Brand background -->
+  <rect width="1024" height="1024" fill="#FF6B35" />
+
+  <!-- Vinyl record: white disc -->
+  <circle cx="512" cy="512" r="300" fill="#FFFFFF" />
+
+  <!-- Grooves (negative space, brand orange) -->
+  <g fill="none" stroke="#FF6B35" stroke-width="7">
+    <circle cx="512" cy="512" r="158" />
+    <circle cx="512" cy="512" r="184" />
+    <circle cx="512" cy="512" r="210" />
+    <circle cx="512" cy="512" r="236" />
+    <circle cx="512" cy="512" r="262" />
+    <circle cx="512" cy="512" r="288" />
+  </g>
+
+  <!-- Center label + spindle hole -->
+  <circle cx="512" cy="512" r="125" fill="#FF6B35" />
+  <circle cx="512" cy="512" r="20" fill="#FFFFFF" />
+</svg>
