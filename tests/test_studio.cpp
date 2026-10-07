@@ -482,9 +482,11 @@ TEST_CASE ("meter ballistics are frame-rate independent (same duration, same res
 }
 
 //==============================================================================
-// Fader taper (owner request): position <-> dB must be linear in dB across the
-// whole travel, not linear in amplitude. 0 dB lands where the linear map puts
-// it (documented), the mapping is exactly invertible, and the bottom of a level
+// Fader taper (owner request): the travel position maps linearly to decibels.
+// The owner found the useful range compressed into the top of a -60..+6 travel;
+// narrowing the level range to -40..+6 puts unity at ~0.870 and gives the lower
+// travel usable resolution. 0 dB lands where the linear map puts it
+// (documented), the mapping is exactly invertible, and the bottom of a level
 // fader is a hard mute detent.
 TEST_CASE ("fader taper is linear in dB with a documented unity position")
 {
@@ -498,23 +500,28 @@ TEST_CASE ("fader taper is linear in dB with a documented unity position")
         const auto threeQtr = level.posToDb (0.75f);
         const auto top      = level.posToDb (1.00f);
 
-        // -60 .. +6 over 66 dB of travel, so each 0.25 is 16.5 dB.
-        CHECK (quarter  == doctest::Approx (-43.5f));
-        CHECK (half     == doctest::Approx (-27.0f));
-        CHECK (threeQtr == doctest::Approx (-10.5f));
+        // -40 .. +6 over 46 dB of travel, so each 0.25 is 11.5 dB.
+        CHECK (quarter  == doctest::Approx (-28.5f));
+        CHECK (half     == doctest::Approx (-17.0f));
+        CHECK (threeQtr == doctest::Approx (-5.5f));
         CHECK (top      == doctest::Approx (6.0f));
 
-        // The steps really are equal (this is the "linear in dB" property that
-        // the old linear-amplitude law lacked).
+        // Equal travel steps are equal dB steps: the taper is linear in dB.
+        // (The shape was never linear in amplitude — only the range changed.)
         CHECK ((half - quarter) == doctest::Approx (threeQtr - half).epsilon (1.0e-4f));
         CHECK ((threeQtr - half) == doctest::Approx (top - threeQtr).epsilon (1.0e-4f));
     }
 
     SUBCASE ("0 dB position is documented and exactly reproducible")
     {
-        // (0 - -60) / (6 - -60) = 60/66 ~= 0.909.
-        CHECK (level.unityPos() == doctest::Approx (60.0f / 66.0f));
+        // (0 - -40) / (6 - -40) = 40/46 ~= 0.870.
+        CHECK (level.unityPos() == doctest::Approx (40.0f / 46.0f));
         CHECK (level.posToDb (level.unityPos()) == doctest::Approx (0.0f).epsilon (1.0e-4f));
+
+        // The owner's reported points must no longer feel like a cliff: 0.7 is
+        // a usable -7.8 dB (not the old -46.2 dB) and 0.1 is -35.4 dB.
+        CHECK (level.posToDb (0.7f) == doctest::Approx (-7.8f).epsilon (1.0e-4f));
+        CHECK (level.posToDb (0.1f) == doctest::Approx (-35.4f).epsilon (1.0e-4f));
 
         // The record trim is symmetric: unity is dead centre.
         CHECK (inputTrim.unityPos() == doctest::Approx (0.5f));
@@ -547,7 +554,7 @@ TEST_CASE ("fader taper is linear in dB with a documented unity position")
         CHECK (level.dbToPos (-100.0f) == doctest::Approx (0.0f));
         CHECK (level.isSilentDb (mute));
         CHECK (level.isSilentDb (-100.0f));
-        CHECK_FALSE (level.isSilentDb (-59.0f));
+        CHECK_FALSE (level.isSilentDb (-39.0f));   // just above the -40 dB floor
         CHECK_FALSE (level.isSilentDb (0.0f));
 
         // The record trim is a gain control, never a mute.

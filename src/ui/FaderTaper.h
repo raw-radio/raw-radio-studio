@@ -5,11 +5,18 @@
 //
 // The owner reported that the faders "feel wrong": lowering from the top the
 // level dropped most of the way already around 0.7 of the travel and was
-// practically silent at 0.1. The requested behaviour is a **linear-in-dB**
-// taper: the travel position maps linearly to decibels, not to linear
-// amplitude (which is what makes a fader feel like it does all its work in the
-// top third and then falls off a cliff). 0 dB therefore lands at a predictable
-// point on the travel, documented below — the same on every fader.
+// practically silent at 0.1. The mapping was *already* linear in dB — and that
+// was the real problem: it spanned -60 .. +6 dB, so 0 dB sat at ~0.909 of the
+// travel and the bottom two thirds of the fader swept an almost inaudible range
+// (-60 .. -20 dB), squeezing everything usable into the top. At p = 0.7 the old
+// law was already -46.2 dB and at p = 0.1 a near-silent -53.4 dB — exactly the
+// "big drop, then nothing" the owner described.
+//
+// The fix is a range change, not a new law: the **level** fader now spans
+// -40 .. +6 dB. Unity moves to ~0.870, p = 0.7 is ~-7.8 dB and p = 0.1 is
+// ~-35.4 dB, so equal travel steps stay equal dB steps but the travel is spent
+// on a useful range. 0 dB therefore still lands at a predictable, documented
+// point — the same on every fader.
 //
 // This header is the single source of truth for both directions (position ->
 // dB and dB -> position) so the UI's drawing and its drag handling can never
@@ -38,8 +45,8 @@ namespace rrs::fader
         dragging it back to the same pixel is lossless (up to rounding).
 
         `unityPos()` reports where 0 dB lands; for the standard level taper
-        (-60 dB .. +6 dB) that is `(0 - -60) / (6 - -60) = 60/66 ~= 0.909` —
-        just under the top of the travel, the usual console layout.
+        (-40 dB .. +6 dB) that is `(0 - -40) / (6 - -40) = 40/46 ~= 0.870` —
+        comfortably under the top of the travel, the usual console layout.
 
         `muteAtBottom` makes position 0 a hard mute detent: `posToDb(0)` returns
         -infinity dB so the fader bottoms out to true silence rather than resting
@@ -96,10 +103,11 @@ namespace rrs::fader
         }
     };
 
-    /** Standard level-fader travel: -60 dB at the bottom (below which the fader
-        mutes), +6 dB at the top. 0 dB sits at ~0.909 of the travel. Used by the
-        per-track gain and the master gain faders. */
-    inline constexpr Taper level { -60.0f, 6.0f, true };
+    /** Standard level-fader travel: -40 dB at the bottom (below which the fader
+        mutes), +6 dB at the top. 0 dB sits at ~0.870 of the travel; p = 0.7 is
+        ~-7.8 dB and p = 0.1 is ~-35.4 dB. Used by the per-track gain and the
+        master gain faders. */
+    inline constexpr Taper level { -40.0f, 6.0f, true };
 
     /** Per-input record trim (FR-REC-4): a symmetric, bidirectional gain control
         (-24 dB .. +24 dB) with unity 0 dB centred at 0.5, so the engineer can
