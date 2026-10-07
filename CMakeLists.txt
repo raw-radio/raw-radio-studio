@@ -211,3 +211,62 @@ target_link_libraries(raw_radio_studio_tests PRIVATE
 juce_generate_juce_header(raw_radio_studio_tests)
 
 add_test(NAME raw_radio_studio_tests COMMAND raw_radio_studio_tests)
+
+# -----------------------------------------------------------------------------
+# Headless integration tests (Epic 1 QA)
+#
+# Same doctest framework, but linked against the real Tracktion Engine so the
+# acceptance-critical paths can run without hardware:
+#   * WavExport offline render (FR-EXP-1 / NFR-A-1),
+#   * project save/open round-trip (FR-PRJ-1),
+#   * autosave `.tmp_` naming + crash-recovery scan (FR-PRJ-2 / FR-REC-8).
+# The engine is created with device auto-initialisation disabled (see
+# tests/test_integration.cpp), so no audio device is required.
+# -----------------------------------------------------------------------------
+juce_add_console_app(raw_radio_studio_integration_tests
+    PRODUCT_NAME "raw-radio-studio-integration-tests")
+
+target_sources(raw_radio_studio_integration_tests PRIVATE
+    tests/test_integration.cpp
+    src/studio/AudioEngine.cpp
+    src/studio/Session.cpp
+    src/studio/WavExport.cpp)
+
+target_include_directories(raw_radio_studio_integration_tests PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src")
+
+target_compile_features(raw_radio_studio_integration_tests PRIVATE cxx_std_20)
+
+# Mirror the app's JUCE module configuration so the shared engine/JUCE modules
+# are compiled consistently across targets.
+target_compile_definitions(raw_radio_studio_integration_tests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_STRICT_REFCOUNTEDPOINTER=1
+    JUCE_PLUGINHOST_VST3=1
+    JUCE_PLUGINHOST_LV2=$<BOOL:${RAW_RADIO_STUDIO_ENABLE_LV2}>
+    JUCE_STANDALONE_APPLICATION=1)
+
+if(APPLE)
+    target_compile_definitions(raw_radio_studio_integration_tests PRIVATE JUCE_PLUGINHOST_AU=1)
+endif()
+
+target_link_libraries(raw_radio_studio_integration_tests PRIVATE
+    raw_radio_studio_doctest
+    tracktion::tracktion_engine
+    tracktion::tracktion_graph
+    juce::juce_audio_utils
+    juce::juce_gui_extra
+    juce::juce_recommended_warning_flags
+    Threads::Threads)
+
+if(APPLE)
+    target_compile_options(raw_radio_studio_integration_tests PRIVATE "-fno-aligned-allocation")
+elseif(UNIX AND CMAKE_CXX_COMPILER_ID MATCHES "GNU")
+    target_link_libraries(raw_radio_studio_integration_tests PRIVATE atomic)
+endif()
+
+juce_generate_juce_header(raw_radio_studio_integration_tests)
+
+add_test(NAME raw_radio_studio_integration_tests COMMAND raw_radio_studio_integration_tests)
