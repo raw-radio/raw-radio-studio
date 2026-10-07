@@ -64,7 +64,12 @@ namespace rrs
             c.name = inner.removeFromTop (16);
 
             if (! isMaster)
-                c.arm = inner.removeFromTop (18).reduced (1, 1);
+            {
+                auto armRow = inner.removeFromTop (18);
+                c.arm = armRow.removeFromLeft (armRow.getWidth() / 2).reduced (1, 1);
+                armRow.removeFromLeft (2);
+                c.input = armRow.reduced (1, 1);
+            }
 
             c.meter = inner.removeFromRight (12);
             inner.removeFromRight (4);
@@ -219,6 +224,32 @@ namespace rrs
             g.drawText ("R", a, juce::Justification::centred);
         }
 
+        // Input-assignment chip (FR-REC-3): layout code + 1-based hardware
+        // channel, e.g. "M1", "S2", "A1", "N1". Click to open the mapping menu.
+        if (! strip.isMaster && ! strip.input.isEmpty())
+        {
+            const auto mapping = session.getTrackInputMapping (strip.trackIndex);
+
+            juce::String code;
+            switch (mapping.layout)
+            {
+                case InputLayout::Mono:         code = "M"; break;
+                case InputLayout::Stereo:       code = "S"; break;
+                case InputLayout::MultiChannel: code = "N"; break;
+                case InputLayout::Auto:
+                default:                        code = "A"; break;
+            }
+
+            const auto i = strip.input;
+            g.setColour (brand::bgPanel);
+            g.fillRoundedRectangle (i.toFloat(), 4.0f);
+            g.setColour (brand::border);
+            g.drawRoundedRectangle (i.toFloat().reduced (0.5f), 4.0f, 1.0f);
+            g.setColour (brand::textSecondary);
+            g.setFont (brand::uiMedium (10.0f));
+            g.drawText (code + juce::String (mapping.firstChannel + 1), i, juce::Justification::centred);
+        }
+
         drawMeter (g, strip.meter, meter);
 
         // Fader.
@@ -322,6 +353,12 @@ namespace rrs
                 return;
             }
 
+            if (! strip.isMaster && strip.input.contains (e.getPosition()))
+            {
+                showInputMenu (strip.trackIndex);
+                return;
+            }
+
             if (strip.mute.contains (e.getPosition()))
             {
                 if (! strip.isMaster)
@@ -391,6 +428,63 @@ namespace rrs
     {
         dragTarget = DragTarget::None;
         dragIndex = -1;
+    }
+
+    //==============================================================================
+    void MixerPanel::showInputMenu (int trackIndex)
+    {
+        auto mapping = session.getTrackInputMapping (trackIndex);
+        const auto numChannels = juce::jmax (1, session.getNumInputChannels());
+
+        juce::PopupMenu channelMenu;
+
+        for (int ch = 0; ch < numChannels; ++ch)
+            channelMenu.addItem (100 + ch, "Input " + juce::String (ch + 1), true,
+                                 ch == mapping.firstChannel);
+
+        juce::PopupMenu layoutMenu;
+        layoutMenu.addItem (200, "Auto", true, mapping.layout == InputLayout::Auto);
+        layoutMenu.addItem (201, "Mono", true, mapping.layout == InputLayout::Mono);
+        layoutMenu.addItem (202, "Stereo", true, mapping.layout == InputLayout::Stereo);
+        layoutMenu.addItem (203, "Multi-channel", true, mapping.layout == InputLayout::MultiChannel);
+
+        juce::PopupMenu menu;
+        menu.addSectionHeader ("Input for " + session.getTrackName (trackIndex));
+        menu.addSubMenu ("Channel", channelMenu);
+        menu.addSubMenu ("Layout", layoutMenu);
+
+        juce::Component::SafePointer<MixerPanel> safe (this);
+
+        menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this),
+                            [safe, trackIndex, numChannels] (int result)
+                            {
+                                auto* self = safe.getComponent();
+
+                                if (self == nullptr || result == 0)
+                                    return;
+
+                                auto m = self->session.getTrackInputMapping (trackIndex);
+
+                                if (result >= 100 && result < 100 + numChannels)
+                                    m.firstChannel = result - 100;
+                                else if (result == 200) m.layout = InputLayout::Auto;
+                                else if (result == 201) m.layout = InputLayout::Mono;
+                                else if (result == 202) m.layout = InputLayout::Stereo;
+                                else if (result == 203) m.layout = InputLayout::MultiChannel;
+
+                                // Keep the channel count coherent with the layout:
+                                // Multi uses every remaining hardware channel.
+                                if (m.layout == InputLayout::MultiChannel)
+                                    m.numChannels = juce::jmax (1, numChannels - m.firstChannel);
+                                else if (m.layout == InputLayout::Stereo)
+                                    m.numChannels = 2;
+                                else
+                                    m.numChannels = 1;
+
+                                self->session.setTrackInputMapping (trackIndex, m);
+                                self->rebuildStrips();
+                                self->repaint();
+                            });
     }
 
     void MixerPanel::mouseDoubleClick (const juce::MouseEvent& e)

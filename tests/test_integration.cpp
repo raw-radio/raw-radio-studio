@@ -428,6 +428,44 @@ TEST_CASE ("imported audio file is referenced on a new track and survives save/o
 }
 
 //==============================================================================
+// FR-REC-3 (Epic 2): a per-track input assignment (hardware channel + layout)
+// must survive a save/open round-trip in the native project format, so a mapped
+// 4-in session reopens with each track still pointing at its own input.
+TEST_CASE ("per-track input mapping survives save/open (FR-REC-3)")
+{
+    auto dir = scratchDirectory ("input-mapping-persist");
+    auto editFile = dir.getChildFile ("Mapping.tracktionedit");
+
+    AudioEngine audio (false);
+    Session session (audio);
+
+    REQUIRE (session.createNew (editFile));
+    REQUIRE (session.getNumAudioTracks() == 1);
+    REQUIRE (session.addAudioTrack() >= 0);
+    REQUIRE (session.addAudioTrack() >= 0);
+    REQUIRE (session.getNumAudioTracks() == 3);
+
+    const InputMapping mono { 2, 1, InputLayout::Mono };
+    const InputMapping stereo { 1, 2, InputLayout::Stereo };
+
+    REQUIRE (session.setTrackInputMapping (0, mono));
+    REQUIRE (session.setTrackInputMapping (1, stereo));
+
+    // The setter persists immediately; a fresh Session opening the file must see
+    // the exact same assignments.
+    Session reopened (audio);
+    REQUIRE (reopened.open (editFile));
+    REQUIRE (reopened.getNumAudioTracks() == 3);
+
+    CHECK (reopened.getTrackInputMapping (0) == mono);
+    CHECK (reopened.getTrackInputMapping (1) == stereo);
+    CHECK (reopened.getTrackInputMapping (2) == InputMapping { 2, 1, InputLayout::Mono });
+
+    session.close();
+    reopened.close();
+}
+
+//==============================================================================
 TEST_CASE ("autosave writes the .tmp_ sibling and detectRecovery finds it")
 {
     auto dir = scratchDirectory ("recovery");

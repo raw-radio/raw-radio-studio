@@ -86,6 +86,11 @@ namespace rrs
         bool setTrackInputMapping (int trackIndex, const InputMapping&);
         InputMapping getTrackInputMapping (int trackIndex) const;
 
+        /** Number of currently active hardware input channels on the open device
+            (0 when no device is open). Used by the UI to offer valid input
+            assignments (FR-REC-3). */
+        int getNumInputChannels() const;
+
         //==============================================================================
         // Audio import (Epic 1 backing-track playback)
         /** Imports an audio file as a referenced clip on a new audio track

@@ -46,6 +46,7 @@ namespace rrs
             juce::Rectangle<int> strip;
             juce::Rectangle<int> name;
             juce::Rectangle<int> arm;   ///< Track: record-arm chip (FR-REC-2). Unused on master.
+            juce::Rectangle<int> input; ///< Track: input-mapping chip (FR-REC-3). Unused on master.
             juce::Rectangle<int> meter;
             juce::Rectangle<int> fader;
             juce::Rectangle<int> pan;
@@ -69,6 +70,9 @@ namespace rrs
         void drawStrip (juce::Graphics&, const StripControls&, const MeterVisual&, float gainDb,
                         float pan, bool muted, bool soloed, bool armed);
         void drawMeter (juce::Graphics&, juce::Rectangle<int>, const MeterVisual&);
+
+        /** Opens the per-track input-assignment popup (channel + layout, FR-REC-3). */
+        void showInputMenu (int trackIndex);
 
         static float normaliseDb (float db) noexcept;
 

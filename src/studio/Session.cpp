@@ -307,6 +307,11 @@ namespace rrs
         return readTrackMapping (trackIndex);
     }
 
+    int Session::getNumInputChannels() const
+    {
+        return audio.getNumActiveInputChannels();
+    }
+
     bool Session::setTrackInputMapping (int trackIndex, const InputMapping& mapping)
     {
         auto* track = getTrack (trackIndex);
