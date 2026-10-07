@@ -124,6 +124,7 @@ target_sources(raw_radio_studio PRIVATE
     src/studio/WavExport.cpp
     src/ui/DevicePanel.cpp
     src/ui/InputMeter.cpp
+    src/ui/BrandLookAndFeel.cpp
     src/ui/MainComponent.cpp)
 
 juce_generate_juce_header(raw_radio_studio)

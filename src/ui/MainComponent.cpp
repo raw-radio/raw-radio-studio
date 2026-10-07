@@ -4,6 +4,7 @@
 
 #include "studio/AppPaths.h"
 #include "studio/AudioImport.h"
+#include "ui/BrandColours.h"
 #include "ui/DevicePanelLayout.h"
 
 #include <array>
@@ -26,10 +27,10 @@ namespace rrs
         loadSettings();
 
         titleLabel.setFont (juce::Font { juce::FontOptions { 18.0f, juce::Font::bold } });
-        titleLabel.setColour (juce::Label::textColourId, juce::Colours::white);
-        transportLabel.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.8f));
+        titleLabel.setColour (juce::Label::textColourId, brand::textPrimary);
+        transportLabel.setColour (juce::Label::textColourId, brand::textSecondary);
         transportLabel.setJustificationType (juce::Justification::centredLeft);
-        statusLabel.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.8f));
+        statusLabel.setColour (juce::Label::textColourId, brand::textSecondary);
         statusLabel.setJustificationType (juce::Justification::centredLeft);
 
         addAndMakeVisible (titleLabel);
@@ -205,7 +206,7 @@ namespace rrs
         statusMessage = message;
         statusIsError = isError;
         statusLabel.setColour (juce::Label::textColourId,
-                               isError ? juce::Colour (0xfff87171) : juce::Colours::white.withAlpha (0.8f));
+                               isError ? brand::errorText : brand::textSecondary);
         statusLabel.setText (message, juce::dontSendNotification);
     }
 
@@ -698,14 +699,14 @@ namespace rrs
     //==============================================================================
     void MainComponent::paint (juce::Graphics& g)
     {
-        g.fillAll (juce::Colour (0xff0f172a));
+        g.fillAll (brand::bgWindow);
 
         // Track lanes: the armed record track first, then any imported backing
         // tracks. Each import adds its own lane so it is visible after import.
         if (! trackLaneArea.isEmpty())
         {
-            g.setColour (juce::Colour (0xff1e293b));
-            g.fillRoundedRectangle (trackLaneArea.toFloat(), 6.0f);
+            g.setColour (brand::bgPanel);
+            g.fillRoundedRectangle (trackLaneArea.toFloat(), 8.0f);
 
             auto lanes = trackLaneArea.reduced (8, 6);
 
@@ -715,10 +716,12 @@ namespace rrs
 
                 if (tracks.isEmpty())
                 {
-                    g.setColour (juce::Colours::white.withAlpha (0.7f));
+                    g.setColour (brand::textSecondary);
                     g.setFont (13.0f);
                     g.drawText ("No session loaded", lanes, juce::Justification::centred);
                 }
+
+                int index = 0;
 
                 for (auto* track : tracks)
                 {
@@ -726,14 +729,23 @@ namespace rrs
                         break;
 
                     auto lane = lanes.removeFromTop (juce::jmin (46, lanes.getHeight()));
+                    const auto armed = track == session.getTrack() && session.isTrackArmed();
 
-                    if (track != tracks.getFirst())
-                        g.setColour (juce::Colour (0xff243449));
-                    else
-                        g.setColour (juce::Colour (0xff2b3b52));
-                    g.fillRoundedRectangle (lane.toFloat().reduced (0.0f, 2.0f), 5.0f);
+                    // Neutral zebra: never encode "armed" as a blue tint. Armed
+                    // lanes use laneArmed plus a 3 px left accent stripe.
+                    const auto laneFill = armed ? brand::laneArmed
+                                                : (index % 2 == 0 ? brand::lane : brand::laneAlt);
 
-                    const bool armed = track == session.getTrack() && session.isTrackArmed();
+                    auto laneRect = lane.toFloat().reduced (0.0f, 2.0f);
+                    g.setColour (laneFill);
+                    g.fillRoundedRectangle (laneRect, 5.0f);
+
+                    if (armed)
+                    {
+                        // 3 px accent stripe flush with the rounded lane's left edge.
+                        g.setColour (brand::accent);
+                        g.fillRoundedRectangle (laneRect.withWidth (3.0f), 1.5f);
+                    }
 
                     // Two non-overlapping text rows inside the lane: the track
                     // name in the top ~20 px, the clip count in the ~16 px below
@@ -743,20 +755,22 @@ namespace rrs
                     auto nameArea = inner.removeFromTop (20);
                     auto clipArea = inner.removeFromTop (16);
 
-                    g.setColour (juce::Colours::white.withAlpha (0.9f));
+                    g.setColour (brand::textPrimary);
                     g.setFont (13.0f);
                     g.drawText (track->getName() + (armed ? "   [ARMED]" : ""),
                                 nameArea, juce::Justification::centredLeft);
 
-                    g.setColour (juce::Colours::white.withAlpha (0.55f));
+                    g.setColour (brand::textTertiary);
                     g.setFont (11.0f);
                     g.drawText (juce::String (track->getClips().size()) + " clip(s)",
                                 clipArea, juce::Justification::centredLeft);
+
+                    ++index;
                 }
             }
             else
             {
-                g.setColour (juce::Colours::white.withAlpha (0.7f));
+                g.setColour (brand::textSecondary);
                 g.setFont (13.0f);
                 g.drawText ("No session loaded", lanes, juce::Justification::centred);
             }

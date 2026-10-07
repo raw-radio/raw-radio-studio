@@ -2,6 +2,7 @@
 
 #include "DevicePanel.h"
 
+#include "BrandColours.h"
 #include "DevicePanelLayout.h"
 
 namespace rrs
@@ -12,7 +13,7 @@ namespace rrs
         for (auto* label : { &typeLabel, &deviceLabel, &rateLabel, &bufferLabel })
         {
             label->setJustificationType (juce::Justification::centredLeft);
-            label->setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.75f));
+            label->setColour (juce::Label::textColourId, brand::textSecondary);
             addAndMakeVisible (*label);
         }
 
@@ -29,11 +30,11 @@ namespace rrs
         addAndMakeVisible (rescanButton);
 
         statusLabel.setJustificationType (juce::Justification::centredLeft);
-        statusLabel.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.85f));
+        statusLabel.setColour (juce::Label::textColourId, brand::textSecondary);
         addAndMakeVisible (statusLabel);
 
         errorLabel.setJustificationType (juce::Justification::topLeft);
-        errorLabel.setColour (juce::Label::textColourId, juce::Colour (0xfff87171));
+        errorLabel.setColour (juce::Label::textColourId, brand::errorText);
         errorLabel.setMinimumHorizontalScale (1.0f);
         addAndMakeVisible (errorLabel);
 
@@ -206,10 +207,10 @@ namespace rrs
     //==============================================================================
     void DevicePanel::paint (juce::Graphics& g)
     {
-        g.setColour (juce::Colour (0xff1e293b));
-        g.fillRoundedRectangle (getLocalBounds().toFloat(), 6.0f);
+        g.setColour (brand::bgPanel);
+        g.fillRoundedRectangle (getLocalBounds().toFloat(), 8.0f);
 
-        g.setColour (juce::Colours::white.withAlpha (0.9f));
+        g.setColour (brand::textPrimary);
         g.setFont (14.0f);
         g.drawText ("Audio device", getLocalBounds().reduced (12).removeFromTop (18),
                     juce::Justification::centredLeft);

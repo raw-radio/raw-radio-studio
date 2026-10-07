@@ -3,6 +3,7 @@
 #include "InputMeter.h"
 
 #include "../studio/Session.h"
+#include "BrandColours.h"
 
 namespace rrs
 {
@@ -60,7 +61,7 @@ namespace rrs
         auto bounds = getLocalBounds().reduced (4);
         auto titleRow = bounds.removeFromTop (16);
 
-        g.setColour (juce::Colours::white.withAlpha (0.7f));
+        g.setColour (brand::textSecondary);
         g.setFont (12.0f);
         g.drawText ("Input", titleRow, juce::Justification::centredLeft);
 
@@ -79,11 +80,11 @@ namespace rrs
         auto valueArea = area.removeFromRight (52);
         auto barArea = area.reduced (1, 2);
 
-        g.setColour (juce::Colours::white.withAlpha (0.65f));
+        g.setColour (brand::textTertiary);
         g.setFont (11.0f);
         g.drawText (name, labelArea, juce::Justification::centred);
 
-        g.setColour (juce::Colours::black.withAlpha (0.5f));
+        g.setColour (brand::meterTrough);
         g.fillRoundedRectangle (barArea.toFloat(), 2.0f);
 
         const auto barWidth = (float) barArea.getWidth();
@@ -91,22 +92,22 @@ namespace rrs
         const auto peakWidth = barWidth * normaliseDb (state.peak);
         const auto holdX     = (float) barArea.getX() + barWidth * normaliseDb (state.hold);
 
-        g.setColour (juce::Colour (0xff4ade80));
+        g.setColour (brand::vuGreen);
         g.fillRoundedRectangle (barArea.toFloat().withWidth (rmsWidth), 2.0f);
 
-        g.setColour (juce::Colour (0xfffacc15));
+        g.setColour (brand::vuYellow);
         g.fillRect (juce::Rectangle<float> ((float) barArea.getX() + peakWidth - 1.0f,
                                             (float) barArea.getY(), 2.0f, (float) barArea.getHeight()));
 
         if (state.hold > 0.0f)
         {
-            g.setColour (juce::Colours::red);
+            g.setColour (brand::vuRed);
             g.fillRect (juce::Rectangle<float> (holdX, (float) barArea.getY(),
                                                 2.0f, (float) barArea.getHeight()));
         }
 
         const auto peakDb = juce::Decibels::gainToDecibels (state.peak, minDb);
-        g.setColour (juce::Colours::white.withAlpha (0.85f));
+        g.setColour (brand::textSecondary);
         g.setFont (11.0f);
         g.drawText (juce::String (peakDb, 1) + " dB",
                     valueArea, juce::Justification::centredRight);

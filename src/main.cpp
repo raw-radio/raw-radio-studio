@@ -14,6 +14,7 @@
 #include <memory>
 
 #include "studio/AudioEngine.h"
+#include "ui/BrandLookAndFeel.h"
 #include "ui/MainComponent.h"
 
 #ifndef RAW_RADIO_STUDIO_VERSION
@@ -410,10 +411,23 @@ public:
             return;
         }
 
+        // Brand theme: install the RAW Radio LookAndFeel before any window (and
+        // therefore before any child component) is created, so the DocumentWindow
+        // background and every stock component resolve the brand colour IDs.
+        brandLookAndFeel = std::make_unique<rrs::BrandLookAndFeel>();
+        juce::LookAndFeel::setDefaultLookAndFeel (brandLookAndFeel.get());
+
         mainWindow = std::make_unique<MainWindow>();
     }
 
-    void shutdown() override { mainWindow.reset(); }
+    void shutdown() override
+    {
+        // Destroy the window (and its components) before the LookAndFeel it
+        // resolves colours from.
+        mainWindow.reset();
+        juce::LookAndFeel::setDefaultLookAndFeel (nullptr);
+        brandLookAndFeel.reset();
+    }
 
     void systemRequestedQuit() override { quit(); }
 
@@ -447,6 +461,7 @@ private:
     };
 
     std::unique_ptr<MainWindow> mainWindow;
+    std::unique_ptr<rrs::BrandLookAndFeel> brandLookAndFeel;
 };
 
 // Custom entry point (macOS/Linux use a plain `main`; Windows is not a target).
