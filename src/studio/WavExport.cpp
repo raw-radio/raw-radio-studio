@@ -27,15 +27,22 @@ namespace rrs
         // before the render is built) guarantees an enabled metronome is never
         // baked into the exported WAV. The previous state is restored in every
         // completion path below, on the message thread.
-        const bool metronomeWasEnabled = edit.clickTrackEnabled.get();
+        //
+        // The click state is captured as its (ref-counted) ValueTree rather than
+        // a raw `Edit*`: the completion callback is dispatched asynchronously and
+        // must not dereference an Edit that may have been torn down in the
+        // meantime. The ValueTree copy stays valid on its own.
+        auto clickState = std::make_shared<juce::ValueTree> (
+            edit.state.getOrCreateChildWithName (te::IDs::CLICKTRACK, nullptr));
+        const bool metronomeWasEnabled = (bool) clickState->getProperty (te::IDs::active, false);
 
         if (suppressMetronome)
-            edit.clickTrackEnabled = false;
+            clickState->setProperty (te::IDs::active, false, nullptr);
 
-        const auto restoreMetronome = [&edit, metronomeWasEnabled, suppressMetronome]
+        const auto restoreMetronome = [clickState, metronomeWasEnabled, suppressMetronome]
         {
             if (suppressMetronome)
-                edit.clickTrackEnabled = metronomeWasEnabled;
+                clickState->setProperty (te::IDs::active, metronomeWasEnabled, nullptr);
         };
 
         const auto fail = [callback, destination, restoreMetronome] (const juce::String& message)
