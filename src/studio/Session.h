@@ -245,6 +245,17 @@ namespace rrs
         /** When true the click is only audible while recording (typical overdub). */
         void setMetronomeRecordingOnly (bool);
         bool isMetronomeRecordingOnly() const;
+
+        /** Sets the count-in used for the next recording pass.
+
+            Tracktion keeps the count-in in the user-global `Settings.xml`
+            (`SettingID::countInMode`), NOT on the `Edit`, so by itself it would
+            leak across sessions and is never saved with the project. To make it
+            a genuine per-session setting, Session stores the value on the Edit's
+            state tree (`rrsCountInMode`), re-applies it to the engine whenever it
+            changes and again in `record()` right before the transport rolls, and
+            restores it in `createOrOpenEdit()`. The count-in is therefore
+            honoured on record start regardless of the user-global value. */
         void setCountInMode (tracktion::Edit::CountIn);
         tracktion::Edit::CountIn getCountInMode() const;
         int getCountInBeats() const;
@@ -385,6 +396,11 @@ namespace rrs
         InputLevels inputLevels;
         int autosaveIntervalSeconds = 30;
         double lastAutosaveMs = 0.0;
+
+        /** Per-session count-in (FR-REC-10). Source of truth for the UI and for
+            `record()`; mirrored onto the engine at apply time (see
+            `setCountInMode`). */
+        tracktion::Edit::CountIn countInMode = tracktion::Edit::CountIn::none;
 
         /** Master fader value (dB) and app-level mute. Tracktion has no dedicated
             master mute, so muting is applied by overriding the master volume

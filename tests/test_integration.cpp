@@ -2109,6 +2109,160 @@ TEST_CASE ("metronome: enabling the click produces audible output (measured)")
 }
 
 //==============================================================================
+// FR-REC-10 (target): the count-in must genuinely delay the start of recording,
+// and the delay must grow with the selected mode. This also guards the fix for
+// the "countInMode global-property" bug: Tracktion keeps the count-in in the
+// user-global Settings.xml (`SettingID::countInMode`), so Session now mirrors it
+// on the Edit state and re-applies it in `record()` right before the roll.
+namespace
+{
+    struct CountInPass
+    {
+        double clipSeconds = 0.0;   ///< Recorded take length.
+        float outputPeak = 0.0f;    ///< Max |output| over the pass (input + click).
+    };
+
+    /** Records `blocks` blocks of a constant input through the hosted device and
+        returns the recorded clip length + the max output peak. `clobberEngine`
+        simulates another actor changing the engine's user-global count-in after
+        Session set its own value, to prove `record()` re-asserts the session's. */
+    CountInPass runCountInPass (te::Edit::CountIn mode, int blocks, int suffix,
+                                bool clobberEngine = false)
+    {
+        auto dir = scratchDirectory ("countin-" + juce::String (suffix));
+
+        AudioEngine audio (false);
+        Session session (audio);
+        REQUIRE (session.createNew (dir.getChildFile ("CountIn.tracktionedit")));
+
+        te::HostedAudioDeviceInterface::Parameters params;
+        params.sampleRate = 48000.0;
+        params.blockSize = 256;
+        params.inputChannels = 2;
+        params.outputChannels = 2;
+
+        auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+
+        for (int i = 0; i < 200; ++i)
+        {
+            audio.deviceManager().dispatchPendingUpdates();
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+            if (session.isInputConfigured())
+                break;
+
+            session.reconfigureInputs();
+        }
+
+        REQUIRE (session.isInputConfigured());
+        REQUIRE (session.setTrackArmed (0, true));
+
+        // The Click toggle is OFF on purpose: the count-in click is its own
+        // function and must be audible while recording even when the metronome
+        // is not enabled for playback.
+        session.setMetronomeEnabled (false);
+        session.setCountInMode (mode);
+
+        if (clobberEngine)
+            session.getEdit()->setCountInMode (te::Edit::CountIn::none);
+
+        session.getEdit()->getTransport().setPosition (te::TimePosition {});
+
+        juce::AudioBuffer<float> input (2, 256);
+
+        for (int ch = 0; ch < 2; ++ch)
+            for (int s = 0; s < input.getNumSamples(); ++s)
+                input.setSample (ch, s, 0.5f);
+
+        REQUIRE (session.record());
+
+        CountInPass result;
+
+        for (int block = 0; block < blocks; ++block)
+        {
+            auto output = player->process (input);
+            result.outputPeak = juce::jmax (result.outputPeak,
+                                            output.getMagnitude (0, output.getNumSamples()));
+        }
+
+        session.stop();
+
+        for (int i = 0; i < 200; ++i)
+        {
+            session.getEdit()->dispatchPendingUpdatesSynchronously();
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (20);
+        }
+
+        if (auto* track = session.getTrack (0))
+            for (auto* clip : track->getClips())
+                result.clipSeconds = juce::jmax (result.clipSeconds,
+                                                 clip->getPosition().getLength().inSeconds());
+
+        session.setTrackArmed (0, false);
+        session.setMonitoringEnabled (false);
+        session.close();
+        return result;
+    }
+}
+
+TEST_CASE ("count-in delays the start of recording and grows with the mode (measured)")
+{
+    // 500 blocks x 256 / 48000 = 2.66667 s of processed audio per pass.
+    constexpr int blocks = 500;
+    constexpr double processedSeconds = blocks * 256.0 / 48000.0;
+
+    // At the default 120 BPM / 4/4, one beat = 0.5 s. Tracktion's pre-roll is
+    // (numCountInBeats + 0.5) beats, so the recording start is delayed by:
+    //   oneBeat -> 1.5 beats = 0.75 s, oneBar -> 4.5 beats = 2.25 s.
+    constexpr double oneBeatDelay = 0.75;
+    constexpr double oneBarDelay  = 2.25;
+
+    const auto none = runCountInPass (te::Edit::CountIn::none,    blocks, 1);
+    const auto beat = runCountInPass (te::Edit::CountIn::oneBeat, blocks, 2);
+    const auto bar  = runCountInPass (te::Edit::CountIn::oneBar,  blocks, 3);
+
+    INFO ("processed " << processedSeconds << " s");
+    INFO ("none len " << none.clipSeconds << " peak " << none.outputPeak);
+    INFO ("oneBeat len " << beat.clipSeconds << " peak " << beat.outputPeak);
+    INFO ("oneBar len " << bar.clipSeconds << " peak " << bar.outputPeak);
+
+    // Without a count-in the whole processed span is captured.
+    CHECK (none.clipSeconds == doctest::Approx (processedSeconds).epsilon (0.03));
+
+    // Each mode delays the take by its count-in length.
+    CHECK (beat.clipSeconds == doctest::Approx (processedSeconds - oneBeatDelay).epsilon (0.04));
+    CHECK (bar.clipSeconds  == doctest::Approx (processedSeconds - oneBarDelay).epsilon (0.06));
+
+    // Longer count-in => shorter take for the same amount of processed audio.
+    CHECK (none.clipSeconds > beat.clipSeconds);
+    CHECK (beat.clipSeconds > bar.clipSeconds);
+
+    // ...and the mode value the Session reports must match what it applied.
+    CHECK (none.clipSeconds > 0.0);
+
+    // The count-in click is audible (its own function, independent of the
+    // Click toggle): the one-beat pre-roll adds click energy on top of the
+    // constant input, so its peak is clearly above the count-in-off pass.
+    CHECK (beat.outputPeak > none.outputPeak + 0.1f);
+}
+
+TEST_CASE ("record re-applies the session count-in even if the engine global changed (FR-REC-10)")
+{
+    constexpr int blocks = 500;
+    constexpr double processedSeconds = blocks * 256.0 / 48000.0;
+    constexpr double oneBarDelay = 2.25;
+
+    // Select one bar, then clobber the engine's user-global count-in to none
+    // (as another edit / a stale Settings.xml value would). `record()` must
+    // re-assert the session's value, so the take is still delayed by one bar.
+    const auto pass = runCountInPass (te::Edit::CountIn::oneBar, blocks, 4, /*clobberEngine*/ true);
+
+    INFO ("clobbered len " << pass.clipSeconds);
+    CHECK (pass.clipSeconds == doctest::Approx (processedSeconds - oneBarDelay).epsilon (0.06));
+}
+
+
+//==============================================================================
 // NFR-IO-4 / FR-MON-5: on Linux, ALSA hardware is opened directly and a failure
 // to do so is surfaced loudly — never a silent fallback to PipeWire/Pulse/JACK.
 // The policy logic itself is unit-tested on every platform in test_studio.cpp;

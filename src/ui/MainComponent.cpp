@@ -54,6 +54,15 @@ namespace rrs
 
         addAndMakeVisible (countInBox);
 
+        // Transport-left "Count-in" caption so the combo next to the Click
+        // button is unambiguous (the owner found the bare combo unclear). The
+        // label is themed like the other transport chrome.
+        countInLabel.setText ("Count-in", juce::dontSendNotification);
+        countInLabel.setFont (brand::uiRegular (12.0f));
+        countInLabel.setColour (juce::Label::textColourId, brand::textSecondary);
+        countInLabel.setJustificationType (juce::Justification::centredRight);
+        addAndMakeVisible (countInLabel);
+
         buildTransportUi();
 
         // Arm and Monitor are toggle chips with distinct on-states: arm uses the
@@ -129,8 +138,10 @@ namespace rrs
 
         metronomeButton.setIconName ("metronome");
         metronomeButton.setIconOnly (true, 36);
-        metronomeButton.setTooltip ("Metronome / count-in click");
-        countInBox.setTooltip ("Count-in before recording starts");
+        metronomeButton.setTooltip ("Metronome click: on = click audible during play and record; off = click only during count-in");
+        countInBox.setTooltip ("Count-in before recording: click 1-2 beats or 1-2 bars before the take starts. "
+                               "Saved with the session; only affects recording, not plain playback.");
+        countInLabel.setTooltip ("Count-in before recording (see the combo)");
 
         // Shorter labels (the "Count-in: " prefix was redundant with the
         // tooltip and made the combo wider than the transport row could spare
@@ -285,7 +296,17 @@ namespace rrs
             if (exportInProgress)
                 return;
 
-            session.setCountInMode ((te::Edit::CountIn) juce::jmax (0, countInBox.getSelectedId() - 1));
+            const auto mode = (te::Edit::CountIn) juce::jmax (0, countInBox.getSelectedId() - 1);
+            session.setCountInMode (mode);
+
+            // Immediate feedback so the control's effect is obvious even before
+            // the next record pass: count-in is a *record* feature.
+            if (mode == te::Edit::CountIn::none)
+                showStatus ("Count-in: off (recording starts immediately).");
+            else
+                showStatus ("Count-in: " + juce::String (session.getCountInBeats())
+                            + " beat(s) before recording starts.");
+
             refreshTransportUi();
         };
 
@@ -355,7 +376,17 @@ namespace rrs
             button->setEnabled (hasEdit && ! busy);
 
         countInBox.setEnabled (hasEdit && ! busy);
+        countInLabel.setEnabled (hasEdit && ! busy);
         countInBox.setSelectedId ((int) session.getCountInMode() + 1, juce::dontSendNotification);
+
+        // Visual confirmation that a count-in is armed: the selected value is
+        // tinted with the accent colour (off stays neutral).
+        const bool countInActive = session.getCountInMode() != te::Edit::CountIn::none;
+        countInBox.setColour (juce::ComboBox::textColourId,
+                              (hasEdit && countInActive) ? brand::accent : brand::textPrimary);
+        countInBox.setColour (juce::ComboBox::outlineColourId,
+                              (hasEdit && countInActive) ? brand::accent : brand::border);
+
         metronomeButton.setToggleState (session.isMetronomeEnabled(), juce::dontSendNotification);
 
         addTrackButton.setEnabled (hasEdit && ! busy);
@@ -1028,9 +1059,9 @@ namespace rrs
 
         // Transport row: icon-only squares (>= 32x32) with consistent 8 px gaps.
         // Record is 40x40 to keep its emphasis; the rest are 36x36, vertically
-        // centred in the 40 px row. The Click button is icon-only (timer) and
-        // the count-in is a compact combo, so the row never overflows at the
-        // minimum window size.
+        // centred in the 40 px row. The Click button is icon-only (metronome),
+        // followed by a "Count-in" caption + compact combo, so the row never
+        // overflows at the minimum window size.
         auto transportRow = area.removeFromTop (40);
 
         auto placeTransport = [&transportRow] (BrandButton& b, int size)
@@ -1053,6 +1084,8 @@ namespace rrs
         transportRow.removeFromLeft (8);
         placeTransport (metronomeButton, 36);
         transportRow.removeFromLeft (8);
+        countInLabel.setBounds (transportRow.removeFromLeft (54).withSizeKeepingCentre (54, 20));
+        transportRow.removeFromLeft (6);
         countInBox.setBounds (transportRow.removeFromLeft (110).withSizeKeepingCentre (110, 28));
         transportRow.removeFromLeft (8);
 

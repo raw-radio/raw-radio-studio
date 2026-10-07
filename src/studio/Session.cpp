@@ -25,6 +25,11 @@ namespace rrs
         const juce::Identifier idLayout       { "rrsInputLayout" };
         const juce::Identifier idInputGainDb  { "rrsInputGainDb" };
 
+        // Per-session count-in. Tracktion stores the count-in in the user-global
+        // Settings.xml, so the app keeps its own copy on the Edit state tree to
+        // make it survive save/open and to re-apply it at record start.
+        const juce::Identifier idCountInMode  { "rrsCountInMode" };
+
         // Record trim range: enough to rescue a quiet mic without absurd boosts.
         constexpr float minInputGainDb = -24.0f;
         constexpr float maxInputGainDb =  24.0f;
@@ -286,6 +291,20 @@ namespace rrs
         // Normalise the plugin to the restored state (no-op when already
         // consistent, so opening an unchanged session stays clean).
         applyMasterGain();
+
+        // Count-in (FR-REC-10) is a per-session property. Restore it from the
+        // Edit state and re-apply it to the engine, whose own copy lives in the
+        // user-global Settings.xml. Sessions written before the property existed
+        // seed from the engine's current value so behaviour is unchanged for
+        // them, while every subsequent change is saved with the project.
+        if (edit->state.hasProperty (idCountInMode))
+            countInMode = static_cast<te::Edit::CountIn> (
+                juce::jlimit (0, (int) te::Edit::CountIn::oneBeat,
+                              (int) edit->state.getProperty (idCountInMode, 0)));
+        else
+            countInMode = edit->getCountInMode();
+
+        edit->setCountInMode (countInMode);
 
         // Direct recorded takes into <sessionDir>/Recordings/.
         audio.behaviour().setRecordingsDirectory (paths::recordingsDirectoryFor (file));
@@ -1095,6 +1114,12 @@ namespace rrs
         // first block of monitoring. Other (backing/minus) tracks keep playing.
         beginRecordPassMutes();
 
+        // Re-assert the session's count-in on the engine immediately before the
+        // roll. The engine keeps it in the user-global Settings.xml, so without
+        // this a value changed elsewhere would silently alter this take's
+        // pre-roll (the "count-in mode not applied to the edit" bug).
+        edit->setCountInMode (countInMode);
+
         edit->getTransport().record (false);
         return true;
     }
@@ -1354,16 +1379,27 @@ namespace rrs
 
     void Session::setCountInMode (te::Edit::CountIn mode)
     {
+        // Clamp to the known enum range (0..4) so a persisted/garbage value can
+        // never index a bad switch arm in `getNumCountInBeats()`.
+        const auto clamped = static_cast<te::Edit::CountIn> (
+            juce::jlimit (0, (int) te::Edit::CountIn::oneBeat, (int) mode));
+
+        countInMode = clamped;
+
         if (edit != nullptr)
         {
-            edit->setCountInMode (mode);
-            sendChangeMessage();
+            // Apply immediately (so `getCountInBeats()`/the transport see it) and
+            // persist on the Edit state so it survives save/open.
+            edit->setCountInMode (clamped);
+            edit->state.setProperty (idCountInMode, (int) clamped, nullptr);
         }
+
+        sendChangeMessage();
     }
 
     tracktion::Edit::CountIn Session::getCountInMode() const
     {
-        return edit != nullptr ? edit->getCountInMode() : te::Edit::CountIn::none;
+        return edit != nullptr ? countInMode : te::Edit::CountIn::none;
     }
 
     int Session::getCountInBeats() const

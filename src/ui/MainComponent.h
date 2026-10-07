@@ -110,6 +110,7 @@ namespace rrs
         BrandButton goToStartButton { "Start", BrandButton::Style::Transport };
         BrandButton monitorButton { "Monitor", BrandButton::Style::Chip };
         BrandButton metronomeButton { "Click", BrandButton::Style::Chip };
+        juce::Label countInLabel;
         juce::ComboBox countInBox;
 
         juce::Label titleLabel, transportLabel, statusLabel;
