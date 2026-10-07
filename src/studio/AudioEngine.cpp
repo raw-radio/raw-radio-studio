@@ -11,6 +11,50 @@ namespace rrs
 {
     namespace te = tracktion;
 
+    namespace
+    {
+        /** A PropertyStorage that keeps a headless test Engine away from the
+            developer's real user settings.
+
+            Tracktion persists global preferences (notably `countInMode`) in the
+            shared per-user `Settings.xml`, and `Edit::getCountInMode()` reads
+            them back for every new edit. A stale GUI value would therefore
+            silently change a headless integration test's outcome: a record test
+            that pumps less audio than the saved count-in length captures nothing
+            and sees zero recorded clips. Tracktion's tests are supposed to be
+            hermetic (`AudioEngine(false)` already suppresses device
+            auto-initialisation), so give each test engine its own throwaway
+            prefs folder and remove it on teardown. The production path
+            (`useAudioDevices == true`) still uses the real user settings. */
+        class IsolatedPropertyStorage final : public te::PropertyStorage
+        {
+        public:
+            IsolatedPropertyStorage()
+                : te::PropertyStorage ("raw-radio-studio-headless")
+            {
+                folder = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                             .getChildFile ("raw-radio-studio-headless-"
+                                            + juce::Uuid().toDashedString());
+            }
+
+            ~IsolatedPropertyStorage() override
+            {
+                folder.deleteRecursively();
+            }
+
+            juce::File getAppPrefsFolder() override
+            {
+                folder.createDirectory();
+                return folder;
+            }
+
+        private:
+            juce::File folder;
+
+            JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (IsolatedPropertyStorage)
+        };
+    }
+
     //==============================================================================
     void StudioEngineBehaviour::setRecordingsDirectory (juce::File newDirectory)
     {
@@ -53,7 +97,19 @@ namespace rrs
         // for engine-level warnings. When `useAudioDevices` is false (tests) the
         // behaviour also suppresses device auto-initialisation.
         auto behaviour = std::make_unique<StudioEngineBehaviour> (useAudioDevices);
-        enginePtr = std::make_unique<te::Engine> ("raw-radio-studio", nullptr, std::move (behaviour));
+
+        if (useAudioDevices)
+        {
+            enginePtr = std::make_unique<te::Engine> ("raw-radio-studio", nullptr, std::move (behaviour));
+        }
+        else
+        {
+            // Tests: isolate the global property storage (see
+            // IsolatedPropertyStorage) so a developer's real GUI settings — e.g.
+            // a saved count-in mode — can never change a test's outcome.
+            enginePtr = std::make_unique<te::Engine> (std::make_unique<IsolatedPropertyStorage>(),
+                                                      nullptr, std::move (behaviour));
+        }
 
         enforceDirectAlsaOnStartup();
         ensureDefaultSampleRateOnFirstRun();
