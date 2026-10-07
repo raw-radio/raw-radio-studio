@@ -81,13 +81,18 @@ namespace rrs
     {
         stopTimer();
         detachMeter();
+        detachMeters();
 
         if (edit != nullptr)
         {
             // Best-effort autosave so an accidental quit still leaves a recoverable
             // temp version (the lock file is removed, so this is not flagged unclean).
-            te::EditFileOperations ops (*edit);
-            ops.saveTempVersion (false);
+            // The EditFileOperations object must be destroyed *before* the Edit:
+            // its destructor touches the Edit's engine/project manager.
+            {
+                te::EditFileOperations ops (*edit);
+                ops.saveTempVersion (false);
+            }
 
             edit.reset();
         }
@@ -164,6 +169,7 @@ namespace rrs
 
         startTimerHz (10);
         lastAutosaveMs = juce::Time::getMillisecondCounterHiRes();
+        refreshMetersIfNeeded();
         clearLastError();
         return true;
     }
@@ -380,6 +386,8 @@ namespace rrs
     {
         if (edit == nullptr)
             return false;
+
+        refreshMetersIfNeeded();
 
         // Epic 1: a brand-new session starts with one input track. Note that
         // `createEmptyEdit` already adds a default track, so we mark/rename the
@@ -907,6 +915,7 @@ namespace rrs
 
         stopTimer();
         detachMeter();
+        detachMeters();
 
         // Halt playback/recording before the Edit is torn down.
         edit->getTransport().stop (false, false);
@@ -914,8 +923,12 @@ namespace rrs
         // Drop any autosave temp version *before* the Edit goes away: a
         // deliberately-closed project must leave no stale recovery artifact
         // behind (otherwise the next launch would prompt for a resolved session).
-        te::EditFileOperations ops (*edit);
-        ops.deleteTempVersion();
+        // Scoped so EditFileOperations is destroyed before the Edit it references
+        // (its destructor touches the Edit's engine/project manager).
+        {
+            te::EditFileOperations ops (*edit);
+            ops.deleteTempVersion();
+        }
 
         edit.reset();
         editFile = juce::File();
@@ -1123,10 +1136,142 @@ namespace rrs
     }
 
     //==============================================================================
+    // Per-track / master metering (FR-MIX-3). Clients are attached on the message
+    // thread; the engine updates them on the audio thread under a spin lock and
+    // we read+clear them on the UI timer (never the audio thread).
+    void Session::detachMeters()
+    {
+        for (auto& meter : trackMeters)
+            if (meter != nullptr && meter->measurer != nullptr)
+                meter->measurer->removeClient (meter->client);
+
+        trackMeters.clear();
+        metersTrackCount = -1;
+
+        if (masterMeter != nullptr && masterMeter->measurer != nullptr)
+            masterMeter->measurer->removeClient (masterMeter->client);
+
+        masterMeter.reset();
+    }
+
+    void Session::attachMeters()
+    {
+        detachMeters();
+
+        if (edit == nullptr)
+            return;
+
+        const auto tracks = te::getAudioTracks (*edit);
+        trackMeters.reserve ((size_t) tracks.size());
+
+        for (auto* track : tracks)
+        {
+            auto* meterPlugin = track->getLevelMeterPlugin();
+
+            if (meterPlugin == nullptr)
+            {
+                trackMeters.push_back (nullptr);
+                continue;
+            }
+
+            auto meter = std::make_unique<MeterClient>();
+            meter->measurer = &meterPlugin->measurer;
+            meterPlugin->measurer.setMode (te::LevelMeasurer::peakMode);
+            // Pre-size the per-client storage on the message thread so the audio
+            // thread never allocates on its first update.
+            meter->client.setNumChannelsUsed (2);
+            meterPlugin->measurer.addClient (meter->client);
+            trackMeters.push_back (std::move (meter));
+        }
+
+        // Master: reuse an existing master meter plugin if present (it may have
+        // been saved into the project), otherwise add one pass-through meter.
+        te::LevelMeterPlugin* masterPlugin = nullptr;
+
+        for (auto* plugin : edit->getMasterPluginList().getPlugins())
+            if (auto* lm = dynamic_cast<te::LevelMeterPlugin*> (plugin))
+            {
+                masterPlugin = lm;
+                break;
+            }
+
+        if (masterPlugin == nullptr)
+        {
+            auto created = edit->getMasterPluginList().insertPlugin (te::LevelMeterPlugin::create(), -1);
+            masterPlugin = dynamic_cast<te::LevelMeterPlugin*> (created.get());
+            edit->restartPlayback();
+        }
+
+        if (masterPlugin != nullptr)
+        {
+            masterMeter = std::make_unique<MeterClient>();
+            masterMeter->measurer = &masterPlugin->measurer;
+            masterPlugin->measurer.setMode (te::LevelMeasurer::peakMode);
+            masterMeter->client.setNumChannelsUsed (2);
+            masterPlugin->measurer.addClient (masterMeter->client);
+            masterMeterPlugin = masterPlugin;
+        }
+
+        metersTrackCount = tracks.size();
+    }
+
+    void Session::refreshMetersIfNeeded()
+    {
+        if (edit == nullptr)
+        {
+            if (metersTrackCount != -1)
+                detachMeters();
+
+            return;
+        }
+
+        if ((int) te::getAudioTracks (*edit).size() != metersTrackCount)
+            attachMeters();
+    }
+
+    Session::MeterReading Session::readTrackMeter (int trackIndex)
+    {
+        MeterReading reading;
+
+        if (! juce::isPositiveAndBelow (trackIndex, (int) trackMeters.size())
+             || trackMeters[(size_t) trackIndex] == nullptr)
+            return reading;
+
+        auto& meter = *trackMeters[(size_t) trackIndex];
+        const auto channels = meter.client.getNumChannelsUsed();
+
+        for (int ch = 0; ch < 2; ++ch)
+            if (ch < channels)
+                reading.peakDb[ch] = meter.client.getAndClearAudioLevel (ch).dB;
+
+        reading.clipped = meter.client.getAndClearOverload();
+        return reading;
+    }
+
+    Session::MeterReading Session::readMasterMeter()
+    {
+        MeterReading reading;
+
+        if (masterMeter == nullptr)
+            return reading;
+
+        const auto channels = masterMeter->client.getNumChannelsUsed();
+
+        for (int ch = 0; ch < 2; ++ch)
+            if (ch < channels)
+                reading.peakDb[ch] = masterMeter->client.getAndClearAudioLevel (ch).dB;
+
+        reading.clipped = masterMeter->client.getAndClearOverload();
+        return reading;
+    }
+
+    //==============================================================================
     void Session::timerCallback()
     {
         if (edit == nullptr)
             return;
+
+        refreshMetersIfNeeded();
 
         // Input assignment can only complete once the engine has rebuilt its
         // (asynchronous) wave device list. Retry until it succeeds, then persist.

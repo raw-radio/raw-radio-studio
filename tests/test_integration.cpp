@@ -951,6 +951,109 @@ TEST_CASE ("multitrack: four tracks map to four inputs and record simultaneously
 }
 
 //==============================================================================
+// FR-MIX-1 / FR-MIX-3 (Epic 2): the basic mixer's gain/pan/mute/solo and its
+// per-track + master metering. A known-amplitude tone is played back through the
+// real engine and the measured peak is compared to the expected level.
+TEST_CASE ("mixer: gain and mute change the measured master level (measured)")
+{
+    auto dir = scratchDirectory ("mixer");
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Mix.tracktionedit")));
+
+    te::HostedAudioDeviceInterface::Parameters params;
+    params.sampleRate = 48000.0;
+    params.blockSize = 256;
+    params.inputChannels = 2;
+    params.outputChannels = 2;
+
+    auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+
+    for (int i = 0; i < 200; ++i)
+    {
+        audio.deviceManager().dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+        if (session.isInputConfigured())
+            break;
+
+        session.reconfigureInputs();
+    }
+
+    // A 0.5-amplitude tone -> -6.02 dBFS peak.
+    auto tone = writeSineWav (dir.getChildFile ("tone.wav"), 48000.0, 1.0);
+    REQUIRE (tone.existsAsFile());
+    REQUIRE (session.importAudioFile (tone));
+
+    // The imported track is added directly to the edit; let the session timer
+    // pick it up so its meter client is attached.
+    for (int i = 0; i < 20; ++i)
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (20);
+
+    REQUIRE (session.getNumAudioTracks() == 2);
+
+    // Mute the imported (tone) track: master must fall silent.
+    CHECK (session.setTrackMute (1, true));
+    CHECK (session.isTrackMuted (1));
+
+    CHECK (session.setTrackGainDb (1, 0.0f));
+    CHECK (session.setMasterGainDb (0.0f));
+
+    session.getEdit()->getTransport().setPosition (te::TimePosition {});
+    session.play();
+
+    juce::AudioBuffer<float> silence (2, 256);
+    silence.clear();
+
+    auto peakFromDb = [] (float db) { return juce::Decibels::decibelsToGain (db, -100.0f); };
+
+    auto runBlocks = [&] (int blocks, float& trackPeak, float& masterPeak, bool checkClip)
+    {
+        for (int block = 0; block < blocks; ++block)
+        {
+            player->process (silence);
+            const auto trackMeter = session.readTrackMeter (1);
+            const auto masterMeter = session.readMasterMeter();
+
+            trackPeak = juce::jmax (trackPeak, peakFromDb (trackMeter.peakDb[0]));
+            masterPeak = juce::jmax (masterPeak, peakFromDb (masterMeter.peakDb[0]));
+
+            if (checkClip)
+                CHECK_FALSE (masterMeter.clipped);
+        }
+    };
+
+    // Mute the imported (tone) track: the master must fall silent. Skip the
+    // first few blocks so Tracktion's click-free mute ramp has settled.
+    float mutedTrackPeak = 0.0f, mutedMasterPeak = 0.0f;
+    runBlocks (8, mutedTrackPeak, mutedMasterPeak, false);
+    mutedTrackPeak = 0.0f;
+    mutedMasterPeak = 0.0f;
+    runBlocks (60, mutedTrackPeak, mutedMasterPeak, false);
+
+    CHECK (mutedMasterPeak < 0.01f);
+
+    // Unmute: the same tone must now register ~ -6 dBFS on the track and master.
+    session.setTrackMute (1, false);
+
+    float trackPeak = 0.0f, masterPeak = 0.0f;
+    runBlocks (8, trackPeak, masterPeak, false); // let the unmute ramp settle
+    trackPeak = 0.0f;
+    masterPeak = 0.0f;
+    runBlocks (60, trackPeak, masterPeak, true);
+
+    INFO ("track peak " << juce::Decibels::gainToDecibels (trackPeak)
+                        << " dB, master peak " << juce::Decibels::gainToDecibels (masterPeak) << " dB");
+
+    CHECK (trackPeak == doctest::Approx (0.5f).epsilon (0.05f));
+    CHECK (masterPeak == doctest::Approx (0.5f).epsilon (0.05f));
+
+    session.stop();
+    session.close();
+}
+
+//==============================================================================
 // NFR-IO-4 / FR-MON-5: on Linux, ALSA hardware is opened directly and a failure
 // to do so is surfaced loudly — never a silent fallback to PipeWire/Pulse/JACK.
 // The policy logic itself is unit-tested on every platform in test_studio.cpp;

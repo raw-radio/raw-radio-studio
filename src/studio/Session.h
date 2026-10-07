@@ -145,6 +145,18 @@ namespace rrs
         // Metering
         InputLevels& getInputLevels() noexcept                  { return inputLevels; }
 
+        /** Peak level (dBFS, one value per channel) + clip/overload flag for a
+            track or the master bus. Reads and clears the engine's RT-safe level
+            meters; call from the UI timer only (never the audio thread). */
+        struct MeterReading
+        {
+            float peakDb[2] { -100.0f, -100.0f };
+            bool clipped = false;
+        };
+
+        MeterReading readTrackMeter (int trackIndex);
+        MeterReading readMasterMeter();
+
         //==============================================================================
         // Settings (FR-PRJ-2)
         void setAutosaveIntervalSeconds (int seconds);
@@ -223,6 +235,22 @@ namespace rrs
         void writeInterruptionMarker();
         void clearInterruptionMarker();
         juce::Array<juce::File> findReferencedRecordings() const;
+
+        // Per-track and master level metering (FR-MIX-3).
+        void attachMeters();
+        void detachMeters();
+        void refreshMetersIfNeeded();
+
+        struct MeterClient
+        {
+            tracktion::LevelMeasurer::Client client;
+            tracktion::LevelMeasurer* measurer = nullptr;
+        };
+
+        std::vector<std::unique_ptr<MeterClient>> trackMeters;
+        std::unique_ptr<MeterClient> masterMeter;
+        tracktion::LevelMeterPlugin* masterMeterPlugin = nullptr;
+        int metersTrackCount = -1;
 
         AudioEngine& audio;
         std::unique_ptr<tracktion::Edit> edit;
