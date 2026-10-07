@@ -46,8 +46,11 @@ namespace rrs
         for (auto* button : { &newButton, &openButton, &closeButton, &saveButton, &saveAsButton,
                               &importButton, &exportButton, &addTrackButton, &removeTrackButton,
                               &settingsButton, &aboutButton,
-                              &armButton, &recordButton, &playButton, &stopButton, &monitorButton })
+                              &armButton, &recordButton, &playButton, &stopButton, &monitorButton,
+                              &metronomeButton })
             addAndMakeVisible (*button);
+
+        addAndMakeVisible (countInBox);
 
         buildTransportUi();
 
@@ -86,6 +89,15 @@ namespace rrs
         stopButton.setTooltip ("Stop");
         monitorButton.setIconName ("headphones");
         monitorButton.setTooltip ("Toggle input monitoring");
+        metronomeButton.setIconName ("clock");
+        metronomeButton.setTooltip ("Metronome / count-in click");
+        countInBox.setTooltip ("Count-in before recording starts");
+
+        countInBox.addItem ("Count-in: off",      (int) te::Edit::CountIn::none + 1);
+        countInBox.addItem ("Count-in: 1 beat",   (int) te::Edit::CountIn::oneBeat + 1);
+        countInBox.addItem ("Count-in: 2 beats",  (int) te::Edit::CountIn::twoBeat + 1);
+        countInBox.addItem ("Count-in: 1 bar",    (int) te::Edit::CountIn::oneBar + 1);
+        countInBox.addItem ("Count-in: 2 bars",   (int) te::Edit::CountIn::twoBar + 1);
 
         newButton.onClick       = [this] { newSession(); };
         openButton.onClick      = [this] { openSession(); };
@@ -166,6 +178,7 @@ namespace rrs
     {
         armButton.setClickingTogglesState (true);
         monitorButton.setClickingTogglesState (true);
+        metronomeButton.setClickingTogglesState (true);
 
         armButton.onClick = [this]
         {
@@ -185,6 +198,23 @@ namespace rrs
                 return;
 
             session.setMonitoringEnabled (monitorButton.getToggleState());
+        };
+
+        metronomeButton.onClick = [this]
+        {
+            if (exportInProgress)
+                return;
+
+            session.setMetronomeEnabled (metronomeButton.getToggleState());
+        };
+
+        countInBox.onChange = [this]
+        {
+            if (exportInProgress)
+                return;
+
+            session.setCountInMode ((te::Edit::CountIn) juce::jmax (0, countInBox.getSelectedId() - 1));
+            refreshTransportUi();
         };
 
         recordButton.onClick = [this]
@@ -239,8 +269,13 @@ namespace rrs
         devicePanel.setEnabled (! busy);
 
         for (auto* button : { &saveButton, &saveAsButton, &importButton, &exportButton,
-                              &armButton, &recordButton, &playButton, &stopButton, &monitorButton })
+                              &armButton, &recordButton, &playButton, &stopButton, &monitorButton,
+                              &metronomeButton })
             button->setEnabled (hasEdit && ! busy);
+
+        countInBox.setEnabled (hasEdit && ! busy);
+        countInBox.setSelectedId ((int) session.getCountInMode() + 1, juce::dontSendNotification);
+        metronomeButton.setToggleState (session.isMetronomeEnabled(), juce::dontSendNotification);
 
         addTrackButton.setEnabled (hasEdit && ! busy);
         removeTrackButton.setEnabled (hasEdit && ! busy && session.getNumAudioTracks() > 1);
@@ -888,7 +923,11 @@ namespace rrs
         placeTransport (stopButton,    80, 36);
         transportRow.removeFromLeft (16);
         placeTransport (monitorButton, 96, 36);
-        transportRow.removeFromLeft (16);
+        transportRow.removeFromLeft (8);
+        placeTransport (metronomeButton, 80, 36);
+        transportRow.removeFromLeft (8);
+        countInBox.setBounds (transportRow.removeFromLeft (150).withSizeKeepingCentre (150, 28));
+        transportRow.removeFromLeft (8);
         transportLabel.setBounds (transportRow);
 
         area.removeFromTop (8);

@@ -1054,6 +1054,78 @@ TEST_CASE ("mixer: gain and mute change the measured master level (measured)")
 }
 
 //==============================================================================
+// FR-REC-10 (target): the built-in metronome/count-in click must be audible
+// while the transport plays and silent when disabled. Measured through the
+// master meter of the running engine.
+TEST_CASE ("metronome: enabling the click produces audible output (measured)")
+{
+    auto dir = scratchDirectory ("metronome");
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Click.tracktionedit")));
+
+    te::HostedAudioDeviceInterface::Parameters params;
+    params.sampleRate = 48000.0;
+    params.blockSize = 256;
+    params.inputChannels = 2;
+    params.outputChannels = 2;
+
+    auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+
+    for (int i = 0; i < 200; ++i)
+    {
+        audio.deviceManager().dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+        if (session.isInputConfigured())
+            break;
+
+        session.reconfigureInputs();
+    }
+
+    juce::AudioBuffer<float> silence (2, 256);
+    silence.clear();
+
+    // Measure the final device output (the click is summed at the very end of
+    // the master chain, past the master plugin list, so the master meter does
+    // not see it).
+    auto maxOutputPeakOver = [&] (int blocks)
+    {
+        float peak = 0.0f;
+
+        for (int block = 0; block < blocks; ++block)
+        {
+            auto output = player->process (silence);
+            peak = juce::jmax (peak, output.getMagnitude (0, output.getNumSamples()));
+        }
+
+        return peak;
+    };
+
+    session.setMetronomeEnabled (true);
+    session.getEdit()->getTransport().setPosition (te::TimePosition {});
+    session.play();
+
+    const auto clickPeak = maxOutputPeakOver (200);
+    INFO ("click peak " << clickPeak);
+    CHECK (clickPeak > 0.01f);
+
+    session.stop();
+    session.setMetronomeEnabled (false);
+
+    maxOutputPeakOver (30);
+    session.getEdit()->getTransport().setPosition (te::TimePosition {});
+    session.play();
+    const auto silentPeak = maxOutputPeakOver (120);
+    INFO ("silent peak " << silentPeak);
+    CHECK (silentPeak < 0.01f);
+
+    session.stop();
+    session.close();
+}
+
+//==============================================================================
 // NFR-IO-4 / FR-MON-5: on Linux, ALSA hardware is opened directly and a failure
 // to do so is surfaced loudly — never a silent fallback to PipeWire/Pulse/JACK.
 // The policy logic itself is unit-tested on every platform in test_studio.cpp;

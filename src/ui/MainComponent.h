@@ -88,6 +88,8 @@ namespace rrs
         BrandButton playButton { "Play", BrandButton::Style::Transport };
         BrandButton stopButton { "Stop", BrandButton::Style::Transport };
         BrandButton monitorButton { "Monitor", BrandButton::Style::Chip };
+        BrandButton metronomeButton { "Click", BrandButton::Style::Chip };
+        juce::ComboBox countInBox;
 
         juce::Label titleLabel, transportLabel, statusLabel;
         juce::TooltipWindow tooltipWindow { this, 700 };

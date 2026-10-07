@@ -158,6 +158,19 @@ namespace rrs
         MeterReading readMasterMeter();
 
         //==============================================================================
+        // Count-in / metronome (FR-REC-10, target)
+        void setMetronomeEnabled (bool);
+        bool isMetronomeEnabled() const;
+        /** When true the click is only audible while recording (typical overdub). */
+        void setMetronomeRecordingOnly (bool);
+        bool isMetronomeRecordingOnly() const;
+        void setCountInMode (tracktion::Edit::CountIn);
+        tracktion::Edit::CountIn getCountInMode() const;
+        int getCountInBeats() const;
+        void setMetronomeVolume (float gain);
+        float getMetronomeVolume() const;
+
+        //==============================================================================
         // Settings (FR-PRJ-2)
         void setAutosaveIntervalSeconds (int seconds);
         int getAutosaveIntervalSeconds() const noexcept         { return autosaveIntervalSeconds; }

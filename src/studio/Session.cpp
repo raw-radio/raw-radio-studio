@@ -850,6 +850,69 @@ namespace rrs
     }
 
     //==============================================================================
+    // Count-in / metronome (FR-REC-10)
+    void Session::setMetronomeEnabled (bool shouldEnable)
+    {
+        if (edit == nullptr)
+            return;
+
+        edit->clickTrackEnabled = shouldEnable;
+        sendChangeMessage();
+    }
+
+    bool Session::isMetronomeEnabled() const
+    {
+        return edit != nullptr && edit->clickTrackEnabled.get();
+    }
+
+    void Session::setMetronomeRecordingOnly (bool recordingOnly)
+    {
+        if (edit != nullptr)
+        {
+            edit->clickTrackRecordingOnly = recordingOnly;
+            sendChangeMessage();
+        }
+    }
+
+    bool Session::isMetronomeRecordingOnly() const
+    {
+        return edit != nullptr && edit->clickTrackRecordingOnly.get();
+    }
+
+    void Session::setCountInMode (te::Edit::CountIn mode)
+    {
+        if (edit != nullptr)
+        {
+            edit->setCountInMode (mode);
+            sendChangeMessage();
+        }
+    }
+
+    tracktion::Edit::CountIn Session::getCountInMode() const
+    {
+        return edit != nullptr ? edit->getCountInMode() : te::Edit::CountIn::none;
+    }
+
+    int Session::getCountInBeats() const
+    {
+        return edit != nullptr ? edit->getNumCountInBeats() : 0;
+    }
+
+    void Session::setMetronomeVolume (float gain)
+    {
+        if (edit != nullptr)
+        {
+            edit->setClickTrackVolume (juce::jlimit (0.2f, 1.0f, gain));
+            sendChangeMessage();
+        }
+    }
+
+    float Session::getMetronomeVolume() const
+    {
+        return edit != nullptr ? edit->getClickTrackVolume() : 0.5f;
+    }
+
+    //==============================================================================
     bool Session::save()
     {
         if (edit == nullptr || editFile == juce::File())
