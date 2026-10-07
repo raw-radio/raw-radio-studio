@@ -161,6 +161,14 @@ namespace
 
         std::cout << "raw-radio-studio device enumeration\n";
         std::cout << "Current backend: " << audio.getCurrentDeviceTypeName() << "\n";
+        std::cout << "Current input:  \""
+                  << (audio.getCurrentInputDeviceName().isNotEmpty() ? audio.getCurrentInputDeviceName()
+                                                                     : juce::String ("none"))
+                  << "\"\n";
+        std::cout << "Current output: \""
+                  << (audio.getCurrentOutputDeviceName().isNotEmpty() ? audio.getCurrentOutputDeviceName()
+                                                                      : juce::String ("none"))
+                  << "\"\n";
 
         for (auto* type : dm.getAvailableDeviceTypes())
         {
@@ -244,7 +252,10 @@ namespace
         }
         else
         {
-            deviceName = audio.getCurrentDeviceName();
+            // Default to the *input* device currently in use — never the opened
+            // device's name, which on CoreAudio is the output device and would
+            // fail to open as an input.
+            deviceName = audio.getCurrentInputDeviceName();
 
             if (deviceName.isEmpty())
             {
@@ -298,8 +309,13 @@ namespace
         capture.captureBuffer.setSize (channels, totalFrames, false, true, false);
         capture.captureBuffer.clear();
 
-        std::cout << "Recording " << seconds << " s from \"" << device->getName() << "\""
-                  << " (" << (int) sampleRate << " Hz, " << channels << " ch, buffer "
+        std::cout << "Recording " << seconds << " s from input \""
+                  << (audio.getCurrentInputDeviceName().isNotEmpty() ? audio.getCurrentInputDeviceName()
+                                                                     : device->getName())
+                  << "\" (output \""
+                  << (audio.getCurrentOutputDeviceName().isNotEmpty() ? audio.getCurrentOutputDeviceName()
+                                                                      : juce::String ("none"))
+                  << "\", " << (int) sampleRate << " Hz, " << channels << " ch, buffer "
                   << bufferSize << ")..." << std::endl;
 
         dm.addAudioCallback (&capture);
@@ -366,7 +382,8 @@ namespace
                              : 0.0;
 
         std::cout << "Self-test recording complete\n"
-                  << "  device:           " << device->getName() << "\n"
+                  << "  input:            " << (audio.getCurrentInputDeviceName().isNotEmpty() ? audio.getCurrentInputDeviceName() : device->getName()) << "\n"
+                  << "  output:           " << (audio.getCurrentOutputDeviceName().isNotEmpty() ? audio.getCurrentOutputDeviceName() : juce::String ("none")) << "\n"
                   << "  sample rate:      " << (int) sampleRate << " Hz\n"
                   << "  buffer size:      " << bufferSize << " samples\n"
                   << "  channels:         " << channels << "\n"

@@ -13,6 +13,7 @@
 #include <JuceHeader.h>
 
 #include "studio/DeviceError.h"
+#include "studio/DeviceSelection.h"
 #include "studio/AppPaths.h"
 #include "ui/BrandFonts.h"
 #include "ui/DevicePanelLayout.h"
@@ -188,16 +189,26 @@ TEST_CASE ("ALSA device policy excludes plugin/routed PCMs and keeps raw hardwar
     CHECK_FALSE (isAcceptableInputDeviceName (
         "HDA Intel PCH, ALC295 Analog; Direct sample mixing device"));
     CHECK_FALSE (isAcceptableInputDeviceName (""));
+
+    // The output side follows the same "no silent plugin fallback" policy.
+    CHECK (isAcceptableOutputDeviceName ("HDA Intel PCH, ALC295 Analog"));
+    CHECK (isAcceptableOutputDeviceName ("USB Audio Device, USB Audio"));
+    CHECK_FALSE (isAcceptableOutputDeviceName ("Default ALSA Output"));
+    CHECK_FALSE (isAcceptableOutputDeviceName ("Pulseaudio output"));
+    CHECK_FALSE (isAcceptableOutputDeviceName ("PipeWire Sound Server"));
+    CHECK_FALSE (isAcceptableOutputDeviceName (""));
    #else
     // Non-Linux backends have no plugin-fallback hazard; the policy is a no-op.
     CHECK (isAcceptableInputDeviceName ("anything on this platform"));
+    CHECK (isAcceptableOutputDeviceName ("anything on this platform"));
    #endif
 }
 
 //==============================================================================
 TEST_CASE ("device panel always gives the status + error labels real height")
 {
-    // The panel must be tall enough for a multi-line device error (FR-MON-5).
+    // The panel must be tall enough for a multi-line device error (FR-MON-5) AND
+    // for the separate input/output device selectors.
     const auto layout = computeDevicePanelLayout ({ 0, 0, 900, devicePanelHeight });
 
     CHECK (layout.statusLabel.getHeight() > 0);
@@ -211,6 +222,78 @@ TEST_CASE ("device panel always gives the status + error labels real height")
     CHECK (cramped.errorLabel.getHeight() < layout.errorLabel.getHeight());
 }
 
+TEST_CASE ("device panel lays out independent input and output selectors")
+{
+    const auto layout = computeDevicePanelLayout ({ 0, 0, 900, devicePanelHeight });
+
+    // Both selectors exist, are real, and are stacked input-above-output in
+    // separate rows (the bug was a single "Device" list).
+    CHECK (layout.inputBox.getHeight() > 0);
+    CHECK (layout.outputBox.getHeight() > 0);
+    CHECK (layout.inputBox.getY() < layout.outputBox.getY());
+    CHECK (layout.inputBox.getBottom() <= layout.outputBox.getY());
+
+    CHECK (layout.inputLabel.getWidth() > 0);
+    CHECK (layout.outputLabel.getWidth() > 0);
+
+    // ...and the output row is above the rate/buffer row.
+    CHECK (layout.outputBox.getBottom() <= layout.rateBox.getY());
+}
+
+//==============================================================================
+TEST_CASE ("device selection keeps input and output independent")
+{
+    const juce::String macMic     = "Микрофон MacBook Pro";
+    const juce::String macSpeakers = "Динамики MacBook Pro";
+    const juce::String usbMic      = "fifine Microphone";
+
+    SUBCASE ("selecting an input-only device keeps the current output")
+    {
+        const auto sel = resolveDeviceNames (usbMic, {}, macMic, macSpeakers);
+
+        CHECK (sel.input == usbMic);
+        // Regression: the input name must NEVER be copied into the output.
+        CHECK (sel.output == macSpeakers);
+        CHECK (sel.output != usbMic);
+    }
+
+    SUBCASE ("selecting an output-only device keeps the current input")
+    {
+        const auto sel = resolveDeviceNames ({}, "External DAC", macMic, macSpeakers);
+
+        CHECK (sel.input == macMic);
+        CHECK (sel.output == "External DAC");
+    }
+
+    SUBCASE ("selecting both sets both")
+    {
+        const auto sel = resolveDeviceNames (usbMic, "External DAC", macMic, macSpeakers);
+
+        CHECK (sel.input == usbMic);
+        CHECK (sel.output == "External DAC");
+    }
+
+    SUBCASE ("selecting neither keeps the current pair")
+    {
+        const auto sel = resolveDeviceNames ({}, {}, macMic, macSpeakers);
+
+        CHECK (sel.input == macMic);
+        CHECK (sel.output == macSpeakers);
+    }
+
+    SUBCASE ("a matching full-duplex name is still allowed on both sides")
+    {
+        // Bluetooth headsets expose the same name for in and out; selecting it
+        // on both sides is legitimate and must not be treated as a mis-copy.
+        const juce::String bt = "Bluetooth Headset";
+        const auto sel = resolveDeviceNames (bt, bt, macMic, macSpeakers);
+
+        CHECK (sel.input == bt);
+        CHECK (sel.output == bt);
+    }
+}
+
+//==============================================================================
 TEST_CASE ("a simulated busy-device error is representable and visible")
 {
     // Simulate the exact error the ALSA open path surfaces when PipeWire holds the

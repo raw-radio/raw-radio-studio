@@ -139,4 +139,19 @@ namespace rrs
         return true;
        #endif
     }
+
+    /** Whether a device name is acceptable as a direct playback output.
+        Same "no silent plugin/PipeWire fallback" policy as the input side
+        (NFR-IO-4): JUCE-injected `Default ALSA Output` / `Pulseaudio output`
+        and the `pipewire`/`jack`/`dmix` PCMs are excluded; real hardware and
+        every device on non-Linux backends stay usable. */
+    inline bool isAcceptableOutputDeviceName (const juce::String& deviceName)
+    {
+       #if JUCE_LINUX
+        return deviceName.isNotEmpty() && ! isAlsaPluginPseudoDeviceName (deviceName);
+       #else
+        juce::ignoreUnused (deviceName);
+        return true;
+       #endif
+    }
 }

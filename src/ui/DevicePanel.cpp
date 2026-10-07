@@ -8,10 +8,35 @@
 
 namespace rrs
 {
+    namespace
+    {
+        /** Fills `box` with `names`, preferring (in order) the caller's previous
+            selection, then the device the engine actually has open, then the
+            first entry. Empty lists clear the box. Used for both the input and
+            the output selector so a hot-plug removal falls back gracefully. */
+        void populateDeviceBox (juce::ComboBox& box,
+                                const juce::StringArray& names,
+                                const juce::String& previousSelection,
+                                const juce::String& currentDevice)
+        {
+            box.clear (juce::dontSendNotification);
+            box.addItemList (names, 1);
+
+            if (previousSelection.isNotEmpty() && names.contains (previousSelection))
+                box.setText (previousSelection, juce::dontSendNotification);
+            else if (currentDevice.isNotEmpty() && names.contains (currentDevice))
+                box.setText (currentDevice, juce::dontSendNotification);
+            else if (! names.isEmpty())
+                box.setSelectedItemIndex (0, juce::dontSendNotification);
+            else
+                box.setText ({}, juce::dontSendNotification);
+        }
+    }
+
     DevicePanel::DevicePanel (AudioEngine& engine)
         : audio (engine)
     {
-        for (auto* label : { &typeLabel, &deviceLabel, &rateLabel, &bufferLabel })
+        for (auto* label : { &typeLabel, &inputLabel, &outputLabel, &rateLabel, &bufferLabel })
         {
             label->setJustificationType (juce::Justification::centredLeft);
             label->setFont (brand::uiRegular (13.0f));
@@ -20,16 +45,21 @@ namespace rrs
         }
 
         typeLabel.setText ("Backend", juce::dontSendNotification);
-        deviceLabel.setText ("Device", juce::dontSendNotification);
+        inputLabel.setText ("Input", juce::dontSendNotification);
+        outputLabel.setText ("Output", juce::dontSendNotification);
         rateLabel.setText ("Sample rate", juce::dontSendNotification);
         bufferLabel.setText ("Buffer", juce::dontSendNotification);
 
         addAndMakeVisible (typeBox);
-        addAndMakeVisible (deviceBox);
+        addAndMakeVisible (inputBox);
+        addAndMakeVisible (outputBox);
         addAndMakeVisible (rateBox);
         addAndMakeVisible (bufferBox);
         addAndMakeVisible (applyButton);
         addAndMakeVisible (rescanButton);
+
+        inputBox.setTooltip ("Recording input device (microphone, interface input)");
+        outputBox.setTooltip ("Playback output device (speakers, headphones)");
 
         statusLabel.setJustificationType (juce::Justification::centredLeft);
         statusLabel.setFont (brand::uiRegular (12.0f));
@@ -47,7 +77,8 @@ namespace rrs
         rescanButton.onClick = [this] { refreshAll(); };
 
         rescanButton.setIconName ("refresh-cw");
-        applyButton.setTooltip ("Apply the selected audio device, sample rate and buffer size");
+        applyButton.setTooltip ("Apply the selected input device, output device, "
+                                "sample rate and buffer size");
         rescanButton.setTooltip ("Rescan audio devices");
 
         audio.deviceManager().deviceManager.addChangeListener (this);
@@ -77,16 +108,19 @@ namespace rrs
     {
         const juce::ScopedValueSetter<bool> guard (updating, true);
 
-        auto devices = audio.getInputDeviceNames();
-        deviceBox.clear (juce::dontSendNotification);
-        deviceBox.addItemList (devices, 1);
+        // Keep the user's current choice if it still exists; otherwise follow the
+        // device the engine actually has open, then the first entry. This makes
+        // a hot-plug removal of the selected device fall back gracefully instead
+        // of leaving a dead name in the box.
+        populateDeviceBox (inputBox,
+                           audio.getInputDeviceNames(),
+                           inputBox.getText(),
+                           audio.getCurrentInputDeviceName());
 
-        const auto current = audio.getCurrentDeviceName();
-
-        if (devices.contains (current))
-            deviceBox.setText (current, juce::dontSendNotification);
-        else if (! devices.isEmpty())
-            deviceBox.setSelectedItemIndex (0, juce::dontSendNotification);
+        populateDeviceBox (outputBox,
+                           audio.getOutputDeviceNames(),
+                           outputBox.getText(),
+                           audio.getCurrentOutputDeviceName());
 
         refreshRatesAndBuffers();
     }
@@ -140,10 +174,14 @@ namespace rrs
     {
         if (audio.hasActiveDevice())
         {
-            statusLabel.setText (audio.getCurrentDeviceName()
-                                     + "  |  " + juce::String ((int) audio.getCurrentSampleRate()) + " Hz"
-                                     + "  |  " + juce::String (audio.getCurrentBufferSize()) + " samples"
-                                     + "  |  ~" + juce::String (audio.getEstimatedRoundTripLatencyMs(), 1) + " ms",
+            const auto in  = audio.getCurrentInputDeviceName();
+            const auto out = audio.getCurrentOutputDeviceName();
+
+            statusLabel.setText ("In: " + (in.isNotEmpty() ? in : juce::String ("none"))
+                                     + "   |   Out: " + (out.isNotEmpty() ? out : juce::String ("none"))
+                                     + "   |   " + juce::String ((int) audio.getCurrentSampleRate()) + " Hz"
+                                     + " / " + juce::String (audio.getCurrentBufferSize()) + " samples"
+                                     + "   |   ~" + juce::String (audio.getEstimatedRoundTripLatencyMs(), 1) + " ms",
                                  juce::dontSendNotification);
         }
         else
@@ -164,7 +202,6 @@ namespace rrs
 
     void DevicePanel::applySelection()
     {
-        const juce::ScopedValueSetter<bool> guard (updating, true);
         errorLabel.setText ({}, juce::dontSendNotification);
 
         if (typeBox.getText() != audio.getCurrentDeviceTypeName())
@@ -178,21 +215,33 @@ namespace rrs
             refreshDevices();
         }
 
-        const auto deviceName = deviceBox.getText();
+        const auto inputName  = inputBox.getText();
+        const auto outputName = outputBox.getText();
 
-        if (deviceName.isEmpty())
+        if (inputName.isEmpty() && outputName.isEmpty())
         {
-            showError ("Select an audio device first.");
+            showError ("Select an input or output device first.");
             return;
         }
 
         const auto sampleRate = rateBox.getText().getDoubleValue();
         const auto bufferSize = bufferBox.getText().getIntValue();
 
-        if (auto error = audio.applyDeviceSetup (deviceName, sampleRate, bufferSize); error.isNotEmpty())
         {
-            showError (error);
-            return;
+            const juce::ScopedValueSetter<bool> guard (updating, true);
+
+            if (auto error = audio.applyDeviceSetup (inputName, outputName, sampleRate, bufferSize);
+                error.isNotEmpty())
+            {
+                showError (error);
+
+                // The failed selection did not take effect: reflect the device
+                // that is still open (an input-only mic keeps the output, and a
+                // failed apply never tore the working device down).
+                refreshDevices();
+                updateStatus();
+                return;
+            }
         }
 
         updateStatus();
@@ -230,8 +279,10 @@ namespace rrs
 
         typeLabel.setBounds (layout.typeLabel);
         typeBox.setBounds (layout.typeBox);
-        deviceLabel.setBounds (layout.deviceLabel);
-        deviceBox.setBounds (layout.deviceBox);
+        inputLabel.setBounds (layout.inputLabel);
+        inputBox.setBounds (layout.inputBox);
+        outputLabel.setBounds (layout.outputLabel);
+        outputBox.setBounds (layout.outputBox);
         rateLabel.setBounds (layout.rateLabel);
         rateBox.setBounds (layout.rateBox);
         bufferLabel.setBounds (layout.bufferLabel);

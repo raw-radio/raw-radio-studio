@@ -1,7 +1,10 @@
 // raw-radio-studio — audio device panel (Epic 1).
 //
-// Enumeration + selection of device, sample rate and buffer size, with explicit
-// error surfacing (no silent fallback).
+// Independent enumeration + selection of the input device, the output device,
+// sample rate and buffer size, with explicit error surfacing (no silent
+// fallback). Input and output are separate selectors because on CoreAudio they
+// are different physical devices and an input-only USB mic has no matching
+// output — see DeviceSelection.h.
 
 #pragma once
 
@@ -38,10 +41,10 @@ namespace rrs
 
         AudioEngine& audio;
 
-        juce::ComboBox typeBox, deviceBox, rateBox, bufferBox;
+        juce::ComboBox typeBox, inputBox, outputBox, rateBox, bufferBox;
         BrandButton applyButton { "Apply" };
         BrandButton rescanButton { "Rescan" };
-        juce::Label typeLabel, deviceLabel, rateLabel, bufferLabel;
+        juce::Label typeLabel, inputLabel, outputLabel, rateLabel, bufferLabel;
         juce::Label statusLabel, errorLabel;
 
         bool updating = false;

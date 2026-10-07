@@ -477,6 +477,41 @@ TEST_CASE ("Session::close resets state and clears the interruption sentinel")
 }
 
 //==============================================================================
+// Device-selection fix: "fail loudly, never tear down the working device".
+// The pure name-resolution logic is unit-tested in test_studio.cpp; here we
+// exercise the real `AudioEngine` pre-validation path headlessly.
+TEST_CASE ("applyDeviceSetup rejects a genuinely absent device without opening anything")
+{
+    AudioEngine audio (false); // headless: no real hardware is opened
+
+    // A name pair that cannot exist on any machine. Pre-validation must reject it
+    // before JUCE's setAudioDeviceSetup (which deletes the current device first),
+    // so nothing is opened and the error is the actionable "could not be found".
+    const auto error = audio.applyDeviceSetup ("no-such-input-xyz", "no-such-output-xyz", 0.0, 0);
+
+    INFO ("error: " << error);
+    CHECK (error.isNotEmpty());
+    CHECK (error.containsIgnoreCase ("could not be found"));
+    CHECK (audio.getLastError() == error);
+    CHECK_FALSE (audio.hasActiveDevice());
+}
+
+TEST_CASE ("applyInputDeviceSetup keeps the output side and reports a missing input cleanly")
+{
+    AudioEngine audio (false);
+
+    // Regression guard for the input-only-device path used by --selftest-record:
+    // it must never try to open the output using the input's name, and must fail
+    // cleanly (no crash, no device) when the input is absent.
+    const auto error = audio.applyInputDeviceSetup ("no-such-input-xyz");
+
+    INFO ("error: " << error);
+    CHECK (error.isNotEmpty());
+    CHECK (audio.getLastError() == error);
+    CHECK_FALSE (audio.hasActiveDevice());
+}
+
+//==============================================================================
 // NFR-IO-4 / FR-MON-5: on Linux, ALSA hardware is opened directly and a failure
 // to do so is surfaced loudly — never a silent fallback to PipeWire/Pulse/JACK.
 // The policy logic itself is unit-tested on every platform in test_studio.cpp;

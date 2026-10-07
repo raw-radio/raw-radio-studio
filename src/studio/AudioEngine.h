@@ -64,8 +64,24 @@ namespace rrs
 
         //==============================================================================
         // Devices of the current type.
+        //
+        // Input and output devices are enumerated (and selected) independently:
+        // on CoreAudio a microphone and the speakers are different physical
+        // devices, and an input-only USB mic has no matching output at all.
         juce::StringArray getInputDeviceNames() const;
+        juce::StringArray getOutputDeviceNames() const;
+
+        /** The input/output device names currently in use (from the open setup).
+            May be empty when that side is not open. */
+        juce::String getCurrentInputDeviceName() const;
+        juce::String getCurrentOutputDeviceName() const;
+
+        /** The name of the currently-open JUCE device (kept for logging/self-test). */
         juce::String getCurrentDeviceName() const;
+
+        /** Number of active (opened) input channels on the current device; 0 when
+            no device is open. Used by the input meter to label mono vs stereo. */
+        int getNumActiveInputChannels() const;
 
         juce::Array<double> getAvailableSampleRates() const;
         juce::Array<int> getAvailableBufferSizes() const;
@@ -76,10 +92,19 @@ namespace rrs
         /** The spec default for Epic 1 (NFR-A-4). */
         static constexpr double defaultSampleRate = 48000.0;
 
-        /** Applies device + rate + buffer. Returns "" on success, else an actionable
-            message. On failure the previous device is left untouched and the error is
-            also stored in getLastError() — never a silent substitution. */
-        juce::String applyDeviceSetup (const juce::String& deviceName,
+        /** Applies the input and output devices + rate + buffer. Returns "" on
+            success, else an actionable message.
+
+            The two device names are independent: an empty name keeps the current
+            device for that side, and the input name is never copied into the
+            output (so an input-only mic keeps the existing output). Both names
+            are validated against the enumerated device lists *before* JUCE's
+            `setAudioDeviceSetup` is called, so a stale/mismatched name can never
+            make JUCE tear down the currently-working device. If an open still
+            fails, the previously-working setup is restored and the error is
+            reported. The error is also stored in getLastError(). */
+        juce::String applyDeviceSetup (const juce::String& inputDeviceName,
+                                       const juce::String& outputDeviceName,
                                        double sampleRate,
                                        int bufferSize);
 

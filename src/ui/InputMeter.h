@@ -8,6 +8,7 @@
 #include <JuceHeader.h>
 
 #include <array>
+#include <functional>
 
 namespace rrs
 {
@@ -17,7 +18,13 @@ namespace rrs
                              private juce::Timer
     {
     public:
-        explicit InputMeter (const InputLevels& levels);
+        /** @param numInputChannels  optional provider returning the number of active
+            input channels on the current device. When it reports a single channel
+            the meter draws one "Mono" bar instead of a misleading "L"/"R" pair
+            (the Redmi Buds mic, for example, has one channel and was labelled
+            "L" even though it is a mono mic). */
+        explicit InputMeter (const InputLevels& levels,
+                             std::function<int()> numInputChannels = {});
         ~InputMeter() override = default;
 
         void paint (juce::Graphics&) override;
@@ -34,10 +41,12 @@ namespace rrs
         };
 
         static float normaliseDb (float linearGain) noexcept;
-        void drawChannel (juce::Graphics&, juce::Rectangle<int>, const ChannelState&, const juce::String& name);
+        void drawChannel (juce::Graphics&, juce::Rectangle<int>, const ChannelState&,
+                          const juce::String& name, int labelWidth);
 
         const InputLevels& inputLevels;
         std::array<ChannelState, 2> channels;
+        std::function<int()> numInputChannels;
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (InputMeter)
     };

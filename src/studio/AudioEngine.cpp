@@ -3,6 +3,7 @@
 #include "AudioEngine.h"
 
 #include "DeviceError.h"
+#include "DeviceSelection.h"
 
 #include <iostream>
 
@@ -57,9 +58,11 @@ namespace rrs
         enforceDirectAlsaOnStartup();
         ensureDefaultSampleRateOnFirstRun();
 
-        std::cout << "Audio device: "
-                  << (getCurrentDeviceName().isNotEmpty() ? getCurrentDeviceName() : juce::String ("none"))
-                  << "  " << (int) getCurrentSampleRate() << " Hz / " << getCurrentBufferSize() << " samples"
+        std::cout << "Audio device: in=\""
+                  << (getCurrentInputDeviceName().isNotEmpty() ? getCurrentInputDeviceName() : juce::String ("none"))
+                  << "\" out=\""
+                  << (getCurrentOutputDeviceName().isNotEmpty() ? getCurrentOutputDeviceName() : juce::String ("none"))
+                  << "\"  " << (int) getCurrentSampleRate() << " Hz / " << getCurrentBufferSize() << " samples"
                   << " / ~" << juce::String (getEstimatedRoundTripLatencyMs(), 1) << " ms round-trip"
                   << std::endl;
     }
@@ -122,6 +125,33 @@ namespace rrs
         return names;
     }
 
+    juce::StringArray AudioEngine::getOutputDeviceNames() const
+    {
+        juce::StringArray names;
+        auto& dm = enginePtr->getDeviceManager().deviceManager;
+
+        if (auto* type = dm.getCurrentDeviceTypeObject())
+        {
+            type->scanForDevices();
+
+            for (auto& name : type->getDeviceNames (false))
+                if (isAcceptableOutputDeviceName (name))
+                    names.add (name);
+        }
+
+        return names;
+    }
+
+    juce::String AudioEngine::getCurrentInputDeviceName() const
+    {
+        return enginePtr->getDeviceManager().deviceManager.getAudioDeviceSetup().inputDeviceName;
+    }
+
+    juce::String AudioEngine::getCurrentOutputDeviceName() const
+    {
+        return enginePtr->getDeviceManager().deviceManager.getAudioDeviceSetup().outputDeviceName;
+    }
+
     juce::String AudioEngine::getCurrentDeviceName() const
     {
         auto& dm = enginePtr->getDeviceManager().deviceManager;
@@ -130,6 +160,16 @@ namespace rrs
             return device->getName();
 
         return {};
+    }
+
+    int AudioEngine::getNumActiveInputChannels() const
+    {
+        auto& dm = enginePtr->getDeviceManager().deviceManager;
+
+        if (auto* device = dm.getCurrentAudioDevice())
+            return device->getActiveInputChannels().countNumberOfSetBits();
+
+        return 0;
     }
 
     juce::Array<double> AudioEngine::getAvailableSampleRates() const
@@ -181,15 +221,41 @@ namespace rrs
     }
 
     //==============================================================================
-    juce::String AudioEngine::applyDeviceSetup (const juce::String& deviceName,
+    juce::String AudioEngine::applyDeviceSetup (const juce::String& inputDeviceName,
+                                                const juce::String& outputDeviceName,
                                                 double sampleRate,
                                                 int bufferSize)
     {
         auto& dm = enginePtr->getDeviceManager().deviceManager;
-        auto setup = dm.getAudioDeviceSetup();
 
-        setup.inputDeviceName  = deviceName;
-        setup.outputDeviceName = deviceName;
+        const auto current = dm.getAudioDeviceSetup();
+
+        // Input and output are independent: an empty request keeps the current
+        // device on that side, and the input name is never copied into the
+        // output (the original input-only-mic bug).
+        const auto selection = resolveDeviceNames (inputDeviceName, outputDeviceName,
+                                                   current.inputDeviceName, current.outputDeviceName);
+
+        // Validate BOTH effective names against the enumerated lists *before*
+        // calling JUCE. `setAudioDeviceSetup` deletes the current device before
+        // it validates names, so a stale/mismatched name would otherwise tear
+        // down the working device and stop playback. Returning here leaves the
+        // current device running (FR-MON-5).
+        if (selection.input.isNotEmpty() && ! getInputDeviceNames().contains (selection.input))
+        {
+            lastError = classifyDeviceError ("No such device: " + selection.input).userMessage;
+            return lastError;
+        }
+
+        if (selection.output.isNotEmpty() && ! getOutputDeviceNames().contains (selection.output))
+        {
+            lastError = classifyDeviceError ("No such device: " + selection.output).userMessage;
+            return lastError;
+        }
+
+        auto setup = current;
+        setup.inputDeviceName  = selection.input;
+        setup.outputDeviceName = selection.output;
         setup.useDefaultInputChannels  = true;
         setup.useDefaultOutputChannels = true;
 
@@ -199,14 +265,25 @@ namespace rrs
         if (bufferSize > 0)
             setup.bufferSize = bufferSize;
 
-        // NOTE: we pass treatAsChosenDevice=true and surface any failure. JUCE
-        // may revert to the previously open device on failure, but it never
-        // silently substitutes a *different* backend — and we always report it.
+        const auto hadWorkingDevice = dm.getCurrentAudioDevice() != nullptr;
         const auto error = dm.setAudioDeviceSetup (setup, true);
 
         if (error.isNotEmpty())
         {
             lastError = classifyDeviceError (error).userMessage;
+
+            // A genuine open failure (e.g. the device became busy) still made
+            // JUCE delete the current device. Restore the previously-working
+            // setup so playback continues instead of going silent.
+            if (hadWorkingDevice
+                && (current.inputDeviceName.isNotEmpty() || current.outputDeviceName.isNotEmpty()))
+            {
+                auto restore = current;
+                restore.useDefaultInputChannels  = true;
+                restore.useDefaultOutputChannels = true;
+                dm.setAudioDeviceSetup (restore, false);
+            }
+
             return lastError;
         }
 
@@ -216,24 +293,9 @@ namespace rrs
 
     juce::String AudioEngine::applyInputDeviceSetup (const juce::String& deviceName)
     {
-        auto& dm = enginePtr->getDeviceManager().deviceManager;
-        auto setup = dm.getAudioDeviceSetup();
-
         // Keep the current output device: pure input hardware (a USB mic) has no
         // output channels, so forcing outputDeviceName to it would fail to open.
-        setup.inputDeviceName = deviceName;
-        setup.useDefaultInputChannels = true;
-
-        const auto error = dm.setAudioDeviceSetup (setup, true);
-
-        if (error.isNotEmpty())
-        {
-            lastError = classifyDeviceError (error).userMessage;
-            return lastError;
-        }
-
-        lastError.clear();
-        return {};
+        return applyDeviceSetup (deviceName, {}, 0.0, 0);
     }
 
     bool AudioEngine::hasActiveDevice() const
@@ -322,7 +384,14 @@ namespace rrs
 
         // `names[0]` is the first confirmed direct-hardware device. If it cannot
         // be opened, close the device rather than silently keeping a plugin one.
-        if (applyDeviceSetup (names[0], defaultSampleRate, 0).isNotEmpty())
+        //
+        // Unlike the user-facing panel, the Linux auto-selection deliberately
+        // opens the same direct-hardware PCM for capture and playback (the
+        // original behaviour): a `hw:`/analog PCM is normally full-duplex, and
+        // keeping a PipeWire/Pulse output would be the plugin fallback the spec
+        // forbids. If it is not usable as an output the apply fails and we close
+        // the device — loudly, never half-open.
+        if (applyDeviceSetup (names[0], names[0], defaultSampleRate, 0).isNotEmpty())
             dm.closeAudioDevice();
        #endif
     }

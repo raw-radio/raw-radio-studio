@@ -70,7 +70,8 @@ namespace rrs
         AudioEngine audio;
         Session session { audio };
         DevicePanel devicePanel { audio };
-        InputMeter inputMeter { session.getInputLevels() };
+        InputMeter inputMeter { session.getInputLevels(),
+                                [this] { return audio.getNumActiveInputChannels(); } };
 
         BrandButton newButton { "New" }, openButton { "Open" };
         BrandButton closeButton { "Close" };

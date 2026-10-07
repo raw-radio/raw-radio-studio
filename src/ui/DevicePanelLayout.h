@@ -2,8 +2,10 @@
 //
 // The device panel must always leave usable space for its status line and its
 // (multi-line) error label: «fail loudly, not silently» is a hard acceptance
-// criterion (FR-MON-5). The layout is a free function so the contract can be
-// unit-tested without opening an audio device.
+// criterion (FR-MON-5). It also now offers independent Input and Output device
+// selectors, so the fixed height accommodates one extra row. The layout is a
+// free function so the contract can be unit-tested without opening an audio
+// device.
 
 #pragma once
 
@@ -11,17 +13,18 @@
 
 namespace rrs
 {
-    /** Fixed device-panel height. Raised from 170 px so the status + error labels
-        always get real room; the error label needs several lines for a
-        busy-device (`EBUSY`) message. Kept here so MainComponent and the layout
-        unit test agree on the value. */
-    inline constexpr int devicePanelHeight = 290;
+    /** Fixed device-panel height. Raised from 170 px (then 290 px for the
+        status/error labels) so the separate Input + Output rows AND the status +
+        multi-line error labels always get real room. Kept here so MainComponent
+        and the layout unit test agree on the value. */
+    inline constexpr int devicePanelHeight = 320;
 
     /** Pixel bounds for every DevicePanel child. */
     struct DevicePanelLayout
     {
         juce::Rectangle<int> typeLabel, typeBox;
-        juce::Rectangle<int> deviceLabel, deviceBox;
+        juce::Rectangle<int> inputLabel, inputBox;
+        juce::Rectangle<int> outputLabel, outputBox;
         juce::Rectangle<int> rateLabel, rateBox, bufferLabel, bufferBox;
         juce::Rectangle<int> applyButton, rescanButton;
         juce::Rectangle<int> statusLabel, errorLabel;
@@ -47,24 +50,30 @@ namespace rrs
         area.removeFromTop (6);
 
         auto row2 = area.removeFromTop (rowHeight);
-        l.deviceLabel = row2.removeFromLeft (labelWidth);
-        l.deviceBox = row2;
+        l.inputLabel = row2.removeFromLeft (labelWidth);
+        l.inputBox = row2;
 
         area.removeFromTop (6);
 
         auto row3 = area.removeFromTop (rowHeight);
-        l.rateLabel = row3.removeFromLeft (labelWidth);
-        l.rateBox = row3.removeFromLeft (juce::jmin (140, row3.getWidth() / 2));
-        row3.removeFromLeft (8);
-        l.bufferLabel = row3.removeFromLeft (80);
-        l.bufferBox = row3.removeFromLeft (juce::jmin (140, row3.getWidth()));
+        l.outputLabel = row3.removeFromLeft (labelWidth);
+        l.outputBox = row3;
+
+        area.removeFromTop (6);
+
+        auto row4 = area.removeFromTop (rowHeight);
+        l.rateLabel = row4.removeFromLeft (labelWidth);
+        l.rateBox = row4.removeFromLeft (juce::jmin (140, row4.getWidth() / 2));
+        row4.removeFromLeft (8);
+        l.bufferLabel = row4.removeFromLeft (80);
+        l.bufferBox = row4.removeFromLeft (juce::jmin (140, row4.getWidth()));
 
         area.removeFromTop (8);
 
-        auto row4 = area.removeFromTop (28);
-        l.applyButton = row4.removeFromLeft (90);
-        row4.removeFromLeft (8);
-        l.rescanButton = row4.removeFromLeft (90);
+        auto row5 = area.removeFromTop (28);
+        l.applyButton = row5.removeFromLeft (90);
+        row5.removeFromLeft (8);
+        l.rescanButton = row5.removeFromLeft (90);
 
         area.removeFromTop (6);
 

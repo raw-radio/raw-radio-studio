@@ -14,8 +14,9 @@ namespace rrs
         constexpr float maxDb = 6.0f;
     }
 
-    InputMeter::InputMeter (const InputLevels& levels)
+    InputMeter::InputMeter (const InputLevels& levels, std::function<int()> channelCountProvider)
         : inputLevels (levels)
+        , numInputChannels (std::move (channelCountProvider))
     {
         startTimerHz (30);
     }
@@ -66,18 +67,30 @@ namespace rrs
         g.setFont (brand::uiMedium (12.0f));
         g.drawText ("Input", titleRow, juce::Justification::centredLeft);
 
+        // A device with one input channel is mono: label it as such rather than
+        // drawing a misleading stereo "L"/"R" pair. 0 (no device open) is also
+        // treated as mono so the meter stays a single quiet bar.
+        const auto channelCount = numInputChannels ? numInputChannels() : 2;
+
+        if (channelCount <= 1)
+        {
+            drawChannel (g, bounds, channels[0], "Mono", 40);
+            return;
+        }
+
         const auto barHeight = juce::jmax (8, bounds.getHeight() / 2 - 2);
-        drawChannel (g, bounds.removeFromTop (barHeight), channels[0], "L");
+        drawChannel (g, bounds.removeFromTop (barHeight), channels[0], "L", 16);
         bounds.removeFromTop (4);
-        drawChannel (g, bounds.removeFromTop (barHeight), channels[1], "R");
+        drawChannel (g, bounds.removeFromTop (barHeight), channels[1], "R", 16);
     }
 
     void InputMeter::drawChannel (juce::Graphics& g,
                                   juce::Rectangle<int> area,
                                   const ChannelState& state,
-                                  const juce::String& name)
+                                  const juce::String& name,
+                                  int labelWidth)
     {
-        auto labelArea = area.removeFromLeft (16);
+        auto labelArea = area.removeFromLeft (labelWidth);
         auto valueArea = area.removeFromRight (52);
         auto barArea = area.reduced (1, 2);
 
