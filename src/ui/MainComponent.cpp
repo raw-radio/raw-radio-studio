@@ -46,11 +46,18 @@ namespace rrs
 
         for (auto* button : { &newButton, &openButton, &closeButton, &saveButton, &saveAsButton,
                               &importButton, &normaliseButton, &exportButton,
+                              &stemsButton, &pluginsButton, &routingButton,
                               &addTrackButton, &removeTrackButton,
                               &settingsButton, &aboutButton,
                               &armButton, &recordButton, &playButton, &stopButton, &goToStartButton,
                               &monitorButton, &metronomeButton })
             addAndMakeVisible (*button);
+
+        // Epic 3 overlays (hidden until their action button is pressed).
+        addChildComponent (pluginBrowser);
+        addChildComponent (routingPanel);
+        pluginBrowser.onClose = [this] { pluginBrowser.setVisible (false); };
+        routingPanel.onClose = [this] { routingPanel.setVisible (false); };
 
         addAndMakeVisible (countInBox);
 
@@ -94,6 +101,17 @@ namespace rrs
         exportButton.setIconName ("download-simple");
         exportButton.setIconOnly (true);
         exportButton.setTooltip ("Export session to 24-bit WAV");
+
+        // Epic 3: plugin browser, routing/cue mixes, stems export.
+        pluginsButton.setIconName ("waveform");
+        pluginsButton.setIconOnly (true);
+        pluginsButton.setTooltip ("Plugin browser (scan/insert VST3/LV2/AU; open editors)");
+        routingButton.setIconName ("headphones");
+        routingButton.setIconOnly (true);
+        routingButton.setTooltip ("Routing & software cue mixes (outputs, sends, submixes)");
+        stemsButton.setIconName ("download-simple");
+        stemsButton.setIconOnly (true);
+        stemsButton.setTooltip ("Export per-track stems + master mix (24-bit WAV)");
 
         // Utility buttons are icon-only too (owner request): the action row no
         // longer overflows once Normalize / Add track / Remove track drop their
@@ -183,6 +201,27 @@ namespace rrs
             refreshTransportUi();
         };
         exportButton.onClick    = [this] { exportSession(); };
+        stemsButton.onClick     = [this] { exportStems(); };
+        pluginsButton.onClick   = [this]
+        {
+            if (session.getEdit() == nullptr)
+                return;
+
+            if (! pluginBrowser.isVisible())
+                pluginBrowser.refresh();
+
+            toggleOverlay (pluginBrowser);
+        };
+        routingButton.onClick   = [this]
+        {
+            if (session.getEdit() == nullptr)
+                return;
+
+            if (! routingPanel.isVisible())
+                routingPanel.refresh();
+
+            toggleOverlay (routingPanel);
+        };
         addTrackButton.onClick  = [this]
         {
             if (exportInProgress)
@@ -245,6 +284,12 @@ namespace rrs
         {
             exportHandle->cancel();
             exportHandle.reset();
+        }
+
+        if (stemsHandle != nullptr)
+        {
+            stemsHandle->cancel();
+            stemsHandle.reset();
         }
 
         // Cancelling skips the export completion callback, and it also invalidates
@@ -362,7 +407,7 @@ namespace rrs
         // While a render holds the `Edit*`, nothing may replace or mutate it:
         // New/Open would reset the Edit (use-after-free on the render thread)
         // and the transport/Save would race it. Disable them all for the duration.
-        const bool busy = exportInProgress;
+        const bool busy = exportInProgress || stemsInProgress;
 
         // While a render holds the `Edit*`, the device panel must be inert:
         // applying a device change runs session.reconfigureInputs(), which
@@ -371,9 +416,17 @@ namespace rrs
         devicePanel.setEnabled (! busy);
 
         for (auto* button : { &saveButton, &saveAsButton, &importButton, &normaliseButton, &exportButton,
+                              &stemsButton, &pluginsButton, &routingButton,
                               &armButton, &recordButton, &playButton, &stopButton, &goToStartButton,
                               &monitorButton, &metronomeButton })
             button->setEnabled (hasEdit && ! busy);
+
+        // The overlays must not linger over a session they no longer describe.
+        if (! hasEdit)
+        {
+            pluginBrowser.setVisible (false);
+            routingPanel.setVisible (false);
+        }
 
         countInBox.setEnabled (hasEdit && ! busy);
         countInLabel.setEnabled (hasEdit && ! busy);
@@ -728,6 +781,75 @@ namespace rrs
                                               self->showStatus ("Export failed: " + error, true);
                                       });
                               });
+    }
+
+    void MainComponent::exportStems()
+    {
+        if (exportInProgress || stemsInProgress)
+            return;
+
+        if (session.getEdit() == nullptr)
+        {
+            showStatus ("Open a session before exporting.", true);
+            return;
+        }
+
+        auto chooser = std::make_shared<juce::FileChooser> (
+            "Export stems (choose a folder)",
+            StemsExport::defaultDirectoryFor (session.getEditFile()), juce::String());
+
+        chooser->launchAsync (juce::FileBrowserComponent::openMode
+                                  | juce::FileBrowserComponent::canSelectDirectories,
+                              [this, chooser] (const juce::FileChooser& fc)
+                              {
+                                  auto directory = fc.getResult();
+
+                                  if (directory == juce::File())
+                                      return;
+
+                                  stemsInProgress = true;
+                                  refreshTransportUi();
+                                  showStatus ("Exporting stems (per-track + master, 24-bit WAV)...");
+
+                                  juce::Component::SafePointer<MainComponent> safe (this);
+
+                                  stemsHandle = StemsExport::start (
+                                      *session.getEdit(), directory,
+                                      [safe] (bool success, juce::File resultDirectory,
+                                              int numFiles, juce::String error)
+                                      {
+                                          auto* self = safe.getComponent();
+
+                                          if (self == nullptr)
+                                              return;
+
+                                          self->stemsHandle.reset();
+                                          self->stemsInProgress = false;
+                                          self->refreshTransportUi();
+
+                                          if (success)
+                                              self->showStatus ("Exported " + juce::String (numFiles)
+                                                                + " stems to " + resultDirectory.getFullPathName());
+                                          else
+                                              self->showStatus ("Stems export failed: " + error, true);
+                                      });
+                              });
+    }
+
+    void MainComponent::toggleOverlay (juce::Component& panel)
+    {
+        if (panel.isVisible())
+        {
+            panel.setVisible (false);
+            return;
+        }
+
+        pluginBrowser.setVisible (false);
+        routingPanel.setVisible (false);
+
+        panel.setVisible (true);
+        panel.toFront (false);
+        resized();
     }
 
     //==============================================================================
@@ -1118,6 +1240,17 @@ namespace rrs
             mixerPanel.setVisible (false);
         }
 
+        // Epic 3 overlays: centred panels over the arrangement.
+        if (pluginBrowser.isVisible() || routingPanel.isVisible())
+        {
+            auto overlay = getLocalBounds().reduced (20);
+            const auto w = juce::jmin (780, overlay.getWidth());
+            const auto h = juce::jmin (520, overlay.getHeight());
+            auto r = juce::Rectangle<int> (w, h).withCentre (overlay.getCentre());
+            pluginBrowser.setBounds (r);
+            routingPanel.setBounds (r);
+        }
+
         auto middle = bottom;
         inputMeter.setBounds (middle.removeFromRight (180).reduced (2));
         middle.removeFromRight (6);
@@ -1199,9 +1332,10 @@ namespace rrs
         // [Add track][Remove track] · [Settings][About] — all icon-only now.
         BrandButton* const buttons[] = { &newButton, &openButton, &saveButton, &saveAsButton,
                                          &closeButton, &importButton, &normaliseButton, &exportButton,
+                                         &stemsButton, &pluginsButton, &routingButton,
                                          &addTrackButton, &removeTrackButton,
                                          &settingsButton, &aboutButton };
-        const int groups[] = { 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 2, 2 };
+        const int groups[] = { 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2 };
         constexpr int numButtons = (int) std::size (buttons);
 
         std::vector<Item> items;

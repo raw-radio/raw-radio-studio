@@ -15,12 +15,16 @@
 #include <memory>
 
 #include "studio/AudioEngine.h"
+#include "studio/PluginHost.h"
 #include "studio/Session.h"
+#include "studio/StemsExport.h"
 #include "studio/WavExport.h"
 #include "ui/BrandButton.h"
 #include "ui/DevicePanel.h"
 #include "ui/InputMeter.h"
 #include "ui/MixerPanel.h"
+#include "ui/PluginBrowser.h"
+#include "ui/RoutingPanel.h"
 #include "ui/Timeline.h"
 
 #include <vector>
@@ -54,8 +58,13 @@ namespace rrs
         void saveSessionAs();
         void importAudioFile();
         void exportSession();
+        void exportStems();
         void showAbout();
         void showSettings();
+
+        /** Shows `panel` centred (hiding the other overlay first) or hides it
+            when already visible. */
+        void toggleOverlay (juce::Component& panel);
 
         /** Shared unsaved-changes guard for New/Open/Close. Runs `onProceed`
             immediately when there is nothing to lose, otherwise shows a
@@ -90,6 +99,11 @@ namespace rrs
                                 [this] { return audio.getNumActiveInputChannels(); } };
         MixerPanel mixerPanel { session };
 
+        /** Epic 3: plugin hosting + routing/cue-mix overlays. */
+        PluginHost pluginHost { audio.engine() };
+        PluginBrowser pluginBrowser { pluginHost, session };
+        RoutingPanel routingPanel { session };
+
         /** Clickable ruler + playhead above the arrangement lanes (owner request:
             position anywhere in the track). */
         Timeline timeline { session };
@@ -100,6 +114,9 @@ namespace rrs
         BrandButton importButton { "Import" };
         BrandButton normaliseButton { "Normalize" };
         BrandButton exportButton { "Export WAV", BrandButton::Style::Primary };
+        BrandButton stemsButton { "Export stems" };
+        BrandButton pluginsButton { "Plugins" };
+        BrandButton routingButton { "Routing" };
         BrandButton addTrackButton { "Add track" }, removeTrackButton { "Remove track" };
         BrandButton settingsButton { "Settings" }, aboutButton { "About" };
 
@@ -121,6 +138,8 @@ namespace rrs
         std::unique_ptr<juce::PropertiesFile> settings;
         std::shared_ptr<WavExport::Handle> exportHandle;
         bool exportInProgress = false;
+        std::shared_ptr<StemsExport::Handle> stemsHandle;
+        bool stemsInProgress = false;
         /** Metronome state saved when an export starts, restored when it ends so
             the click can never leak into the rendered WAV (FR-EXP-1). */
         bool exportMetronomeWasEnabled = false;

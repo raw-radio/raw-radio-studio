@@ -4,6 +4,7 @@
 
 #include "DeviceError.h"
 #include "DeviceSelection.h"
+#include "ui/BrandColours.h"
 
 #include <iostream>
 
@@ -53,6 +54,77 @@ namespace rrs
 
             JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (IsolatedPropertyStorage)
         };
+
+        /** Top-level window that hosts a plugin's own editor (Epic 3).
+
+            The engine creates it from `PluginWindowState::showWindow`; the state
+            owns the window via its `pluginWindow` member, so closing simply asks
+            the state to drop it. Sized to the editor, positioned near the focused
+            window, and remembered on the state so it reopens where it was. */
+        class PluginEditorWindow final : public juce::DocumentWindow
+        {
+        public:
+            PluginEditorWindow (te::Plugin& pluginToHost, te::PluginWindowState& stateToUse)
+                : juce::DocumentWindow (pluginToHost.getName(),
+                                        brand::bgPanel,
+                                        juce::DocumentWindow::closeButton),
+                  state (stateToUse)
+            {
+                setUsingNativeTitleBar (true);
+
+                auto editor = pluginToHost.createEditor();
+
+                if (editor != nullptr)
+                {
+                    auto* editorPtr = editor.get();
+                    setContentOwned (editor.release(), false);
+                    setResizable (editorPtr->allowWindowResizing(), false);
+
+                    if (auto* constrainer = editorPtr->getBoundsConstrainer())
+                        setConstrainer (constrainer);
+
+                    setSize (juce::jmax (40, editorPtr->getWidth()),
+                             juce::jmax (40, editorPtr->getHeight()));
+                }
+                else
+                {
+                    setSize (260, 120);
+                }
+
+                setTopLeftPosition (state.choosePositionForPluginWindow());
+                setVisible (true);
+            }
+
+            void closeButtonPressed() override
+            {
+                state.closeWindowExplicitly();
+            }
+
+            void moved() override
+            {
+                state.lastWindowBounds = getBounds();
+            }
+
+            void resized() override
+            {
+                state.lastWindowBounds = getBounds();
+            }
+
+        private:
+            te::PluginWindowState& state;
+
+            JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PluginEditorWindow)
+        };
+    }
+
+    //==============================================================================
+    std::unique_ptr<juce::Component>
+        StudioUIBehaviour::createPluginWindow (te::PluginWindowState& state)
+    {
+        if (auto* pluginState = dynamic_cast<te::Plugin::WindowState*> (&state))
+            return std::make_unique<PluginEditorWindow> (pluginState->plugin, state);
+
+        return {};
     }
 
     //==============================================================================
@@ -97,10 +169,11 @@ namespace rrs
         // for engine-level warnings. When `useAudioDevices` is false (tests) the
         // behaviour also suppresses device auto-initialisation.
         auto behaviour = std::make_unique<StudioEngineBehaviour> (useAudioDevices);
+        auto uiBehaviour = std::make_unique<StudioUIBehaviour>();
 
         if (useAudioDevices)
         {
-            enginePtr = std::make_unique<te::Engine> ("raw-radio-studio", nullptr, std::move (behaviour));
+            enginePtr = std::make_unique<te::Engine> ("raw-radio-studio", std::move (uiBehaviour), std::move (behaviour));
         }
         else
         {
@@ -108,7 +181,7 @@ namespace rrs
             // IsolatedPropertyStorage) so a developer's real GUI settings — e.g.
             // a saved count-in mode — can never change a test's outcome.
             enginePtr = std::make_unique<te::Engine> (std::make_unique<IsolatedPropertyStorage>(),
-                                                      nullptr, std::move (behaviour));
+                                                      std::move (uiBehaviour), std::move (behaviour));
         }
 
         enforceDirectAlsaOnStartup();

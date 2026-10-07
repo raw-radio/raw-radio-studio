@@ -140,11 +140,15 @@ target_sources(raw_radio_studio PRIVATE
     src/main.cpp
     src/studio/AudioEngine.cpp
     src/studio/AudioImport.cpp
+    src/studio/PluginHost.cpp
     src/studio/Session.cpp
+    src/studio/StemsExport.cpp
     src/studio/WavExport.cpp
     src/ui/DevicePanel.cpp
     src/ui/InputMeter.cpp
     src/ui/MixerPanel.cpp
+    src/ui/PluginBrowser.cpp
+    src/ui/RoutingPanel.cpp
     src/ui/Timeline.cpp
     src/ui/BrandButton.cpp
     src/ui/BrandLookAndFeel.cpp
@@ -289,7 +293,9 @@ target_sources(raw_radio_studio_integration_tests PRIVATE
     tests/test_integration.cpp
     src/studio/AudioEngine.cpp
     src/studio/AudioImport.cpp
+    src/studio/PluginHost.cpp
     src/studio/Session.cpp
+    src/studio/StemsExport.cpp
     src/studio/WavExport.cpp)
 
 target_include_directories(raw_radio_studio_integration_tests PRIVATE

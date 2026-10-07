@@ -34,9 +34,25 @@ namespace rrs
         bool shouldOpenAudioInputByDefault() override     { return audioDevicesEnabled; }
         bool autoInitialiseDeviceManager() override       { return audioDevicesEnabled; }
 
+        /** Epic 3 / FR-MIX-7: opt in to out-of-process plugin scanning. With
+            this true, PluginManager::usesSeparateProcessForScanning() defaults
+            to true and each VST3/LADSPA probe is run in a child process, so a
+            crashing plugin cannot take the host down. */
+        bool canScanPluginsOutOfProcess() override        { return true; }
+
     private:
         bool audioDevicesEnabled = true;
         juce::File recordingsDirectory;
+    };
+
+    /** UIBehaviour that gives hosted plugins a real editor window (Epic 3).
+        The engine asks for the window from `PluginWindowState::showWindow`
+        (`Plugin::showWindowExplicitly`), so without this override an external
+        plugin's editor would never appear. */
+    class StudioUIBehaviour final : public tracktion::UIBehaviour
+    {
+    public:
+        std::unique_ptr<juce::Component> createPluginWindow (tracktion::PluginWindowState&) override;
     };
 
     /** Wraps the Tracktion Engine and the audio device lifecycle. */

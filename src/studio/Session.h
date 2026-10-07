@@ -223,6 +223,106 @@ namespace rrs
         bool isMasterMuted() const;
 
         //==============================================================================
+        // Plugin hosting (FR-MIX-4/6, Epic 3)
+        //
+        // Only *hosted* (external) plugins are exposed to the UI: the default
+        // volume/pan and level-meter plugins the engine adds to every track stay
+        // out of the list so they can neither be removed nor shown as "plugins".
+        // Plugin state serialises with the project because each plugin lives in
+        // the Edit's ValueTree.
+        struct PluginInfo
+        {
+            juce::String name;
+            juce::String format;      ///< e.g. "VST3", "AudioUnit", "LV2".
+            bool missing = false;     ///< Plugin file uninstalled / failed to load.
+        };
+
+        /** Number of hosted (external) plugins on a track. */
+        int getNumPlugins (int trackIndex) const;
+        PluginInfo getPluginInfo (int trackIndex, int pluginIndex) const;
+
+        /** Inserts a hosted plugin onto a track's plugin chain. Appends when
+            `pluginIndex` < 0. Persists the session. Returns false with
+            getLastError() set when the plugin cannot be created. */
+        bool insertPlugin (int trackIndex, const juce::PluginDescription&, int pluginIndex = -1);
+
+        /** Removes the hosted plugin at `pluginIndex` (its editor window closes
+            with it). Persists the session. */
+        bool removePlugin (int trackIndex, int pluginIndex);
+
+        /** Shows (or brings to front) a hosted plugin's editor window. Message
+            thread only; the window is created by StudioUIBehaviour. */
+        bool showPluginEditor (int trackIndex, int pluginIndex);
+
+        //==============================================================================
+        // Routing: output assignment + submix folders + aux sends (FR-MIX-2, Epic 3)
+        //
+        // `trackIndex` is an engine audio-track index (as returned by
+        // `getNumAudioTracks()`); cue-return tracks are audio tracks too and are
+        // included in that ordering.
+
+        // --- Per-track output assignment (FR-MIX-4 substrate for cue mixes) ---
+        /** Hardware output device IDs available on the open device (empty when
+            no device is open). Used to route a track/return to a specific pair. */
+        juce::StringArray getAvailableOutputDeviceIDs() const;
+        /** Human-readable labels for the IDs above, in the same order. */
+        juce::StringArray getAvailableOutputDeviceNames() const;
+
+        bool setTrackOutputToDevice (int trackIndex, const juce::String& deviceID);
+        /** Clears the track's output back to the default audio out. */
+        bool setTrackOutputToDefault (int trackIndex);
+        juce::String getTrackOutputDevice (int trackIndex) const;
+        /** True when the track (or the submix it belongs to) plays to a real
+            hardware device rather than the default output. */
+        bool trackHasDedicatedOutput (int trackIndex) const;
+
+        // --- Submix folders (track -> bus/group -> master, FR-MIX-2) ---
+        /** Creates a submix folder at the end of the track list. Returns its
+            index among submix folders, or -1 on failure. */
+        int createSubmixFolder (const juce::String& name);
+        int getNumSubmixFolders() const;
+        juce::String getSubmixFolderName (int folderIndex) const;
+        /** Moves an audio track into the given submix folder. */
+        bool addTrackToSubmix (int trackIndex, int folderIndex);
+        /** Moves a track out of its submix folder (back to the top level). */
+        bool removeTrackFromSubmix (int trackIndex);
+        /** Index of the submix folder containing `trackIndex`, or -1. */
+        int getTrackSubmixFolder (int trackIndex) const;
+
+        // --- Software cue mixes (FR-MON-3 / FR-MON-4 [hard], Epic 3) ---
+        struct CueMixInfo
+        {
+            int index = -1;                 ///< Positional cue index (0-based).
+            juce::String name;
+            int busNumber = -1;             ///< Stable aux bus id.
+            int returnTrackIndex = -1;      ///< Engine audio-track index of the return.
+            juce::String outputDeviceID;    ///< Assigned hardware output device.
+            bool hasDedicatedOutput = false;///< Routed to a device other than the main out.
+        };
+
+        int getNumCueMixes() const;
+        /** Creates a cue: an aux-return bus track fed by per-track sends. The
+            return is routed to the next free hardware output pair when one is
+            available (otherwise it falls back to the main output — flagged in
+            the returned info). Returns the cue index, or -1 on failure. */
+        int createCueMix (const juce::String& name);
+        bool removeCueMix (int cueIndex);
+        CueMixInfo getCueMix (int cueIndex) const;
+        bool setCueMixName (int cueIndex, const juce::String& name);
+        bool setCueMixOutputDevice (int cueIndex, const juce::String& deviceID);
+
+        /** True when `trackIndex` is a software cue's return/bus track. */
+        bool isCueReturnTrack (int trackIndex) const;
+
+        /** The cue send from `trackIndex` to `cueIndex`. Enabling creates the
+            aux-send point on first use. */
+        bool isCueSendEnabled (int trackIndex, int cueIndex) const;
+        bool setCueSendEnabled (int trackIndex, int cueIndex, bool shouldEnable);
+        /** Send level in dB (-100 = effectively off). Returns -100 when unset. */
+        float getCueSendLevelDb (int trackIndex, int cueIndex) const;
+        bool setCueSendLevelDb (int trackIndex, int cueIndex, float db);
+
+        //==============================================================================
         // Metering
         InputLevels& getInputLevels() noexcept                  { return inputLevels; }
 

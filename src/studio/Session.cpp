@@ -116,6 +116,12 @@ namespace rrs
         // the master volume plugin, whose gain bakes the effective (muted) value.
         const juce::Identifier idMasterGain  { "rrsMasterGainDb" };
         const juce::Identifier idMasterMuted { "rrsMasterMuted" };
+
+        // Software cue-mix markers, stored on each cue's return/bus track so the
+        // cue set (names, aux-bus numbers) survives save/open with the project.
+        const juce::Identifier idCueReturn { "rrsCueReturn" };
+        const juce::Identifier idCueBus    { "rrsCueBus" };
+        const juce::Identifier idCueName   { "rrsCueName" };
     }
 
     //==============================================================================
@@ -1345,6 +1351,684 @@ namespace rrs
 
         edit->state.setProperty (idMasterGain, (double) masterGainDb, nullptr);
         edit->state.setProperty (idMasterMuted, masterMuted, nullptr);
+    }
+
+    //==============================================================================
+    // Plugin hosting (FR-MIX-4/6, Epic 3)
+    namespace
+    {
+        /** The `index`-th hosted (external) plugin on a track, skipping the
+            engine's built-in volume/pan and level-meter plugins. */
+        te::ExternalPlugin* externalPluginAt (te::AudioTrack& track, int index)
+        {
+            if (index < 0)
+                return nullptr;
+
+            int seen = 0;
+
+            for (auto* plugin : track.pluginList)
+                if (auto* external = dynamic_cast<te::ExternalPlugin*> (plugin))
+                    if (seen++ == index)
+                        return external;
+
+            return nullptr;
+        }
+    }
+
+    int Session::getNumPlugins (int trackIndex) const
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (track == nullptr)
+            return 0;
+
+        int count = 0;
+
+        for (auto* plugin : track->pluginList)
+            if (dynamic_cast<te::ExternalPlugin*> (plugin) != nullptr)
+                ++count;
+
+        return count;
+    }
+
+    Session::PluginInfo Session::getPluginInfo (int trackIndex, int pluginIndex) const
+    {
+        PluginInfo info;
+        auto* track = getTrack (trackIndex);
+
+        if (track == nullptr)
+            return info;
+
+        if (auto* external = externalPluginAt (*track, pluginIndex))
+        {
+            info.name = external->getName();
+            info.format = external->desc.pluginFormatName;
+            info.missing = external->isMissing() || external->getLoadError().isNotEmpty();
+        }
+
+        return info;
+    }
+
+    bool Session::insertPlugin (int trackIndex, const juce::PluginDescription& description, int pluginIndex)
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (edit == nullptr || track == nullptr)
+        {
+            lastError = "No such track.";
+            return false;
+        }
+
+        auto plugin = edit->getPluginCache().createNewPlugin (te::ExternalPlugin::xmlTypeName, description);
+
+        if (plugin == nullptr)
+        {
+            lastError = "Could not create plugin: " + description.name;
+            return false;
+        }
+
+        track->pluginList.insertPlugin (plugin, pluginIndex, nullptr);
+
+        edit->restartPlayback();
+        save();
+        sendChangeMessage();
+        clearLastError();
+        return true;
+    }
+
+    bool Session::removePlugin (int trackIndex, int pluginIndex)
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (edit == nullptr || track == nullptr)
+        {
+            lastError = "No such track.";
+            return false;
+        }
+
+        auto* external = externalPluginAt (*track, pluginIndex);
+
+        if (external == nullptr)
+        {
+            lastError = "No such plugin.";
+            return false;
+        }
+
+        // Closes the editor window (hideWindowForShutdown) and detaches it from
+        // the Edit's ValueTree so the next save drops it.
+        external->deleteFromParent();
+
+        edit->restartPlayback();
+        save();
+        sendChangeMessage();
+        clearLastError();
+        return true;
+    }
+
+    bool Session::showPluginEditor (int trackIndex, int pluginIndex)
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (edit == nullptr || track == nullptr)
+            return false;
+
+        auto* external = externalPluginAt (*track, pluginIndex);
+
+        if (external == nullptr)
+            return false;
+
+        external->showWindowExplicitly();
+        return true;
+    }
+
+    //==============================================================================
+    // Routing: output assignment + submix folders + aux sends (FR-MIX-2, Epic 3)
+    namespace
+    {
+        struct CueReturn
+        {
+            te::AudioTrack* track = nullptr;
+            int bus = -1;
+            juce::String name;
+        };
+
+        /** All cue return/bus tracks, in engine order (positional cue index). */
+        std::vector<CueReturn> collectCueReturns (te::Edit& edit)
+        {
+            std::vector<CueReturn> returns;
+
+            for (auto* track : te::getAudioTracks (edit))
+                if ((bool) track->state.getProperty (idCueReturn, false))
+                    returns.push_back ({ track,
+                                         (int) track->state.getProperty (idCueBus, -1),
+                                         track->state.getProperty (idCueName, track->getName()).toString() });
+
+            return returns;
+        }
+
+        te::AuxSendPlugin* findAuxSend (te::AudioTrack& track, int bus)
+        {
+            for (auto* plugin : track.pluginList)
+                if (auto* send = dynamic_cast<te::AuxSendPlugin*> (plugin))
+                    if (send->getBusNumber() == bus)
+                        return send;
+
+            return nullptr;
+        }
+
+        /** Default cue output pair: device 0 is the control-room/main out, so a
+            cue takes the next pair when the interface exposes one. Returns an
+            empty string when only the main output exists (the cue then falls
+            back to it — "not physically separable" per EPIC2_GAPS). */
+        juce::String defaultCueOutputDeviceID (AudioEngine& audio, int cueIndex)
+        {
+            const auto devices = audio.deviceManager().getWaveOutputDevices();
+
+            if ((int) devices.size() > cueIndex + 1)
+                return devices[(size_t) cueIndex + 1]->getDeviceID();
+
+            return {};
+        }
+    }
+
+    juce::StringArray Session::getAvailableOutputDeviceIDs() const
+    {
+        juce::StringArray ids;
+
+        for (auto* device : audio.deviceManager().getWaveOutputDevices())
+            ids.add (device->getDeviceID());
+
+        return ids;
+    }
+
+    juce::StringArray Session::getAvailableOutputDeviceNames() const
+    {
+        juce::StringArray names;
+
+        for (auto* device : audio.deviceManager().getWaveOutputDevices())
+            names.add (device->getName() + " (" + juce::String (device->getChannels().getNumChannels())
+                       + "ch)");
+
+        return names;
+    }
+
+    bool Session::setTrackOutputToDevice (int trackIndex, const juce::String& deviceID)
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (edit == nullptr || track == nullptr)
+        {
+            lastError = "No such track.";
+            return false;
+        }
+
+        if (deviceID.isEmpty())
+            return setTrackOutputToDefault (trackIndex);
+
+        if (! getAvailableOutputDeviceIDs().contains (deviceID))
+        {
+            lastError = "No such output device.";
+            return false;
+        }
+
+        track->getOutput().setOutputToDeviceID (deviceID);
+        edit->restartPlayback();
+        save();
+        sendChangeMessage();
+        clearLastError();
+        return true;
+    }
+
+    bool Session::setTrackOutputToDefault (int trackIndex)
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (edit == nullptr || track == nullptr)
+        {
+            lastError = "No such track.";
+            return false;
+        }
+
+        track->getOutput().setOutputToDefaultDevice (false);
+        edit->restartPlayback();
+        save();
+        sendChangeMessage();
+        clearLastError();
+        return true;
+    }
+
+    juce::String Session::getTrackOutputDevice (int trackIndex) const
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (track == nullptr)
+            return {};
+
+        // `getOutputDeviceID()` returns the resolved device's *name*; return its
+        // stable ID instead so callers can match it against getAvailableOutputDeviceIDs().
+        if (auto* device = track->getOutput().getOutputDevice (false))
+            return device->getDeviceID();
+
+        return track->getOutput().getOutputDeviceID();
+    }
+
+    bool Session::trackHasDedicatedOutput (int trackIndex) const
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (track == nullptr)
+            return false;
+
+        auto& output = track->getOutput();
+        return ! output.usesDefaultAudioOut() && ! output.usesDefaultMIDIOut()
+            && ! output.outputsToNone();
+    }
+
+    //==============================================================================
+    namespace
+    {
+        juce::Array<te::FolderTrack*> submixFolders (te::Edit& edit)
+        {
+            juce::Array<te::FolderTrack*> folders;
+
+            for (auto* folder : te::getTracksOfType<te::FolderTrack> (edit, true))
+                if (folder != nullptr && folder->isSubmixFolder())
+                    folders.add (folder);
+
+            return folders;
+        }
+    }
+
+    int Session::createSubmixFolder (const juce::String& name)
+    {
+        if (edit == nullptr)
+        {
+            lastError = "Open a session before adding a submix.";
+            return -1;
+        }
+
+        auto folder = edit->insertNewFolderTrack (te::TrackInsertPoint::getEndOfTracks (*edit), nullptr, true);
+
+        if (folder == nullptr)
+        {
+            lastError = "Could not create the submix folder.";
+            return -1;
+        }
+
+        folder->setName (name.isNotEmpty() ? name
+                                           : ("Bus " + juce::String (getNumSubmixFolders() + 1)));
+
+        edit->restartPlayback();
+        save();
+        sendChangeMessage();
+        clearLastError();
+        return getNumSubmixFolders() - 1;
+    }
+
+    int Session::getNumSubmixFolders() const
+    {
+        return edit != nullptr ? submixFolders (*edit).size() : 0;
+    }
+
+    juce::String Session::getSubmixFolderName (int folderIndex) const
+    {
+        if (edit == nullptr)
+            return {};
+
+        auto folders = submixFolders (*edit);
+
+        if (! juce::isPositiveAndBelow (folderIndex, folders.size()))
+            return {};
+
+        return folders[folderIndex]->getName();
+    }
+
+    bool Session::addTrackToSubmix (int trackIndex, int folderIndex)
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (edit == nullptr || track == nullptr)
+        {
+            lastError = "No such track.";
+            return false;
+        }
+
+        auto folders = submixFolders (*edit);
+
+        if (! juce::isPositiveAndBelow (folderIndex, folders.size()))
+        {
+            lastError = "No such submix folder.";
+            return false;
+        }
+
+        te::Track::Ptr trackPtr (track);
+        edit->moveTrack (trackPtr, te::TrackInsertPoint (folders[folderIndex]->itemID, {}));
+
+        edit->restartPlayback();
+        save();
+        sendChangeMessage();
+        clearLastError();
+        return true;
+    }
+
+    bool Session::removeTrackFromSubmix (int trackIndex)
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (edit == nullptr || track == nullptr || track->getParentFolderTrack() == nullptr)
+        {
+            lastError = "The track is not in a submix.";
+            return false;
+        }
+
+        te::Track::Ptr trackPtr (track);
+        edit->moveTrack (trackPtr, te::TrackInsertPoint::getEndOfTracks (*edit));
+
+        edit->restartPlayback();
+        save();
+        sendChangeMessage();
+        clearLastError();
+        return true;
+    }
+
+    int Session::getTrackSubmixFolder (int trackIndex) const
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (edit == nullptr || track == nullptr)
+            return -1;
+
+        auto* parent = track->getParentFolderTrack();
+
+        if (parent == nullptr)
+            return -1;
+
+        return submixFolders (*edit).indexOf (parent);
+    }
+
+    //==============================================================================
+    // Software cue mixes (FR-MON-3 / FR-MON-4)
+    int Session::getNumCueMixes() const
+    {
+        return edit != nullptr ? (int) collectCueReturns (*edit).size() : 0;
+    }
+
+    int Session::createCueMix (const juce::String& name)
+    {
+        if (edit == nullptr)
+        {
+            lastError = "Open a session before adding a cue.";
+            return -1;
+        }
+
+        const auto returns = collectCueReturns (*edit);
+
+        int nextBus = 0;
+
+        for (auto& cue : returns)
+            nextBus = juce::jmax (nextBus, cue.bus + 1);
+
+        auto track = edit->insertNewAudioTrack (te::TrackInsertPoint::getEndOfTracks (*edit), nullptr, true);
+
+        if (track == nullptr)
+        {
+            lastError = "Could not create the cue return track.";
+            return -1;
+        }
+
+        const auto cueName = name.isNotEmpty() ? name
+                                               : ("Cue " + juce::String ((int) returns.size() + 1));
+        track->setName (cueName);
+        track->state.setProperty (idCueReturn, true, nullptr);
+        track->state.setProperty (idCueBus, nextBus, nullptr);
+        track->state.setProperty (idCueName, cueName, nullptr);
+
+        // The cue's aux-return bus: sums every AuxSend whose bus number matches.
+        auto plugin = edit->getPluginCache().createNewPlugin (te::AuxReturnPlugin::xmlTypeName, {});
+
+        if (auto* ret = dynamic_cast<te::AuxReturnPlugin*> (plugin.get()))
+            ret->busNumber = nextBus;
+
+        if (plugin != nullptr)
+            track->pluginList.insertPlugin (plugin, -1, nullptr);
+
+        // Route to the next free hardware output pair when present.
+        if (auto deviceID = defaultCueOutputDeviceID (audio, (int) returns.size()); deviceID.isNotEmpty())
+            track->getOutput().setOutputToDeviceID (deviceID);
+
+        edit->restartPlayback();
+        save();
+        sendChangeMessage();
+        clearLastError();
+        return (int) returns.size();
+    }
+
+    bool Session::removeCueMix (int cueIndex)
+    {
+        if (edit == nullptr)
+            return false;
+
+        auto returns = collectCueReturns (*edit);
+
+        if (! juce::isPositiveAndBelow (cueIndex, (int) returns.size()))
+        {
+            lastError = "No such cue mix.";
+            return false;
+        }
+
+        edit->deleteTrack (returns[(size_t) cueIndex].track);
+        edit->restartPlayback();
+        save();
+        sendChangeMessage();
+        clearLastError();
+        return true;
+    }
+
+    Session::CueMixInfo Session::getCueMix (int cueIndex) const
+    {
+        CueMixInfo info;
+
+        if (edit == nullptr)
+            return info;
+
+        auto returns = collectCueReturns (*edit);
+
+        if (! juce::isPositiveAndBelow (cueIndex, (int) returns.size()))
+            return info;
+
+        auto& cue = returns[(size_t) cueIndex];
+        info.index = cueIndex;
+        info.name = cue.name;
+        info.busNumber = cue.bus;
+        info.returnTrackIndex = te::getAudioTracks (*edit).indexOf (cue.track);
+        info.outputDeviceID = getTrackOutputDevice (info.returnTrackIndex);
+        info.hasDedicatedOutput = ! cue.track->getOutput().usesDefaultAudioOut()
+                               && ! cue.track->getOutput().outputsToNone();
+        return info;
+    }
+
+    bool Session::setCueMixName (int cueIndex, const juce::String& name)
+    {
+        if (edit == nullptr)
+            return false;
+
+        auto returns = collectCueReturns (*edit);
+
+        if (! juce::isPositiveAndBelow (cueIndex, (int) returns.size()) || name.isEmpty())
+            return false;
+
+        returns[(size_t) cueIndex].track->setName (name);
+        returns[(size_t) cueIndex].track->state.setProperty (idCueName, name, nullptr);
+        save();
+        sendChangeMessage();
+        return true;
+    }
+
+    bool Session::setCueMixOutputDevice (int cueIndex, const juce::String& deviceID)
+    {
+        if (edit == nullptr)
+            return false;
+
+        auto returns = collectCueReturns (*edit);
+
+        if (! juce::isPositiveAndBelow (cueIndex, (int) returns.size()))
+        {
+            lastError = "No such cue mix.";
+            return false;
+        }
+
+        auto* track = returns[(size_t) cueIndex].track;
+
+        if (deviceID.isEmpty())
+            track->getOutput().setOutputToDefaultDevice (false);
+        else if (! getAvailableOutputDeviceIDs().contains (deviceID))
+        {
+            lastError = "No such output device.";
+            return false;
+        }
+        else
+            track->getOutput().setOutputToDeviceID (deviceID);
+
+        edit->restartPlayback();
+        save();
+        sendChangeMessage();
+        clearLastError();
+        return true;
+    }
+
+    bool Session::isCueReturnTrack (int trackIndex) const
+    {
+        auto* track = getTrack (trackIndex);
+
+        return track != nullptr && (bool) track->state.getProperty (idCueReturn, false);
+    }
+
+    float Session::getCueSendLevelDb (int trackIndex, int cueIndex) const
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (edit == nullptr || track == nullptr)
+            return -100.0f;
+
+        const auto returns = collectCueReturns (*edit);
+
+        if (! juce::isPositiveAndBelow (cueIndex, (int) returns.size()))
+            return -100.0f;
+
+        if (auto* send = findAuxSend (*track, returns[(size_t) cueIndex].bus))
+            return juce::jlimit (-100.0f, 12.0f, send->getGainDb());
+
+        return -100.0f;
+    }
+
+    bool Session::isCueSendEnabled (int trackIndex, int cueIndex) const
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (edit == nullptr || track == nullptr)
+            return false;
+
+        const auto returns = collectCueReturns (*edit);
+
+        if (! juce::isPositiveAndBelow (cueIndex, (int) returns.size()))
+            return false;
+
+        if (auto* send = findAuxSend (*track, returns[(size_t) cueIndex].bus))
+            return send->isEnabled();
+
+        return false;
+    }
+
+    bool Session::setCueSendEnabled (int trackIndex, int cueIndex, bool shouldEnable)
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (edit == nullptr || track == nullptr)
+        {
+            lastError = "No such track.";
+            return false;
+        }
+
+        // The cue return must exist before a send can target its bus.
+        if (auto info = getCueMix (cueIndex); info.busNumber < 0)
+        {
+            lastError = "No such cue mix.";
+            return false;
+        }
+
+        auto* send = findAuxSend (*track, getCueMix (cueIndex).busNumber);
+
+        if (send == nullptr && shouldEnable)
+        {
+            // Create the send at the end of the plugin chain so it is post-fader
+            // (the spec's default), and start it at unity.
+            auto plugin = edit->getPluginCache().createNewPlugin (te::AuxSendPlugin::xmlTypeName, {});
+
+            if (auto* newSend = dynamic_cast<te::AuxSendPlugin*> (plugin.get()))
+            {
+                newSend->busNumber = getCueMix (cueIndex).busNumber;
+                newSend->setGainDb (0.0f);
+                track->pluginList.insertPlugin (plugin, -1, nullptr);
+                send = newSend;
+            }
+        }
+
+        if (send != nullptr)
+            send->setEnabled (shouldEnable);
+
+        edit->restartPlayback();
+        save();
+        sendChangeMessage();
+        clearLastError();
+        return true;
+    }
+
+    bool Session::setCueSendLevelDb (int trackIndex, int cueIndex, float db)
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (edit == nullptr || track == nullptr)
+        {
+            lastError = "No such track.";
+            return false;
+        }
+
+        const auto info = getCueMix (cueIndex);
+
+        if (info.busNumber < 0)
+        {
+            lastError = "No such cue mix.";
+            return false;
+        }
+
+        auto* send = findAuxSend (*track, info.busNumber);
+
+        if (send == nullptr)
+        {
+            auto plugin = edit->getPluginCache().createNewPlugin (te::AuxSendPlugin::xmlTypeName, {});
+
+            if (auto* newSend = dynamic_cast<te::AuxSendPlugin*> (plugin.get()))
+            {
+                newSend->busNumber = info.busNumber;
+                track->pluginList.insertPlugin (plugin, -1, nullptr);
+                send = newSend;
+            }
+        }
+
+        if (send == nullptr)
+        {
+            lastError = "Could not create the cue send.";
+            return false;
+        }
+
+        send->setGainDb (juce::jlimit (-100.0f, 12.0f, db));
+        send->setEnabled (true);
+
+        edit->restartPlayback();
+        save();
+        sendChangeMessage();
+        clearLastError();
+        return true;
     }
 
     //==============================================================================

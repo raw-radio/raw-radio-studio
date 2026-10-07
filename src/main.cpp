@@ -14,6 +14,7 @@
 #include <memory>
 
 #include "studio/AudioEngine.h"
+#include "studio/PluginHost.h"
 #include "ui/BrandFonts.h"
 #include "ui/BrandLookAndFeel.h"
 #include "ui/MainComponent.h"
@@ -467,6 +468,44 @@ namespace
 
         return 0;
     }
+
+    // `--selftest-plugin-scan [--rescan]`: run a real out-of-process plugin scan
+    // and print the hosted formats + number of plugins found. This is the
+    // headless diagnostic for Epic 3 plugin hosting (FR-MIX-4/7); it opens no
+    // window and needs no audio device.
+    int runSelfTestPluginScan (bool rescan)
+    {
+        const juce::ScopedJuceInitialiser_GUI juceInit;
+        rrs::AudioEngine audio (false);
+        rrs::PluginHost host (audio.engine());
+
+        std::cout << "raw-radio-studio plugin scan self-test\n"
+                  << "  hosted formats:            "
+                  << host.getHostedFormatNames().joinIntoString (", ") << "\n"
+                  << "  out-of-process scanning:   "
+                  << (host.usesOutOfProcessScanning() ? "yes" : "no") << "\n"
+                  << "  known before scan:         " << host.getNumKnownPlugins() << "\n"
+                  << "  scanning" << (rescan ? " (rescan all)" : "") << "...\n";
+
+        std::atomic<bool> done { false };
+        int found = 0;
+
+        host.startScan (rescan, [&done, &found] (int numFound, juce::String)
+                        {
+                            found = numFound;
+                            done.store (true);
+                        });
+
+        const auto deadline = juce::Time::getMillisecondCounterHiRes() + 120000.0;
+
+        while (! done.load() && juce::Time::getMillisecondCounterHiRes() < deadline)
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
+
+        std::cout << "  newly found:               " << found << "\n"
+                  << "  known after scan:          " << host.getNumKnownPlugins() << std::endl;
+
+        return 0;
+    }
 }
 
 class RawRadioStudioApplication final : public juce::JUCEApplication
@@ -578,6 +617,28 @@ int main (int argc, char* argv[])
     for (int i = 1; i < argc; ++i)
         args.add (juce::String (argv[i]));
 
+    // Plugin-scan child process (FR-MIX-7): Tracktion launches this executable
+    // with a "--PluginScan:<pipe>" argument and expects it to connect back. This
+    // must happen before JUCE's single-instance gate, which would otherwise
+    // forward the command line to the running instance and silently defeat the
+    // out-of-process scan. The worker owns its own lifetime and exits the
+    // process when the coordinator disconnects.
+    {
+        juce::String commandLine;
+
+        for (int i = 1; i < argc; ++i)
+            commandLine << (i > 1 ? " " : "") << juce::String (argv[i]);
+
+        if (commandLine.trim().startsWith ("--PluginScan:"))
+        {
+            const juce::ScopedJuceInitialiser_GUI juceInit;
+
+            if (tracktion::PluginManager::startChildProcessPluginScan (commandLine))
+                for (;;)
+                    juce::MessageManager::getInstance()->runDispatchLoopUntil (100);
+        }
+    }
+
     // `--version` is handled first and unconditionally (see note above).
     if (args.contains ("--version"))
     {
@@ -590,6 +651,9 @@ int main (int argc, char* argv[])
     // instance. Clearly marked diagnostics, not user-facing features.
     if (args.contains ("--list-devices"))
         return runListDevices();
+
+    if (args.contains ("--selftest-plugin-scan"))
+        return runSelfTestPluginScan (args.contains ("--rescan"));
 
     const bool multitrack = args.contains ("--selftest-multitrack");
     const auto selfTestFlag = multitrack ? juce::String ("--selftest-multitrack")

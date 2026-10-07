@@ -51,13 +51,16 @@ int main (int argc, char** argv)
 #include "studio/AudioImport.h"
 #include "studio/DeviceError.h"
 #include "studio/InputRouting.h"
+#include "studio/PluginHost.h"
 #include "studio/Session.h"
+#include "studio/StemsExport.h"
 #include "studio/WavExport.h"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <memory>
 #include <set>
 #include <thread>
@@ -112,7 +115,7 @@ namespace
 
     /** Writes a valid 24-bit stereo sine WAV so an edit can reference it. */
     juce::File writeSineWav (const juce::File& file, double sampleRate, double seconds,
-                             float amplitude = 0.5f)
+                             float amplitude = 0.5f, double frequency = 440.0)
     {
         file.deleteFile();
 
@@ -134,7 +137,7 @@ namespace
         for (int ch = 0; ch < 2; ++ch)
             for (int i = 0; i < numSamples; ++i)
                 buffer.setSample (ch, i, amplitude * (float) std::sin (2.0 * juce::MathConstants<double>::pi
-                                                                       * 440.0 * (double) i / sampleRate));
+                                                                       * frequency * (double) i / sampleRate));
 
         if (! writer->writeFromAudioSampleBuffer (buffer, 0, numSamples))
             return {};
@@ -2285,3 +2288,546 @@ TEST_CASE ("AudioEngine surfaces a loud error instead of silently falling back (
         CHECK (isAcceptableInputDeviceName (engine.getCurrentDeviceName()));
 }
 #endif
+
+//==============================================================================
+// Epic 3 — plugin hosting (FR-MIX-4/6/7).
+//
+// A minimal hosted-plugin stand-in: a stereo gain whose value is serialised
+// through the standard AudioProcessor state chunk. It lets the hosting path
+// (insert -> process -> save -> reopen -> state restored) be exercised
+// deterministically without a VST3 installed on the machine.
+class TestGainPlugin final : public juce::AudioPluginInstance
+{
+public:
+    TestGainPlugin()
+        : juce::AudioPluginInstance (BusesProperties()
+                                         .withInput  ("Input",  juce::AudioChannelSet::stereo(), true)
+                                         .withOutput ("Output", juce::AudioChannelSet::stereo(), true))
+    {
+    }
+
+    void fillInPluginDescription (juce::PluginDescription& d) const override
+    {
+        d.name = "RRS Test Gain";
+        d.pluginFormatName = "VST3";
+        d.fileOrIdentifier = "rrs_test_gain";
+        d.manufacturerName = "RAW Radio";
+        d.descriptiveName = "Deterministic gain for the hosting tests";
+        d.numInputChannels = 2;
+        d.numOutputChannels = 2;
+        d.isInstrument = false;
+    }
+
+    const juce::String getName() const override                 { return "RRS Test Gain"; }
+    void prepareToPlay (double, int) override                   {}
+    void releaseResources() override                            {}
+    using juce::AudioProcessor::processBlock;
+
+    void processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override
+    {
+        buffer.applyGain (gain);
+    }
+
+    double getTailLengthSeconds() const override                { return 0.0; }
+    bool acceptsMidi() const override                           { return false; }
+    bool producesMidi() const override                          { return false; }
+    juce::AudioProcessorEditor* createEditor() override         { return nullptr; }
+    bool hasEditor() const override                             { return false; }
+    int getNumPrograms() override                               { return 1; }
+    int getCurrentProgram() override                            { return 0; }
+    void setCurrentProgram (int) override                       {}
+    const juce::String getProgramName (int) override            { return {}; }
+    void changeProgramName (int, const juce::String&) override  {}
+
+    void getStateInformation (juce::MemoryBlock& dest) override
+    {
+        dest.setSize (sizeof (gain));
+        std::memcpy (dest.getData(), &gain, sizeof (gain));
+    }
+
+    void setStateInformation (const void* data, int size) override
+    {
+        if (data != nullptr && size >= (int) sizeof (gain))
+            std::memcpy (&gain, data, sizeof (gain));
+    }
+
+    float gain = 1.0f;
+};
+
+TEST_CASE ("plugin hosting: VST3 always, AU on macOS only, never VST2, out-of-process scan (FR-MIX-4/7)")
+{
+    AudioEngine audio (false);
+    PluginHost host (audio.engine());
+
+    const auto formats = host.getHostedFormatNames();
+    INFO ("hosted formats: " << formats.joinIntoString (", "));
+
+    // FR-MIX-4 / D11: VST3 is the default hosting format, always built in.
+    CHECK (formats.contains ("VST3"));
+
+    // D24: VST2 is never shipped. JUCE calls format "VST" (VST2); assert it is
+    // absent. Empty string guard for the (unreachable) no-formats case.
+    CHECK_FALSE (formats.contains ("VST"));
+
+    // LV2 is opt-in (JUCE_PLUGINHOST_LV2) — the format list must match the flag.
+   #if JUCE_PLUGINHOST_LV2
+    CHECK (formats.contains ("LV2"));
+   #else
+    CHECK_FALSE (formats.contains ("LV2"));
+   #endif
+
+    // AU on macOS only; graceful absence elsewhere.
+   #if JUCE_MAC
+    CHECK (formats.contains ("AudioUnit"));
+   #else
+    CHECK_FALSE (formats.contains ("AudioUnit"));
+   #endif
+
+    // FR-MIX-7 / D23: scanning runs out of process so a crashing plugin cannot
+    // take the host down.
+    CHECK (host.usesOutOfProcessScanning());
+}
+
+TEST_CASE ("inserted hosted plugin processes audio and its state survives save/open (FR-MIX-4/6, measured)")
+{
+    auto dir = scratchDirectory ("plugin-insert");
+    auto editFile = dir.getChildFile ("Plugin.tracktionedit");
+    auto tone = writeSineWav (dir.getChildFile ("tone.wav"), 48000.0, 1.0);
+    REQUIRE (tone.existsAsFile());
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (editFile));
+
+    // Import the tone as a playback (backing) track: track 0 is the input track,
+    // the imported one is last.
+    REQUIRE (session.importAudioFile (tone));
+    const int trackIndex = session.getNumAudioTracks() - 1;
+    REQUIRE (trackIndex >= 1);
+    REQUIRE (session.getTrack (trackIndex) != nullptr);
+
+    // Deterministic hosted-plugin factory.
+    auto& pm = audio.engine().getPluginManager();
+    auto previousFactory = pm.createPluginInstance;
+    pm.createPluginInstance = [] (const juce::PluginDescription& d, double, int, juce::String&)
+        -> std::unique_ptr<juce::AudioPluginInstance>
+    {
+        if (d.name == "RRS Test Gain")
+            return std::make_unique<TestGainPlugin>();
+
+        return nullptr;
+    };
+
+    juce::PluginDescription desc;
+    desc.name = "RRS Test Gain";
+    desc.pluginFormatName = "VST3";
+    desc.fileOrIdentifier = "rrs_test_gain";
+    desc.manufacturerName = "RAW Radio";
+    desc.numInputChannels = 2;
+    desc.numOutputChannels = 2;
+    pm.knownPluginList.addType (desc);
+
+    REQUIRE (session.insertPlugin (trackIndex, desc, -1));
+    REQUIRE (session.getNumPlugins (trackIndex) == 1);
+    CHECK (session.getPluginInfo (trackIndex, 0).name == "RRS Test Gain");
+    CHECK (session.getPluginInfo (trackIndex, 0).format == "VST3");
+    CHECK_FALSE (session.getPluginInfo (trackIndex, 0).missing);
+
+    // Resolve the created instance so the test can drive its gain.
+    te::ExternalPlugin* external = nullptr;
+
+    for (auto* plugin : session.getTrack (trackIndex)->pluginList)
+        if (auto* e = dynamic_cast<te::ExternalPlugin*> (plugin))
+            external = e;
+
+    REQUIRE (external != nullptr);
+    external->initialiseFully();
+    auto* instance = dynamic_cast<TestGainPlugin*> (external->getAudioPluginInstance());
+    REQUIRE (instance != nullptr);
+
+    auto renderPeak = [&] (te::Edit& edit, const juce::File& dest)
+    {
+        dest.deleteFile();
+        std::atomic<bool> finished { false };
+        bool succeeded = false;
+        juce::String error;
+
+        auto handle = WavExport::start (edit, dest,
+                                        [&] (bool success, juce::File, juce::String message)
+                                        {
+                                            succeeded = success;
+                                            error = message;
+                                            finished = true;
+                                        });
+        REQUIRE (handle != nullptr);
+
+        for (int i = 0; i < 400 && ! finished.load(); ++i)
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (25);
+
+        REQUIRE (finished.load());
+        INFO ("render error: " << error);
+        REQUIRE (succeeded);
+        return readWavPeak (dest);
+    };
+
+    // Unity reference.
+    instance->gain = 1.0f;
+    const auto unityPeak = renderPeak (*session.getEdit(), dir.getChildFile ("unity.wav"));
+    REQUIRE (unityPeak > 0.1f);
+
+    // The plugin genuinely processes the audio: -6 dB.
+    instance->gain = 0.5f;
+    const auto reducedPeak = renderPeak (*session.getEdit(), dir.getChildFile ("reduced.wav"));
+    CHECK (reducedPeak == doctest::Approx (unityPeak * 0.5f).epsilon (0.03f));
+
+    // Persist, reopen in a fresh session on the same engine, and confirm the
+    // plugin (and its gain state) round-tripped.
+    REQUIRE (session.save());
+    session.close();
+
+    Session reopened (audio);
+    REQUIRE (reopened.open (editFile));
+    const int reopenedTrack = reopened.getNumAudioTracks() - 1;
+    REQUIRE (reopened.getNumPlugins (reopenedTrack) == 1);
+    CHECK (reopened.getPluginInfo (reopenedTrack, 0).name == "RRS Test Gain");
+
+    const auto reopenedPeak = renderPeak (*reopened.getEdit(), dir.getChildFile ("reopened.wav"));
+    INFO ("unity " << unityPeak << ", reopened " << reopenedPeak);
+    CHECK (reopenedPeak == doctest::Approx (unityPeak * 0.5f).epsilon (0.05f));
+
+    pm.createPluginInstance = previousFactory;
+    reopened.close();
+}
+
+//==============================================================================
+// Epic 3 (FR-MON-3 / FR-MON-4 [hard], closing the Epic 2 gap) — software cue
+// mixes.
+//
+// A 6-out hosted interface is split into three stereo wave output devices:
+// device 0 = control-room/main, device 1 = cue A, device 2 = cue B. Two source
+// tones are sent to the cues through aux sends at different levels, then the
+// real-time output is measured per device AND each cue is verified with an
+// independent offline RenderSpecification render of its return bus.
+TEST_CASE ("software cue mixes: two independent, distinct mixes routed to separate outputs (FR-MON-3/4, measured)")
+{
+    auto dir = scratchDirectory ("cues");
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Cues.tracktionedit")));
+
+    te::HostedAudioDeviceInterface::Parameters params;
+    params.sampleRate = 48000.0;
+    params.blockSize = 256;
+    params.inputChannels = 2;
+    params.outputChannels = 6;
+
+    auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+    REQUIRE (player != nullptr);
+
+    auto& dm = audio.deviceManager();
+    dm.setAllWaveOutputsToNumChannels (2);
+
+    for (int i = 0; i < 200; ++i)
+    {
+        dm.dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+        if (session.isInputConfigured())
+            break;
+
+        session.reconfigureInputs();
+    }
+
+    REQUIRE (session.isInputConfigured());
+    REQUIRE (dm.getNumWaveOutDevices() == 3);
+
+    // Distinct source tones: A is a loud 440 Hz, B is a quieter 880 Hz.
+    auto toneA = writeSineWav (dir.getChildFile ("A.wav"), 48000.0, 2.0, 0.5f, 440.0);
+    auto toneB = writeSineWav (dir.getChildFile ("B.wav"), 48000.0, 2.0, 0.25f, 880.0);
+    REQUIRE (toneA.existsAsFile());
+    REQUIRE (toneB.existsAsFile());
+    REQUIRE (session.importAudioFile (toneA));
+    REQUIRE (session.importAudioFile (toneB));
+
+    const int trackA = session.getNumAudioTracks() - 2;
+    const int trackB = session.getNumAudioTracks() - 1;
+    REQUIRE (trackA >= 1);
+    REQUIRE (trackB > trackA);
+
+    // Two cues, each on its own hardware output pair.
+    const int cueA = session.createCueMix ("Cue A");
+    const int cueB = session.createCueMix ("Cue B");
+    REQUIRE (cueA == 0);
+    REQUIRE (cueB == 1);
+    CHECK (session.getNumCueMixes() == 2);
+    CHECK (session.getCueMix (0).hasDedicatedOutput);
+    CHECK (session.getCueMix (1).hasDedicatedOutput);
+    CHECK (session.getCueMix (0).outputDeviceID != session.getCueMix (1).outputDeviceID);
+
+    // Cue A: track A only, unity. Cue B: track B only, -6 dB. The engineer mix
+    // (main out) stays independent and carries both sources.
+    REQUIRE (session.setCueSendLevelDb (trackA, cueA, 0.0f));
+    REQUIRE (session.setCueSendLevelDb (trackB, cueB, -6.0f));
+    CHECK (session.isCueSendEnabled (trackA, cueA));
+    CHECK_FALSE (session.isCueSendEnabled (trackB, cueA));
+    CHECK (session.getCueSendLevelDb (trackB, cueB) == doctest::Approx (-6.0f).epsilon (0.5f));
+
+    for (int i = 0; i < 30; ++i)
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+    session.getEdit()->getTransport().setPosition (te::TimePosition {});
+    session.play();
+
+    auto peakOver = [&] (int blocks, float* peaks)
+    {
+        for (int ch = 0; ch < 6; ++ch)
+            peaks[ch] = 0.0f;
+
+        juce::AudioBuffer<float> input (2, 256);
+        input.clear();
+
+        for (int b = 0; b < blocks; ++b)
+        {
+            auto out = player->process (input);
+
+            for (int ch = 0; ch < juce::jmin (6, out.getNumChannels()); ++ch)
+                peaks[ch] = juce::jmax (peaks[ch], out.getMagnitude (ch, 0, out.getNumSamples()));
+        }
+    };
+
+    float peaks[6] {};
+    peakOver (10, peaks); // settle the fade-in ramps
+    peakOver (60, peaks);
+
+    INFO ("output peaks ch0..5: " << peaks[0] << ", " << peaks[1] << ", " << peaks[2] << ", "
+                                   << peaks[3] << ", " << peaks[4] << ", " << peaks[5]);
+
+    // Cue A (device 1 -> ch2/3) = tone A (~0.5); cue B (device 2 -> ch4/5) =
+    // tone B at -6 dB (~0.125); main (ch0/1) carries both.
+    CHECK (peaks[2] == doctest::Approx (0.5f).epsilon (0.1f));
+    CHECK (peaks[4] == doctest::Approx (0.125f).epsilon (0.1f));
+
+    // Independence: cue A has no tone B (stays ~0.5, not ~0.75) and the two cues
+    // are clearly distinct.
+    CHECK (peaks[2] < 0.6f);
+    CHECK (peaks[2] > peaks[4] * 2.0f);
+
+    session.stop();
+
+    // Offline verification of each cue via RenderSpecification: render the
+    // return bus alone with its aux-send sources included.
+    auto renderCuePeak = [&] (int cueIndex, const juce::File& dest)
+    {
+        dest.deleteFile();
+
+        auto* returnTrack = session.getTrack (session.getCueMix (cueIndex).returnTrackIndex);
+        REQUIRE (returnTrack != nullptr);
+
+        te::RenderSpecification spec;
+        spec.destination = dest;
+        spec.bitDepth = 24;
+        spec.sampleRate = 48000.0;
+        spec.includeTails = false;
+        spec.tracks = { returnTrack->itemID };
+        spec.includeSourceTracks = true;
+
+        auto job = te::createRenderJob (*session.getEdit(), spec);
+        REQUIRE (job.has_value());
+
+        auto queue = std::make_shared<te::RenderQueue>();
+        queue->addJob (std::move (*job));
+
+        std::atomic<bool> done { false };
+        queue->onFinished = [&done] { done.store (true); };
+        queue->start();
+
+        for (int i = 0; i < 400 && ! done.load(); ++i)
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (25);
+
+        REQUIRE (done.load());
+        REQUIRE (queue->getJobs()[0]->getState() == te::RenderQueue::Job::State::completed);
+        return readWavPeak (dest);
+    };
+
+    const auto cueARenderPeak = renderCuePeak (0, dir.getChildFile ("cueA.wav"));
+    const auto cueBRenderPeak = renderCuePeak (1, dir.getChildFile ("cueB.wav"));
+
+    INFO ("cue render peaks: A " << cueARenderPeak << ", B " << cueBRenderPeak);
+    CHECK (cueARenderPeak == doctest::Approx (0.5f).epsilon (0.1f));
+    CHECK (cueBRenderPeak == doctest::Approx (0.125f).epsilon (0.1f));
+    CHECK (cueARenderPeak > cueBRenderPeak * 2.0f);
+
+    session.close();
+}
+
+//==============================================================================
+// Epic 3 (FR-MIX-2) — submix folder routing (track -> bus/group -> master) and
+// per-track output assignment.
+TEST_CASE ("routing: submix folder groups tracks and output assignment routes to a device (FR-MIX-2)")
+{
+    auto dir = scratchDirectory ("routing");
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Routing.tracktionedit")));
+
+    te::HostedAudioDeviceInterface::Parameters params;
+    params.sampleRate = 48000.0;
+    params.blockSize = 256;
+    params.inputChannels = 2;
+    params.outputChannels = 4;
+
+    auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+    REQUIRE (player != nullptr);
+
+    auto& dm = audio.deviceManager();
+    dm.setAllWaveOutputsToNumChannels (2);
+
+    for (int i = 0; i < 200; ++i)
+    {
+        dm.dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+        if (session.isInputConfigured())
+            break;
+
+        session.reconfigureInputs();
+    }
+
+    REQUIRE (session.isInputConfigured());
+    REQUIRE (dm.getNumWaveOutDevices() == 2);
+
+    auto tone = writeSineWav (dir.getChildFile ("tone.wav"), 48000.0, 0.5);
+    REQUIRE (session.importAudioFile (tone));
+    const int childIndex = session.getNumAudioTracks() - 1;
+    auto* child = session.getTrack (childIndex);
+    REQUIRE (child != nullptr);
+
+    // Create a submix folder and move the track into it.
+    const int folder = session.createSubmixFolder ("Drums");
+    REQUIRE (folder == 0);
+    CHECK (session.getNumSubmixFolders() == 1);
+    CHECK (session.getSubmixFolderName (0) == "Drums");
+
+    REQUIRE (session.addTrackToSubmix (childIndex, folder));
+    REQUIRE (child->getParentFolderTrack() != nullptr);
+    CHECK (child->getParentFolderTrack()->getName() == "Drums");
+    CHECK (child->isPartOfSubmix());
+
+    // Output assignment: a track (and the submix) can target a specific device.
+    auto devices = dm.getWaveOutputDevices();
+    REQUIRE (devices.size() == 2);
+
+    auto* childNow = child;
+    const int childNowIndex = te::getAudioTracks (*session.getEdit()).indexOf (childNow);
+    REQUIRE (childNowIndex >= 0);
+
+    REQUIRE (session.setTrackOutputToDevice (childNowIndex, devices[1]->getDeviceID()));
+    CHECK (session.getTrackOutputDevice (childNowIndex) == devices[1]->getDeviceID());
+    CHECK (session.trackHasDedicatedOutput (childNowIndex));
+
+    REQUIRE (session.setTrackOutputToDefault (childNowIndex));
+    CHECK_FALSE (session.trackHasDedicatedOutput (childNowIndex));
+
+    // And back out of the submix.
+    REQUIRE (session.removeTrackFromSubmix (childNowIndex));
+    CHECK (childNow->getParentFolderTrack() == nullptr);
+
+    session.close();
+}
+
+//==============================================================================
+// Epic 3 (FR-EXP-2/3) — stem export: one 24-bit WAV per track plus the master
+// mix, all at the session rate.
+TEST_CASE ("stems export writes per-track stems and a master mix, 24-bit (FR-EXP-2/3, measured)")
+{
+    auto dir = scratchDirectory ("stems");
+    auto editFile = dir.getChildFile ("Stems.tracktionedit");
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (editFile));
+
+    auto toneA = writeSineWav (dir.getChildFile ("A.wav"), 48000.0, 0.5, 0.5f, 440.0);
+    auto toneB = writeSineWav (dir.getChildFile ("B.wav"), 48000.0, 0.5, 0.25f, 880.0);
+    REQUIRE (session.importAudioFile (toneA));
+    REQUIRE (session.importAudioFile (toneB));
+    REQUIRE (session.getNumAudioTracks() == 3);
+
+    REQUIRE (session.setTrackName (1, "StemA"));
+    REQUIRE (session.setTrackName (2, "StemB"));
+
+    auto stemsDir = dir.getChildFile ("stems out");
+
+    std::atomic<bool> done { false };
+    bool succeeded = false;
+    int numFiles = 0;
+    juce::String error;
+
+    auto handle = StemsExport::start (*session.getEdit(), stemsDir,
+                                      [&] (bool success, juce::File, int files, juce::String message)
+                                      {
+                                          succeeded = success;
+                                          numFiles = files;
+                                          error = message;
+                                          done.store (true);
+                                      });
+    REQUIRE (handle != nullptr);
+
+    for (int i = 0; i < 800 && ! done.load(); ++i)
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (25);
+
+    REQUIRE (done.load());
+    INFO ("stems error: " << error);
+    CHECK (succeeded);
+    CHECK (numFiles == 3); // StemA + StemB + master
+
+    auto wavs = stemsDir.findChildFiles (juce::File::findFiles, false, "*.wav");
+    REQUIRE (wavs.size() == 3);
+
+    juce::File fileA, fileB, fileMaster;
+
+    for (auto& f : wavs)
+    {
+        if (f.getFileName().containsIgnoreCase ("StemA"))      fileA = f;
+        else if (f.getFileName().containsIgnoreCase ("StemB")) fileB = f;
+        else                                                   fileMaster = f;
+    }
+
+    REQUIRE (fileA.existsAsFile());
+    REQUIRE (fileB.existsAsFile());
+    REQUIRE (fileMaster.existsAsFile());
+
+    // FR-EXP-1 / NFR-A-1: 24-bit at the session rate (48 kHz with no device).
+    juce::WavAudioFormat wav;
+    auto check24Bit48k = [] (juce::WavAudioFormat& fmt, const juce::File& f)
+    {
+        std::unique_ptr<juce::AudioFormatReader> reader (
+            fmt.createReaderFor (new juce::FileInputStream (f), true));
+        REQUIRE (reader != nullptr);
+        return reader;
+    };
+
+    for (auto& f : { fileA, fileB, fileMaster })
+    {
+        auto reader = check24Bit48k (wav, f);
+        CHECK ((int) reader->bitsPerSample == StemsExport::bitDepth);
+        CHECK (reader->sampleRate == doctest::Approx (48000.0));
+    }
+
+    const auto peakA = readWavPeak (fileA);
+    const auto peakB = readWavPeak (fileB);
+    const auto peakMaster = readWavPeak (fileMaster);
+
+    INFO ("stem peaks A " << peakA << " B " << peakB << " master " << peakMaster);
+
+    // Each stem carries only its own track, and the master sums both.
+    CHECK (peakA == doctest::Approx (0.5f).epsilon (0.05f));
+    CHECK (peakB == doctest::Approx (0.25f).epsilon (0.05f));
+    CHECK (peakMaster > 0.6f);
+    CHECK (peakMaster <= 0.8f);
+
+    handle.reset();
+    session.close();
+}
