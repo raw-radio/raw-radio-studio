@@ -231,7 +231,25 @@ namespace rrs
             return false;
 
         waveIn->setEnabled (true);
+
+        // `setEnabled` can (asynchronously) rebuild the wave-device list, which
+        // replaces — and destroys — this device object. Re-resolve it so the
+        // routing, monitoring and target assignment below always act on the live
+        // device and never on a stale pointer.
+        waveIn = getSelectedWaveInputDevice();
+
+        if (waveIn == nullptr)
+            return false;
+
         applyInputChannelConfiguration();
+
+        // `applyInputChannelConfiguration()` re-resolves internally; pick up the
+        // device it configured so monitoring/target assignment are consistent.
+        waveIn = getSelectedWaveInputDevice();
+
+        if (waveIn == nullptr)
+            return false;
+
         waveIn->setMonitorMode (te::InputDevice::MonitorMode::on);
 
         edit->getTransport().ensureContextAllocated();

@@ -29,9 +29,13 @@
 #include "studio/Session.h"
 #include "studio/WavExport.h"
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <memory>
+#include <thread>
+#include <vector>
 
 namespace te = tracktion;
 using namespace rrs;
@@ -569,6 +573,162 @@ TEST_CASE ("mono input is routed to both L and R (centred), stereo is unchanged"
     CHECK (stereo == ChannelConfiguration::stereo());
     CHECK (stereo[0].indexInDevice == 0);
     CHECK (stereo[1].indexInDevice == 1);
+}
+
+
+//==============================================================================
+// Measured monitor-path regression.
+//
+// The previous "mono is centred" test only asserted the input *configuration*
+// (device channel 0 -> L and R) — it never inspected a single sample, so it kept
+// passing while the real monitor mix stayed hard-left. This test instead drives
+// the engine's *real* input path — `WaveInputDeviceInstance::copyIncomingDataIntoBuffer`,
+// reached through a real `WaveInputDevice`/instance — with a known mono hardware
+// buffer and captures the exact channel data Tracktion's `WaveInputDeviceNode`
+// feeds into the monitor mix. That node copies its input channels 1:1 into the
+// (stereo) monitor destination, so an L == R capture is what the user hears as
+// centred; an L-only capture is the hard-left bug. The engine is real (a
+// one-channel hosted device), no hardware is opened.
+namespace
+{
+    struct MonitorCapture
+    {
+        int channels = 0;      ///< channels in the buffer the monitor node consumes.
+        float l = 0.0f, r = 0.0f;
+    };
+
+    struct MonitorBufferProbe : te::InputDeviceInstance::Consumer
+    {
+        MonitorCapture capture;
+
+        void acceptInputBuffer (choc::buffer::ChannelArrayView<float> b) override
+        {
+            capture.channels = (int) b.getNumChannels();
+
+            if (b.getNumFrames() > 0)
+            {
+                capture.l = b.getNumChannels() > 0 ? b.getSample (0, 0) : 0.0f;
+                capture.r = b.getNumChannels() > 1 ? b.getSample (1, 0) : -1.0f;
+            }
+        }
+    };
+
+    /** Pushes a per-channel constant hardware buffer through the real wave-input
+        path with `cfg` and returns what the monitor node would consume.
+
+        @param hardwareAmplitudes  one amplitude per *hardware* input channel
+                                   (1 = mono device, 2 = stereo device). */
+    bool measureMonitorBuffer (te::ChannelConfiguration cfg,
+                               MonitorCapture& out,
+                               const std::vector<float>& hardwareAmplitudes)
+    {
+        auto engine = std::make_unique<te::Engine> ("rrs-monitor-measure", nullptr,
+                                                    std::make_unique<HeadlessBehaviour>());
+
+        auto& dm = engine->getDeviceManager();
+        auto& hosted = dm.getHostedAudioDeviceInterface();
+
+        for (int i = 0; i < 10; ++i)
+        {
+            dm.dispatchPendingUpdates();
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (20);
+        }
+
+        te::HostedAudioDeviceInterface::Parameters params;
+        params.sampleRate = 48000.0;
+        params.blockSize = 256;
+        params.inputChannels = (int) hardwareAmplitudes.size();
+        params.outputChannels = 2;
+        hosted.initialise (params);
+        hosted.prepareToPlay (48000.0, 256);
+
+        for (int i = 0; i < 100 && dm.getNumWaveInDevices() == 0; ++i)
+        {
+            dm.dispatchPendingUpdates();
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+        }
+
+        auto* waveIn = dm.getDefaultWaveInDevice();
+
+        if (waveIn == nullptr)
+            return false;
+
+        waveIn->setChannelConfiguration (cfg);
+
+        auto dir = scratchDirectory ("monitor-capture");
+        auto edit = te::createEmptyEdit (*engine, dir.getChildFile ("m.tracktionedit"));
+        edit->ensureNumberOfAudioTracks (1);
+        edit->getTransport().ensureContextAllocated();
+
+        auto* context = edit->getTransport().getCurrentPlaybackContext();
+
+        if (context == nullptr)
+            return false;
+
+        auto* instance = waveIn->createInstance (*context);
+        MonitorBufferProbe probe;
+        instance->addConsumer (&probe);
+
+        constexpr int numSamples = 4;
+        std::vector<std::vector<float>> channelData (hardwareAmplitudes.size(),
+                                                     std::vector<float> (numSamples));
+        std::vector<const float*> channelPtrs;
+
+        for (size_t c = 0; c < hardwareAmplitudes.size(); ++c)
+        {
+            std::fill (channelData[c].begin(), channelData[c].end(), hardwareAmplitudes[c]);
+            channelPtrs.push_back (channelData[c].data());
+        }
+
+        waveIn->consumeNextAudioBlock (channelPtrs.data(), (int) channelPtrs.size(), numSamples, 0.0);
+
+        instance->removeConsumer (&probe);
+        out = probe.capture;
+        delete instance;
+
+        edit.reset();
+        dm.deviceManager.closeAudioDevice();
+        dm.removeHostedAudioDeviceInterface();
+        return true;
+    }
+}
+
+TEST_CASE ("mono input monitor signal is centred (measured L == R, not hard-left)")
+{
+    // A 1-channel device with the app's routing: device channel 0 must reach BOTH
+    // L and R, so the monitored signal is centred.
+    MonitorCapture mono;
+    REQUIRE (measureMonitorBuffer (inputChannelConfigurationFor (1), mono, { 0.5f }));
+    CHECK (mono.channels == 2);
+    CHECK (mono.l == doctest::Approx (0.5f));
+    CHECK (mono.r == doctest::Approx (0.5f)); // the hard-left bug measured exactly 0 here
+
+    // Regression context: Tracktion's own default for a 1-channel device is a
+    // SINGLE centre channel, which lands on one side only once summed into the
+    // stereo track (hard-left) — this is why the routing must be overridden.
+    MonitorCapture hardwareDefault;
+    REQUIRE (measureMonitorBuffer (te::ChannelConfiguration::canonical (1), hardwareDefault, { 0.5f }));
+    CHECK (hardwareDefault.channels == 1);
+
+    // Regression context: the old unconditional stereo map (device 0 -> L,
+    // device 1 -> R) leaves R silent on a mono device (device channel 1 does not
+    // exist) — the original hard-left bug this fix replaces.
+    MonitorCapture oldStereo;
+    REQUIRE (measureMonitorBuffer (te::ChannelConfiguration::stereo(), oldStereo, { 0.5f }));
+    CHECK (oldStereo.channels == 2);
+    CHECK (oldStereo.l == doctest::Approx (0.5f));
+    CHECK (oldStereo.r == doctest::Approx (0.0f));
+}
+
+TEST_CASE ("stereo input monitor signal preserves its channels (measured L != R, no widening)")
+{
+    // A true stereo device keeps L <- ch 0 and R <- ch 1: the channels stay
+    // distinct and neither is duplicated.
+    MonitorCapture stereo;
+    REQUIRE (measureMonitorBuffer (inputChannelConfigurationFor (2), stereo, { 0.5f, 0.25f }));
+    CHECK (stereo.channels == 2);
+    CHECK (stereo.l == doctest::Approx (0.5f));
+    CHECK (stereo.r == doctest::Approx (0.25f));
 }
 
 //==============================================================================
