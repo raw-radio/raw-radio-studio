@@ -76,6 +76,14 @@ namespace rrs
 
             if (isMaster)
             {
+                // FR-MIX-1: master fader + pan + mute (no solo: the master bus has
+                // no sibling to isolate, so solo is not applicable at the master).
+                auto buttons = inner.removeFromBottom (20);
+                c.mute = buttons.reduced (1);
+
+                auto panRow = inner.removeFromBottom (18);
+                inner.removeFromBottom (4);
+                c.pan = panRow;
                 c.fader = inner;
             }
             else
@@ -189,8 +197,10 @@ namespace rrs
             const auto& strip = strips[i];
             const auto gainDb = strip.isMaster ? session.getMasterGainDb()
                                                : session.getTrackGainDb (strip.trackIndex);
-            const auto pan = strip.isMaster ? 0.0f : session.getTrackPan (strip.trackIndex);
-            const auto muted = ! strip.isMaster && session.isTrackMuted (strip.trackIndex);
+            const auto pan = strip.isMaster ? session.getMasterPan()
+                                            : session.getTrackPan (strip.trackIndex);
+            const auto muted = strip.isMaster ? session.isMasterMuted()
+                                              : session.isTrackMuted (strip.trackIndex);
             const auto soloed = ! strip.isMaster && session.isTrackSolo (strip.trackIndex);
             const auto armed = ! strip.isMaster && session.isTrackArmed (strip.trackIndex);
 
@@ -274,10 +284,7 @@ namespace rrs
         g.drawText (juce::String (gainDb, 1), juce::Rectangle<int> (f.getX(), (int) top - 2, f.getWidth(), 12),
                     juce::Justification::centred);
 
-        if (strip.isMaster)
-            return;
-
-        // Pan.
+        // Pan (per track and master, FR-MIX-1).
         const auto& p = strip.pan;
         const auto pcx = (float) p.getCentreY();
         g.setColour (brand::meterTrough);
@@ -288,7 +295,8 @@ namespace rrs
         g.setColour (brand::textPrimary);
         g.fillEllipse (panX - 3.5f, pcx - 3.5f, 7.0f, 7.0f);
 
-        // Mute / Solo chips.
+        // Mute (per track and master) / Solo (tracks only — the master bus has no
+        // sibling to isolate, so master solo is not applicable).
         auto drawChip = [&] (juce::Rectangle<int> area, const juce::String& label, bool on,
                              juce::Colour onColour)
         {
@@ -303,7 +311,9 @@ namespace rrs
         };
 
         drawChip (strip.mute, "M", muted, brand::record);
-        drawChip (strip.solo, "S", soloed, brand::warning);
+
+        if (! strip.isMaster)
+            drawChip (strip.solo, "S", soloed, brand::warning);
     }
 
     void MixerPanel::drawMeter (juce::Graphics& g, juce::Rectangle<int> area, const MeterVisual& meter)
@@ -361,7 +371,9 @@ namespace rrs
 
             if (strip.mute.contains (e.getPosition()))
             {
-                if (! strip.isMaster)
+                if (strip.isMaster)
+                    session.setMasterMute (! session.isMasterMuted());
+                else
                     session.setTrackMute (strip.trackIndex, ! session.isTrackMuted (strip.trackIndex));
 
                 return;
@@ -383,7 +395,7 @@ namespace rrs
                 return;
             }
 
-            if (! strip.isMaster && strip.pan.contains (e.getPosition()))
+            if (strip.pan.contains (e.getPosition()))
             {
                 dragTarget = DragTarget::Pan;
                 dragIndex = (int) i;
@@ -413,12 +425,16 @@ namespace rrs
             else
                 session.setTrackGainDb (strip.trackIndex, db);
         }
-        else if (dragTarget == DragTarget::Pan && ! strip.isMaster)
+        else if (dragTarget == DragTarget::Pan)
         {
             const auto left = (float) strip.pan.getX() + 6.0f;
             const auto right = (float) strip.pan.getRight() - 6.0f;
             const auto t = juce::jlimit (0.0f, 1.0f, ((float) pos.x - left) / juce::jmax (1.0f, right - left));
-            session.setTrackPan (strip.trackIndex, -1.0f + 2.0f * t);
+
+            if (strip.isMaster)
+                session.setMasterPan (-1.0f + 2.0f * t);
+            else
+                session.setTrackPan (strip.trackIndex, -1.0f + 2.0f * t);
         }
 
         repaint();
@@ -501,9 +517,13 @@ namespace rrs
                 return;
             }
 
-            if (! strip.isMaster && strip.pan.contains (e.getPosition()))
+            if (strip.pan.contains (e.getPosition()))
             {
-                session.setTrackPan (strip.trackIndex, 0.0f);
+                if (strip.isMaster)
+                    session.setMasterPan (0.0f);
+                else
+                    session.setTrackPan (strip.trackIndex, 0.0f);
+
                 return;
             }
         }

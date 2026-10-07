@@ -164,6 +164,16 @@ namespace rrs
         edit->playInStopEnabled = true;
         inputsConfigured = false;
 
+        // Sync the app-level master state from the (possibly saved) edit: the
+        // fader value comes from the master volume plugin, and mute always starts
+        // off after open/create.
+        masterGainDb = 0.0f;
+
+        if (auto volume = edit->getMasterVolumePlugin())
+            masterGainDb = juce::jlimit (-100.0f, 12.0f, volume->getVolumeDb());
+
+        masterMuted = false;
+
         // Direct recorded takes into <sessionDir>/Recordings/.
         audio.behaviour().setRecordingsDirectory (paths::recordingsDirectoryFor (file));
 
@@ -500,12 +510,12 @@ namespace rrs
             return -1;
         }
 
-        const auto ordinal = inputTrackIndices().size();
+        const auto ordinals = inputTrackIndices();
 
         // Going multitrack: a lone Epic 1 record track maps the whole device
         // (Auto -> stereo); once a second track is added it must become an
         // explicit single hardware channel so the tracks do not overlap.
-        if (ordinal >= 1)
+        if (ordinals.size() >= 1)
         {
             for (auto existing : inputTrackIndices())
             {
@@ -519,6 +529,22 @@ namespace rrs
             }
         }
 
+        // Assign the lowest hardware channel not already used by an input track.
+        // The old `inputTrackIndices().size()` collided after removing a non-last
+        // track (e.g. tracks on channels 0 and 2, remove the middle one, add ->
+        // the new track reused channel 2).
+        std::set<int> usedChannels;
+
+        for (auto index : inputTrackIndices())
+            usedChannels.insert (readTrackMapping (index).firstChannel);
+
+        int nextChannel = 0;
+
+        while (usedChannels.count (nextChannel) > 0)
+            ++nextChannel;
+
+        const auto ordinal = ordinals.size();
+
         auto track = edit->insertNewAudioTrack (te::TrackInsertPoint::getEndOfTracks (*edit), nullptr, true);
 
         if (track == nullptr)
@@ -528,7 +554,7 @@ namespace rrs
         }
 
         InputMapping mapping;
-        mapping.firstChannel = ordinal;
+        mapping.firstChannel = nextChannel;
         mapping.numChannels = 1;
         mapping.layout = ordinal == 0 ? InputLayout::Auto : InputLayout::Mono;
 
@@ -809,7 +835,11 @@ namespace rrs
     bool Session::isTrackMuted (int trackIndex) const
     {
         auto* track = getTrack (trackIndex);
-        return track != nullptr && track->isMuted (true);
+
+        // Explicit mute only (FR-MIX-1): `isMuted(true)` also folds in mute-by-
+        // destination/parent, which would light the strip's "M" for a track the
+        // user never muted (and make the M/S toggle unrecoverable).
+        return track != nullptr && track->isMuted (false);
     }
 
     bool Session::setTrackSolo (int trackIndex, bool shouldSolo)
@@ -835,9 +865,25 @@ namespace rrs
         if (edit == nullptr)
             return false;
 
+        masterGainDb = juce::jlimit (-100.0f, 12.0f, db);
+        applyMasterGain();
+        sendChangeMessage();
+        return true;
+    }
+
+    float Session::getMasterGainDb() const
+    {
+        return masterGainDb;
+    }
+
+    bool Session::setMasterPan (float pan)
+    {
+        if (edit == nullptr)
+            return false;
+
         if (auto volume = edit->getMasterVolumePlugin())
         {
-            volume->setVolumeDb (juce::jlimit (-100.0f, 12.0f, db));
+            volume->setPan (juce::jlimit (-1.0f, 1.0f, pan));
             sendChangeMessage();
             return true;
         }
@@ -845,13 +891,41 @@ namespace rrs
         return false;
     }
 
-    float Session::getMasterGainDb() const
+    float Session::getMasterPan() const
     {
         if (edit != nullptr)
             if (auto volume = edit->getMasterVolumePlugin())
-                return volume->getVolumeDb();
+                return volume->getPan();
 
         return 0.0f;
+    }
+
+    bool Session::setMasterMute (bool shouldMute)
+    {
+        if (edit == nullptr)
+            return false;
+
+        masterMuted = shouldMute;
+        applyMasterGain();
+        sendChangeMessage();
+        return true;
+    }
+
+    bool Session::isMasterMuted() const
+    {
+        return masterMuted;
+    }
+
+    // Tracktion has no dedicated master mute node, so mute is applied by
+    // overriding the master volume plugin's gain; the fader value itself is kept
+    // in `masterGainDb` and re-applied when unmuted.
+    void Session::applyMasterGain()
+    {
+        if (edit == nullptr)
+            return;
+
+        if (auto volume = edit->getMasterVolumePlugin())
+            volume->setVolumeDb (masterMuted ? -100.0f : masterGainDb);
     }
 
     //==============================================================================
@@ -1001,6 +1075,8 @@ namespace rrs
         edit.reset();
         editFile = juce::File();
         inputsConfigured = false;
+        masterGainDb = 0.0f;
+        masterMuted = false;
 
         // The session is gone: clear the sentinel so a crash while empty does not
         // masquerade as an interrupted session.

@@ -145,6 +145,10 @@ namespace rrs
 
         bool setMasterGainDb (float db);
         float getMasterGainDb() const;
+        bool setMasterPan (float pan);                     ///< -1 (L) .. 0 (centre) .. 1 (R)
+        float getMasterPan() const;
+        bool setMasterMute (bool shouldMute);
+        bool isMasterMuted() const;
 
         //==============================================================================
         // Metering
@@ -277,6 +281,13 @@ namespace rrs
         InputLevels inputLevels;
         int autosaveIntervalSeconds = 30;
         double lastAutosaveMs = 0.0;
+
+        /** Master fader value (dB) and app-level mute. Tracktion has no dedicated
+            master mute, so muting is applied by overriding the master volume
+            plugin's gain while the fader value is remembered here (FR-MIX-1). */
+        float masterGainDb = 0.0f;
+        bool masterMuted = false;
+        void applyMasterGain();
         bool meterAttached = false;
         bool inputsConfigured = false;
         juce::WeakReference<tracktion::InputDeviceInstance> meterInstance;

@@ -466,6 +466,39 @@ TEST_CASE ("per-track input mapping survives save/open (FR-REC-3)")
 }
 
 //==============================================================================
+// Regression: adding a track after removing a non-last one must not collide with
+// an existing track's hardware channel. The old code used
+// `inputTrackIndices().size()` as the next channel, so removing the middle of
+// three tracks (0/1/2) and adding a new one reused channel 2.
+TEST_CASE ("adding a track after removing a middle track picks a free input channel")
+{
+    auto dir = scratchDirectory ("channel-collision");
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Collision.tracktionedit")));
+
+    REQUIRE (session.addAudioTrack() >= 0);
+    REQUIRE (session.addAudioTrack() >= 0);
+    REQUIRE (session.getNumAudioTracks() == 3);
+
+    REQUIRE (session.removeAudioTrack (1));
+
+    const auto added = session.addAudioTrack();
+    REQUIRE (added >= 0);
+
+    std::set<int> channels;
+
+    for (auto index : session.getInputTrackIndices())
+        channels.insert (session.getTrackInputMapping (index).firstChannel);
+
+    CHECK (channels.size() == (size_t) session.getInputTrackIndices().size());
+    CHECK (session.getTrackInputMapping (added).firstChannel == 1);
+
+    session.close();
+}
+
+//==============================================================================
 TEST_CASE ("autosave writes the .tmp_ sibling and detectRecovery finds it")
 {
     auto dir = scratchDirectory ("recovery");
@@ -1110,8 +1143,9 @@ TEST_CASE ("mixer: gain and mute change the measured master level (measured)")
         session.reconfigureInputs();
     }
 
-    // A 0.5-amplitude tone -> -6.02 dBFS peak.
-    auto tone = writeSineWav (dir.getChildFile ("tone.wav"), 48000.0, 1.0);
+    // A 0.5-amplitude tone -> -6.02 dBFS peak. Long enough to cover the whole
+    // measurement window including the added master-mute section.
+    auto tone = writeSineWav (dir.getChildFile ("tone.wav"), 48000.0, 2.0);
     REQUIRE (tone.existsAsFile());
     REQUIRE (session.importAudioFile (tone));
 
@@ -1177,6 +1211,48 @@ TEST_CASE ("mixer: gain and mute change the measured master level (measured)")
 
     CHECK (trackPeak == doctest::Approx (0.5f).epsilon (0.05f));
     CHECK (masterPeak == doctest::Approx (0.5f).epsilon (0.05f));
+
+    // FR-MIX-1: master mute must silence the actual device output. (The master
+    // meter taps the master plugin list, which sits *before* the master volume
+    // plugin, so mute is measured at the real output, like the click test.)
+    auto maxOutputOver = [&] (int blocks)
+    {
+        float peak = 0.0f;
+
+        for (int block = 0; block < blocks; ++block)
+        {
+            auto output = player->process (silence);
+            peak = juce::jmax (peak, output.getMagnitude (0, output.getNumSamples()));
+        }
+
+        return peak;
+    };
+
+    REQUIRE (session.setMasterMute (true));
+    CHECK (session.isMasterMuted());
+
+    session.getEdit()->getTransport().setPosition (te::TimePosition {});
+    maxOutputOver (8); // ramp settle
+    const auto mutedOutput = maxOutputOver (60);
+    INFO ("muted output peak " << mutedOutput);
+    CHECK (mutedOutput < 0.01f);
+
+    // The remembered fader value survives the mute: unmuting restores the level
+    // with no gain jump.
+    CHECK (session.getMasterGainDb() == doctest::Approx (0.0f));
+
+    REQUIRE (session.setMasterMute (false));
+    CHECK_FALSE (session.isMasterMuted());
+
+    session.getEdit()->getTransport().setPosition (te::TimePosition {});
+    maxOutputOver (8); // ramp settle
+    const auto unmutedOutput = maxOutputOver (60);
+    INFO ("unmuted output peak " << unmutedOutput);
+    CHECK (unmutedOutput == doctest::Approx (0.5f).epsilon (0.05f));
+
+    // Master pan is exposed by the plugin (FR-MIX-1).
+    REQUIRE (session.setMasterPan (-1.0f));
+    CHECK (session.getMasterPan() == doctest::Approx (-1.0f));
 
     session.stop();
     session.close();

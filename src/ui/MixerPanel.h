@@ -1,9 +1,9 @@
 // raw-radio-studio — multitrack mixer UI (Epic 2, FR-MIX-1/3).
 //
 // A compact, brand-styled channel-strip mixer: per-track record-arm + fader +
-// pan + mute + solo and a peak/clip meter, plus a master fader/meter. Drawn from
-// scratch (like the arrangement lanes) so it stays on the RAW Radio design
-// tokens and does not depend on LookAndFeel slider internals.
+// pan + mute + solo and a peak/clip meter, plus a master fader/pan/mute/meter.
+// Drawn from scratch (like the arrangement lanes) so it stays on the RAW Radio
+// design tokens and does not depend on LookAndFeel slider internals.
 //
 // UI-only: it reads meter values and mixer state from the Session and writes
 // changes back. Never touches the audio thread.
