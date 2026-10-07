@@ -284,10 +284,17 @@ namespace rrs
 
         /** Master fader value (dB) and app-level mute. Tracktion has no dedicated
             master mute, so muting is applied by overriding the master volume
-            plugin's gain while the fader value is remembered here (FR-MIX-1). */
+            plugin's gain while the fader value is remembered here (FR-MIX-1).
+
+            Both are persisted *independently* on the Edit's state tree: the
+            plugin only ever stores the effective (possibly muted-to-silence)
+            gain, so reading it back would lose the user's real fader value if
+            the session was saved while muted. The explicit properties are the
+            source of truth and survive save/open (FR-MIX-1). */
         float masterGainDb = 0.0f;
         bool masterMuted = false;
         void applyMasterGain();
+        void storeMasterState();
         bool meterAttached = false;
         bool inputsConfigured = false;
         juce::WeakReference<tracktion::InputDeviceInstance> meterInstance;

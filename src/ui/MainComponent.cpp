@@ -170,8 +170,9 @@ namespace rrs
             exportHandle.reset();
         }
 
-        // Cancelling may skip the export completion callback, so restore the
-        // metronome here too (FR-EXP-1) rather than leaving it silently off.
+        // Cancelling skips the export completion callback, and it also invalidates
+        // WavExport's own deferred metronome restore (shared liveness token), so
+        // restore the click here (FR-EXP-1) rather than leaving it silently off.
         if (exportMetronomeWasEnabled)
             session.setMetronomeEnabled (true);
 

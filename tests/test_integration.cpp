@@ -340,6 +340,49 @@ TEST_CASE ("WavExport keeps the metronome out of the export and restores it (FR-
 }
 
 //==============================================================================
+// FR-EXP-1 regression: a deferred metronome restore must not fire after the
+// export handle (and the component that owns it) has been torn down. Closing
+// the window during an export used to let WavExport's queued restore re-disable
+// the click *after* ~MainComponent had restored it, leaving it silently off.
+TEST_CASE ("cancelled export's deferred metronome restore cannot clobber teardown (FR-EXP-1)")
+{
+    auto dir = scratchDirectory ("export-teardown");
+    auto editFile = dir.getChildFile ("Teardown.tracktionedit");
+
+    auto wavFile = writeSineWav (dir.getChildFile ("tone.wav"), 48000.0, 1.0);
+    REQUIRE (wavFile.existsAsFile());
+
+    auto edit = makeEditWithClip (editFile, wavFile, 0.5);
+    REQUIRE (edit != nullptr);
+
+    // Reproduce the close-during-export ordering: MainComponent disables the
+    // click, then starts the export, so WavExport captures "was enabled == false".
+    edit->clickTrackEnabled = true;
+    edit->clickTrackEnabled = false;
+
+    std::atomic<bool> finished { false };
+
+    auto handle = WavExport::start (*edit, dir.getChildFile ("mix.wav"),
+                                    [&] (bool, juce::File, juce::String) { finished = true; });
+
+    REQUIRE (handle != nullptr);
+
+    // Tear the component down: cancel + destroy the handle (invalidating the
+    // shared liveness token), then restore the click like ~MainComponent does.
+    handle->cancel();
+    handle.reset();
+    edit->clickTrackEnabled = true;
+
+    // Drain any queued completion work; the stale restore must be a no-op.
+    for (int i = 0; i < 200 && ! finished.load(); ++i)
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (5);
+
+    juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
+
+    CHECK (edit->clickTrackEnabled.get());
+}
+
+//==============================================================================
 TEST_CASE ("project save/open round-trip keeps the take intact")
 {
     auto dir = scratchDirectory ("roundtrip");
@@ -460,6 +503,40 @@ TEST_CASE ("per-track input mapping survives save/open (FR-REC-3)")
     CHECK (reopened.getTrackInputMapping (0) == mono);
     CHECK (reopened.getTrackInputMapping (1) == stereo);
     CHECK (reopened.getTrackInputMapping (2) == InputMapping { 2, 1, InputLayout::Mono });
+
+    session.close();
+    reopened.close();
+}
+
+//==============================================================================
+// FR-MIX-1 regression: the master fader value and the mute state are persisted
+// *independently* of the master volume plugin. The plugin stores the effective
+// gain (i.e. -100 dB while muted), so reading it back on reopen used to lose the
+// user's chosen gain and silently leave master at -100 with the M chip off.
+TEST_CASE ("master gain and mute persist independently across save/open (FR-MIX-1)")
+{
+    auto dir = scratchDirectory ("master-persist");
+    auto editFile = dir.getChildFile ("Master.tracktionedit");
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (editFile));
+
+    REQUIRE (session.setMasterGainDb (-6.0f));
+    REQUIRE (session.setMasterMute (true));
+    REQUIRE (session.save());
+
+    Session reopened (audio);
+    REQUIRE (reopened.open (editFile));
+
+    // The real fader value comes back (not the -100 dB baked into the plugin)
+    // and the mute chip reflects the saved mute state.
+    CHECK (reopened.getMasterGainDb() == doctest::Approx (-6.0f));
+    CHECK (reopened.isMasterMuted());
+
+    // Unmuting applies the remembered gain rather than jumping from silence.
+    REQUIRE (reopened.setMasterMute (false));
+    CHECK (reopened.getMasterGainDb() == doctest::Approx (-6.0f));
 
     session.close();
     reopened.close();

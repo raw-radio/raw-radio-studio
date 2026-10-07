@@ -18,10 +18,16 @@ namespace rrs
         return directory.getChildFile (base + " mix.wav");
     }
 
-    std::shared_ptr<te::EditRenderer::Handle>
+    std::shared_ptr<WavExport::Handle>
         WavExport::start (te::Edit& edit, const juce::File& destination, CompletionCallback callback,
                           bool suppressMetronome)
     {
+        // Liveness token shared with every deferred completion path. The returned
+        // Handle owns it; cancelling the handle (explicitly or from its destructor)
+        // clears it, so a queued metronome restore can never fire after the owning
+        // component has been torn down and re-enable/disable the click out of turn.
+        auto alive = std::make_shared<std::atomic<bool>> (true);
+
         // FR-EXP-1: `edit.clickTrackEnabled` is read live by the ClickNode while
         // the render graph plays, so clearing it here (on the message thread,
         // before the render is built) guarantees an enabled metronome is never
@@ -39,13 +45,16 @@ namespace rrs
         if (suppressMetronome)
             clickState->setProperty (te::IDs::active, false, nullptr);
 
-        const auto restoreMetronome = [clickState, metronomeWasEnabled, suppressMetronome]
+        const auto restoreMetronome = [clickState, metronomeWasEnabled, suppressMetronome, alive]
         {
-            if (suppressMetronome)
+            // Skip once the export handle is gone: a later teardown pass owns the
+            // click state from that point on and must not be overwritten by this
+            // stale deferred restore.
+            if (suppressMetronome && alive != nullptr && alive->load (std::memory_order_acquire))
                 clickState->setProperty (te::IDs::active, metronomeWasEnabled, nullptr);
         };
 
-        const auto fail = [callback, destination, restoreMetronome] (const juce::String& message)
+        const auto fail = [callback, destination, restoreMetronome, alive] (const juce::String& message)
         {
             juce::MessageManager::callAsync ([callback, destination, message, restoreMetronome]
                                              {
@@ -54,7 +63,10 @@ namespace rrs
                                                  if (callback)
                                                      callback (false, destination, message);
                                              });
-            return std::shared_ptr<te::EditRenderer::Handle>();
+
+            // Still hand back a Handle so the caller can invalidate the queued
+            // restore by destroying/cancelling it during teardown.
+            return std::make_shared<Handle> (nullptr, alive);
         };
 
         if (! destination.getParentDirectory().createDirectory())
@@ -107,6 +119,6 @@ namespace rrs
         if (handle == nullptr)
             return fail ("Could not start the render. The session may be empty.");
 
-        return handle;
+        return std::make_shared<Handle> (handle, alive);
     }
 }

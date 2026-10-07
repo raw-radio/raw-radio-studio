@@ -103,7 +103,7 @@ namespace rrs
         std::vector<juce::Rectangle<int>> actionDividers;
 
         std::unique_ptr<juce::PropertiesFile> settings;
-        std::shared_ptr<tracktion::EditRenderer::Handle> exportHandle;
+        std::shared_ptr<WavExport::Handle> exportHandle;
         bool exportInProgress = false;
         /** Metronome state saved when an export starts, restored when it ends so
             the click can never leak into the rendered WAV (FR-EXP-1). */

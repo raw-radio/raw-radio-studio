@@ -23,6 +23,12 @@ namespace rrs
         const juce::Identifier idFirstChannel { "rrsInputFirstChannel" };
         const juce::Identifier idNumChannels  { "rrsInputNumChannels" };
         const juce::Identifier idLayout       { "rrsInputLayout" };
+
+        // Master fader state. Stored on the Edit's root ValueTree so the user's
+        // chosen fader gain and the mute state survive save/open independently of
+        // the master volume plugin, whose gain bakes the effective (muted) value.
+        const juce::Identifier idMasterGain  { "rrsMasterGainDb" };
+        const juce::Identifier idMasterMuted { "rrsMasterMuted" };
     }
 
     //==============================================================================
@@ -164,15 +170,30 @@ namespace rrs
         edit->playInStopEnabled = true;
         inputsConfigured = false;
 
-        // Sync the app-level master state from the (possibly saved) edit: the
-        // fader value comes from the master volume plugin, and mute always starts
-        // off after open/create.
-        masterGainDb = 0.0f;
+        // Restore the app-level master state. The real fader gain and the mute
+        // state are read from their own Edit-state properties so they stay
+        // independent of the master volume plugin (which stores -100 dB while
+        // muted). Sessions written before those properties existed fall back to
+        // the plugin gain with mute off.
+        if (edit->state.hasProperty (idMasterGain) || edit->state.hasProperty (idMasterMuted))
+        {
+            masterGainDb = juce::jlimit (-100.0f, 12.0f,
+                                         (float) (double) edit->state.getProperty (idMasterGain, 0.0));
+            masterMuted  = (bool) edit->state.getProperty (idMasterMuted, false);
+        }
+        else
+        {
+            masterGainDb = 0.0f;
 
-        if (auto volume = edit->getMasterVolumePlugin())
-            masterGainDb = juce::jlimit (-100.0f, 12.0f, volume->getVolumeDb());
+            if (auto volume = edit->getMasterVolumePlugin())
+                masterGainDb = juce::jlimit (-100.0f, 12.0f, volume->getVolumeDb());
 
-        masterMuted = false;
+            masterMuted = false;
+        }
+
+        // Normalise the plugin to the restored state (no-op when already
+        // consistent, so opening an unchanged session stays clean).
+        applyMasterGain();
 
         // Direct recorded takes into <sessionDir>/Recordings/.
         audio.behaviour().setRecordingsDirectory (paths::recordingsDirectoryFor (file));
@@ -867,6 +888,7 @@ namespace rrs
 
         masterGainDb = juce::jlimit (-100.0f, 12.0f, db);
         applyMasterGain();
+        storeMasterState();
         sendChangeMessage();
         return true;
     }
@@ -907,6 +929,7 @@ namespace rrs
 
         masterMuted = shouldMute;
         applyMasterGain();
+        storeMasterState();
         sendChangeMessage();
         return true;
     }
@@ -926,6 +949,18 @@ namespace rrs
 
         if (auto volume = edit->getMasterVolumePlugin())
             volume->setVolumeDb (masterMuted ? -100.0f : masterGainDb);
+    }
+
+    // The plugin gain alone cannot round-trip a muted session (it stores -100 dB),
+    // so the real fader gain and the mute state are written to the Edit's root
+    // state tree as first-class properties.
+    void Session::storeMasterState()
+    {
+        if (edit == nullptr)
+            return;
+
+        edit->state.setProperty (idMasterGain, (double) masterGainDb, nullptr);
+        edit->state.setProperty (idMasterMuted, masterMuted, nullptr);
     }
 
     //==============================================================================
