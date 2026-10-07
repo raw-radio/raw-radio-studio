@@ -213,6 +213,28 @@ namespace rrs
         return {};
     }
 
+    juce::String AudioEngine::applyInputDeviceSetup (const juce::String& deviceName)
+    {
+        auto& dm = enginePtr->getDeviceManager().deviceManager;
+        auto setup = dm.getAudioDeviceSetup();
+
+        // Keep the current output device: pure input hardware (a USB mic) has no
+        // output channels, so forcing outputDeviceName to it would fail to open.
+        setup.inputDeviceName = deviceName;
+        setup.useDefaultInputChannels = true;
+
+        const auto error = dm.setAudioDeviceSetup (setup, true);
+
+        if (error.isNotEmpty())
+        {
+            lastError = classifyDeviceError (error).userMessage;
+            return lastError;
+        }
+
+        lastError.clear();
+        return {};
+    }
+
     bool AudioEngine::hasActiveDevice() const
     {
         auto& dm = enginePtr->getDeviceManager().deviceManager;

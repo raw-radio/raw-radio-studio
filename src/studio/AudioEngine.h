@@ -73,6 +73,13 @@ namespace rrs
                                        double sampleRate,
                                        int bufferSize);
 
+        /** Applies only an *input* device, keeping the current output untouched.
+            Returns "" on success, else an actionable message (also stored in
+            getLastError()). Used by the headless self-test, where the input device
+            may be pure capture hardware with no output channels (e.g. a USB mic),
+            so forcing outputDeviceName to it would fail. */
+        juce::String applyInputDeviceSetup (const juce::String& deviceName);
+
         bool hasActiveDevice() const;
         double getEstimatedRoundTripLatencyMs() const;
 
