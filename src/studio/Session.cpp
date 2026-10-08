@@ -1188,6 +1188,468 @@ namespace rrs
         selectionEndSeconds   = 0.0;
     }
 
+    //==============================================================================
+    // Arrangement clip editing (Epic 4 — FR-ED-1/2/3/6)
+    namespace
+    {
+        /** Minimum clip length after a trim/split, so a clip can never collapse
+            to zero samples (which the engine would reject or render oddly). */
+        constexpr double minClipSeconds = 1.0e-3;
+    }
+
+    te::Clip* Session::clipAt (int trackIndex, int clipIndex) const
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (track == nullptr || clipIndex < 0)
+            return nullptr;
+
+        auto clips = track->getClips();
+
+        if (clipIndex >= clips.size())
+            return nullptr;
+
+        return clips[clipIndex];
+    }
+
+    te::AudioClipBase* Session::audioClipAt (int trackIndex, int clipIndex) const
+    {
+        return dynamic_cast<te::AudioClipBase*> (clipAt (trackIndex, clipIndex));
+    }
+
+    void Session::afterClipEdit()
+    {
+        if (edit == nullptr)
+            return;
+
+        // A clip edit changes the graph; rebuild it, persist, and notify the UI.
+        edit->restartPlayback();
+        save();
+        sendChangeMessage();
+    }
+
+    std::vector<Session::ClipInfo> Session::getClips (int trackIndex) const
+    {
+        std::vector<ClipInfo> infos;
+        auto* track = getTrack (trackIndex);
+
+        if (track == nullptr)
+            return infos;
+
+        const auto clips = track->getClips();
+        infos.reserve ((size_t) clips.size());
+
+        for (int i = 0; i < clips.size(); ++i)
+        {
+            ClipInfo info;
+            info.trackIndex = trackIndex;
+            info.clipIndex = i;
+
+            if (fillClipInfo (*clips[i], info))
+                infos.push_back (std::move (info));
+        }
+
+        std::sort (infos.begin(), infos.end(),
+                   [] (const ClipInfo& a, const ClipInfo& b)
+                   {
+                       if (a.startSeconds < b.startSeconds)
+                           return true;
+
+                       if (b.startSeconds < a.startSeconds)
+                           return false;
+
+                       return a.clipIndex < b.clipIndex;
+                   });
+
+        return infos;
+    }
+
+    bool Session::fillClipInfo (te::Clip& clip, ClipInfo& info) const
+    {
+        const auto pos = clip.getPosition();
+
+        info.name = clip.getName();
+        info.startSeconds = pos.time.getStart().inSeconds();
+        info.endSeconds = pos.time.getEnd().inSeconds();
+        info.lengthSeconds = pos.time.getLength().inSeconds();
+        info.offsetSeconds = pos.offset.inSeconds();
+        info.isLooping = clip.isLooping();
+        info.isMuted = clip.isMuted();
+
+        if (auto* audioClip = dynamic_cast<te::AudioClipBase*> (&clip))
+        {
+            info.isWave = true;
+            info.fadeInSeconds = audioClip->getFadeIn().inSeconds();
+            info.fadeOutSeconds = audioClip->getFadeOut().inSeconds();
+        }
+
+        return true;
+    }
+
+    bool Session::getClipInfo (int trackIndex, int clipIndex, ClipInfo& info) const
+    {
+        auto* clip = clipAt (trackIndex, clipIndex);
+
+        if (clip == nullptr)
+            return false;
+
+        info = ClipInfo();
+        info.trackIndex = trackIndex;
+        info.clipIndex = clipIndex;
+        return fillClipInfo (*clip, info);
+    }
+
+    bool Session::moveClip (int trackIndex, int clipIndex, double newStartSeconds)
+    {
+        auto* clip = clipAt (trackIndex, clipIndex);
+
+        if (edit == nullptr || clip == nullptr)
+            return false;
+
+        edit->getUndoManager().beginNewTransaction ("Move clip");
+        // A move keeps the clip's length and content: preserveSync=false leaves
+        // the source offset untouched, keepLength=true moves both edges.
+        clip->setStart (te::TimePosition::fromSeconds (juce::jmax (0.0, newStartSeconds)),
+                        false, true);
+        afterClipEdit();
+        return true;
+    }
+
+    bool Session::trimClipStart (int trackIndex, int clipIndex, double newStartSeconds)
+    {
+        auto* clip = clipAt (trackIndex, clipIndex);
+
+        if (edit == nullptr || clip == nullptr)
+            return false;
+
+        const auto pos = clip->getPosition();
+        const auto start = pos.time.getStart().inSeconds();
+        const auto end = pos.time.getEnd().inSeconds();
+        const auto target = juce::jmax (0.0, newStartSeconds);
+
+        if (target >= end - minClipSeconds || std::abs (target - start) < 1.0e-9)
+            return false;
+
+        edit->getUndoManager().beginNewTransaction ("Trim clip start");
+        // preserveSync=true: the source content stays stationary in time, so the
+        // edge reveals/hides audio instead of sliding it (offset follows the edge).
+        clip->setStart (te::TimePosition::fromSeconds (target), true, false);
+        afterClipEdit();
+        return true;
+    }
+
+    bool Session::trimClipEnd (int trackIndex, int clipIndex, double newEndSeconds)
+    {
+        auto* clip = clipAt (trackIndex, clipIndex);
+
+        if (edit == nullptr || clip == nullptr)
+            return false;
+
+        const auto pos = clip->getPosition();
+        const auto start = pos.time.getStart().inSeconds();
+        const auto end = pos.time.getEnd().inSeconds();
+        const auto target = newEndSeconds;
+
+        if (target <= start + minClipSeconds || std::abs (target - end) < 1.0e-9)
+            return false;
+
+        edit->getUndoManager().beginNewTransaction ("Trim clip end");
+        // preserveSync=true keeps the source content stationary.
+        clip->setEnd (te::TimePosition::fromSeconds (target), true);
+        afterClipEdit();
+        return true;
+    }
+
+    bool Session::splitClip (int trackIndex, int clipIndex, double timeSeconds)
+    {
+        auto* track = getTrack (trackIndex);
+        te::Clip::Ptr original (clipAt (trackIndex, clipIndex));
+
+        if (edit == nullptr || track == nullptr || original == nullptr)
+            return false;
+
+        const auto pos = original->getPosition();
+        const auto start = pos.time.getStart().inSeconds();
+        const auto end = pos.time.getEnd().inSeconds();
+
+        if (timeSeconds <= start + minClipSeconds || timeSeconds >= end - minClipSeconds)
+            return false;
+
+        edit->getUndoManager().beginNewTransaction ("Split clip");
+
+        // Insert a copy at the original position (it keeps the original's
+        // settings), then trim the left clip's end and the copy's start so they
+        // meet at the split point with the same source content.
+        auto* copy = te::insertClipCopy (*track, te::ClipCopy::fromClip (*original)
+                                                   .withNewItemID (*edit));
+
+        if (copy == nullptr)
+            return false;
+
+        copy->setStart (te::TimePosition::fromSeconds (timeSeconds), true, false);
+        original->setEnd (te::TimePosition::fromSeconds (timeSeconds), true);
+
+        afterClipEdit();
+        return true;
+    }
+
+    int Session::duplicateClip (int trackIndex, int clipIndex)
+    {
+        auto* track = getTrack (trackIndex);
+        te::Clip::Ptr original (clipAt (trackIndex, clipIndex));
+
+        if (edit == nullptr || track == nullptr || original == nullptr)
+            return -1;
+
+        const auto newStart = original->getPosition().time.getEnd();
+
+        edit->getUndoManager().beginNewTransaction ("Duplicate clip");
+
+        auto* copy = te::insertClipCopy (*track, te::ClipCopy::fromClip (*original)
+                                                   .withNewItemID (*edit));
+
+        if (copy == nullptr)
+            return -1;
+
+        // Place the copy immediately after the original (pure move, keep length).
+        copy->setStart (newStart, false, true);
+
+        afterClipEdit();
+
+        const auto clips = track->getClips();
+
+        for (int i = 0; i < clips.size(); ++i)
+            if (clips[i] == copy)
+                return i;
+
+        return -1;
+    }
+
+    bool Session::deleteClip (int trackIndex, int clipIndex)
+    {
+        auto* clip = clipAt (trackIndex, clipIndex);
+
+        if (edit == nullptr || clip == nullptr)
+            return false;
+
+        edit->getUndoManager().beginNewTransaction ("Delete clip");
+        clip->removeFromParent();
+        afterClipEdit();
+        return true;
+    }
+
+    bool Session::setClipLoop (int trackIndex, int clipIndex, int numLoops)
+    {
+        auto* track = getTrack (trackIndex);
+        te::Clip::Ptr original (clipAt (trackIndex, clipIndex));
+
+        if (edit == nullptr || track == nullptr || original == nullptr || numLoops < 1)
+            return false;
+
+        if (auto* audioClip = dynamic_cast<te::AudioClipBase*> (original.get()))
+        {
+            // Native looping when the source carries loop information (beat
+            // markers/tempo); otherwise fall through to timeline repetition.
+            if (audioClip->canLoop())
+            {
+                edit->getUndoManager().beginNewTransaction ("Loop clip");
+
+                if (numLoops <= 1)
+                    audioClip->disableLooping();
+                else
+                    audioClip->setNumberOfLoops (numLoops);
+
+                afterClipEdit();
+                return true;
+            }
+        }
+
+        if (numLoops <= 1)
+            return true; // Nothing to repeat.
+
+        // No loop metadata: repeat the clip on the timeline `numLoops` times.
+        edit->getUndoManager().beginNewTransaction ("Loop clip");
+
+        auto nextStart = original->getPosition().time.getEnd();
+        const auto length = original->getPosition().time.getLength();
+
+        for (int i = 1; i < numLoops; ++i)
+        {
+            auto* copy = te::insertClipCopy (*track, te::ClipCopy::fromClip (*original)
+                                                       .withNewItemID (*edit));
+
+            if (copy == nullptr)
+                return false;
+
+            copy->setStart (nextStart, false, true);
+            copy->setName (original->getName() + " (loop " + juce::String (i + 1) + ")");
+            nextStart = nextStart + length;
+        }
+
+        afterClipEdit();
+        return true;
+    }
+
+    bool Session::setClipMuted (int trackIndex, int clipIndex, bool shouldMute)
+    {
+        auto* clip = clipAt (trackIndex, clipIndex);
+
+        if (edit == nullptr || clip == nullptr)
+            return false;
+
+        edit->getUndoManager().beginNewTransaction (shouldMute ? "Mute clip" : "Unmute clip");
+        clip->setMuted (shouldMute);
+        afterClipEdit();
+        return true;
+    }
+
+    bool Session::setClipFadeIn (int trackIndex, int clipIndex, double seconds)
+    {
+        auto* audioClip = audioClipAt (trackIndex, clipIndex);
+
+        if (edit == nullptr || audioClip == nullptr || seconds < 0.0)
+            return false;
+
+        edit->getUndoManager().beginNewTransaction ("Clip fade in");
+        audioClip->setFadeIn (te::TimeDuration::fromSeconds (seconds));
+        afterClipEdit();
+        return true;
+    }
+
+    bool Session::setClipFadeOut (int trackIndex, int clipIndex, double seconds)
+    {
+        auto* audioClip = audioClipAt (trackIndex, clipIndex);
+
+        if (edit == nullptr || audioClip == nullptr || seconds < 0.0)
+            return false;
+
+        edit->getUndoManager().beginNewTransaction ("Clip fade out");
+        audioClip->setFadeOut (te::TimeDuration::fromSeconds (seconds));
+        afterClipEdit();
+        return true;
+    }
+
+    double Session::getClipFadeIn (int trackIndex, int clipIndex) const
+    {
+        if (auto* audioClip = audioClipAt (trackIndex, clipIndex))
+            return audioClip->getFadeIn().inSeconds();
+
+        return 0.0;
+    }
+
+    double Session::getClipFadeOut (int trackIndex, int clipIndex) const
+    {
+        if (auto* audioClip = audioClipAt (trackIndex, clipIndex))
+            return audioClip->getFadeOut().inSeconds();
+
+        return 0.0;
+    }
+
+    bool Session::crossfadeClipWithNext (int trackIndex, int clipIndex, double seconds)
+    {
+        auto* track = getTrack (trackIndex);
+        te::Clip::Ptr left (clipAt (trackIndex, clipIndex));
+
+        if (edit == nullptr || track == nullptr || left == nullptr
+            || ! (seconds > minClipSeconds))
+            return false;
+
+        auto* leftAudio = dynamic_cast<te::AudioClipBase*> (left.get());
+
+        if (leftAudio == nullptr)
+            return false;
+
+        // Nearest clip to the right on the same track.
+        const auto leftStart = left->getPosition().time.getStart().inSeconds();
+        te::Clip* right = nullptr;
+
+        for (auto* candidate : track->getClips())
+        {
+            if (candidate == left.get())
+                continue;
+
+            const auto candidateStart = candidate->getPosition().time.getStart().inSeconds();
+
+            if (candidateStart < leftStart - 1.0e-9)
+                continue;
+
+            if (right == nullptr
+                || candidateStart < right->getPosition().time.getStart().inSeconds())
+                right = candidate;
+        }
+
+        if (right == nullptr)
+        {
+            lastError = "No adjacent clip to the right to crossfade with.";
+            return false;
+        }
+
+        auto* rightAudio = dynamic_cast<te::AudioClipBase*> (right);
+
+        if (rightAudio == nullptr)
+            return false;
+
+        const auto junction = right->getPosition().time.getStart();
+
+        edit->getUndoManager().beginNewTransaction ("Crossfade clips");
+
+        // Extend the left clip so the two overlap by `seconds`, then apply
+        // complementary equal-power (convex) fades across the overlap.
+        left->setEnd (junction + te::TimeDuration::fromSeconds (seconds), true);
+        leftAudio->setFadeOutType (te::AudioFadeCurve::convex);
+        rightAudio->setFadeInType (te::AudioFadeCurve::convex);
+        leftAudio->setFadeOut (te::TimeDuration::fromSeconds (seconds));
+        rightAudio->setFadeIn (te::TimeDuration::fromSeconds (seconds));
+
+        afterClipEdit();
+        return true;
+    }
+
+    //==============================================================================
+    bool Session::undo()
+    {
+        if (edit == nullptr || ! edit->getUndoManager().canUndo())
+            return false;
+
+        edit->undo();
+        edit->restartPlayback();
+        save();
+        sendChangeMessage();
+        return true;
+    }
+
+    bool Session::redo()
+    {
+        if (edit == nullptr || ! edit->getUndoManager().canRedo())
+            return false;
+
+        edit->redo();
+        edit->restartPlayback();
+        save();
+        sendChangeMessage();
+        return true;
+    }
+
+    bool Session::canUndo() const
+    {
+        return edit != nullptr && edit->getUndoManager().canUndo();
+    }
+
+    bool Session::canRedo() const
+    {
+        return edit != nullptr && edit->getUndoManager().canRedo();
+    }
+
+    juce::String Session::getUndoDescription() const
+    {
+        return edit != nullptr ? edit->getUndoManager().getUndoDescription() : juce::String();
+    }
+
+    juce::String Session::getRedoDescription() const
+    {
+        return edit != nullptr ? edit->getUndoManager().getRedoDescription() : juce::String();
+    }
+
     bool Session::record()
     {
         if (edit == nullptr)

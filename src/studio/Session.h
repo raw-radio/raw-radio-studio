@@ -227,6 +227,91 @@ namespace rrs
         double getSelectionStartSeconds() const noexcept { return selectionStartSeconds; }
         double getSelectionEndSeconds() const noexcept   { return selectionEndSeconds; }
 
+        //==============================================================================
+        // Arrangement clip editing (Epic 4 — FR-ED-1/2/3/6)
+        //
+        // Message-thread only: every operation touches the Edit's ValueTree and
+        // iterator state and persists the session, and each one is wrapped in a
+        // single UndoManager transaction so it is one undo step. Never call these
+        // from the audio thread.
+        //
+        // `trackIndex` is an engine audio-track index; `clipIndex` addresses the
+        // clip at that index in `track->getClips()` (the order Tracktion stores).
+        // `getClips()` returns them sorted by timeline position for the UI, with
+        // each info carrying its real `clipIndex`.
+        struct ClipInfo
+        {
+            int trackIndex = -1;
+            int clipIndex = -1;
+            juce::String name;
+            double startSeconds = 0.0;
+            double endSeconds = 0.0;
+            double lengthSeconds = 0.0;
+            double offsetSeconds = 0.0;
+            double fadeInSeconds = 0.0;
+            double fadeOutSeconds = 0.0;
+            bool isWave = false;
+            bool isLooping = false;
+            bool isMuted = false;
+        };
+
+        /** All clips on a track, sorted by timeline start. Each info records its
+            real `clipIndex`, which the mutation methods below expect. */
+        std::vector<ClipInfo> getClips (int trackIndex) const;
+        bool getClipInfo (int trackIndex, int clipIndex, ClipInfo&) const;
+
+        /** Moves a clip's start to `newStartSeconds`, keeping its length and the
+            source content under the clip (offset) unchanged. */
+        bool moveClip (int trackIndex, int clipIndex, double newStartSeconds);
+
+        /** Trims the clip's start edge to `newStartSeconds`, keeping the source
+            content stationary (the visible audio does not slide). */
+        bool trimClipStart (int trackIndex, int clipIndex, double newStartSeconds);
+
+        /** Trims the clip's end edge to `newEndSeconds`, keeping the source
+            content stationary. */
+        bool trimClipEnd (int trackIndex, int clipIndex, double newEndSeconds);
+
+        /** Splits the clip at `timeSeconds` (strictly inside the clip) into two
+            adjacent clips that reference the same source content. Returns false
+            when the split point is not inside the clip. */
+        bool splitClip (int trackIndex, int clipIndex, double timeSeconds);
+
+        /** Duplicates the clip, placing the copy immediately after the original.
+            Returns the new clip's index in `track->getClips()`, or -1 on failure. */
+        int duplicateClip (int trackIndex, int clipIndex);
+
+        bool deleteClip (int trackIndex, int clipIndex);
+
+        /** Loops a clip `numLoops` total passes (`numLoops` <= 1 disables).
+            Uses the engine's native looping when the source carries loop info,
+            otherwise repeats the clip butt-joined on the timeline. */
+        bool setClipLoop (int trackIndex, int clipIndex, int numLoops);
+
+        bool setClipMuted (int trackIndex, int clipIndex, bool shouldMute);
+
+        // --- Fades + crossfades (FR-ED-3) ---
+        /** Sets the fade-in / fade-out length in seconds (clamped to the clip
+            length by the engine). */
+        bool setClipFadeIn (int trackIndex, int clipIndex, double seconds);
+        bool setClipFadeOut (int trackIndex, int clipIndex, double seconds);
+        double getClipFadeIn (int trackIndex, int clipIndex) const;
+        double getClipFadeOut (int trackIndex, int clipIndex) const;
+
+        /** Equal-power crossfade between `clipIndex` and the nearest clip to its
+            right on the same track: the left clip is extended to overlap the
+            right by `seconds` and complementary convex fades are applied. Returns
+            false when there is no right neighbour or either clip is not audio. */
+        bool crossfadeClipWithNext (int trackIndex, int clipIndex, double seconds);
+
+        // --- Undo / redo (FR-ED-6) ---
+        bool undo();
+        bool redo();
+        bool canUndo() const;
+        bool canRedo() const;
+        juce::String getUndoDescription() const;
+        juce::String getRedoDescription() const;
+
         bool record();
         bool isAnyTrackArmed() const;
 
@@ -512,6 +597,16 @@ namespace rrs
         void writeInterruptionMarker();
         void clearInterruptionMarker();
         juce::Array<juce::File> findReferencedRecordings() const;
+
+        // --- Clip-editing helpers (Epic 4) ---
+        /** The clip at `clipIndex` in `track->getClips()`, or nullptr. */
+        tracktion::Clip* clipAt (int trackIndex, int clipIndex) const;
+        /** The same, cast to AudioClipBase (fades/loops), or nullptr. */
+        tracktion::AudioClipBase* audioClipAt (int trackIndex, int clipIndex) const;
+        /** Fills `info` (minus index fields) from a live clip. */
+        bool fillClipInfo (tracktion::Clip&, ClipInfo&) const;
+        /** Rebuilds the playback graph and persists the edit after a mutation. */
+        void afterClipEdit();
 
         // Record-pass clip muting (owner request): a new take must not play the
         // previous take back on the same track, so the armed record tracks'

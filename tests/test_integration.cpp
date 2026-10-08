@@ -247,6 +247,34 @@ namespace
 
         return buffer.getMagnitude (0, buffer.getNumSamples());
     }
+
+    /** Largest absolute sample-to-sample step in a rendered WAV. A click (a
+        discontinuity at a clip junction) shows up as a step far larger than the
+        source waveform's own slope. Returns -1 on failure. */
+    float readWavMaxFirstDifference (const juce::File& file)
+    {
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::AudioFormatReader> reader (
+            wav.createReaderFor (new juce::FileInputStream (file), true));
+
+        if (reader == nullptr || reader->lengthInSamples <= 1)
+            return -1.0f;
+
+        juce::AudioBuffer<float> buffer ((int) reader->numChannels, (int) reader->lengthInSamples);
+
+        if (! reader->read (&buffer, 0, (int) reader->lengthInSamples, 0, true, true))
+            return -1.0f;
+
+        float maxDiff = 0.0f;
+
+        for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+            for (int i = 1; i < buffer.getNumSamples(); ++i)
+                maxDiff = juce::jmax (maxDiff,
+                                      std::abs (buffer.getSample (ch, i)
+                                                - buffer.getSample (ch, i - 1)));
+
+        return maxDiff;
+    }
 }
 
 //==============================================================================
@@ -975,6 +1003,219 @@ TEST_CASE ("adding a track after removing a middle track picks a free input chan
 
     CHECK (channels.size() == (size_t) session.getInputTrackIndices().size());
     CHECK (session.getTrackInputMapping (added).firstChannel == 1);
+
+    session.close();
+}
+
+//==============================================================================
+// Epic 4 (FR-ED-1/2/6): arrangement clip edits. Every operation changes the
+// clip's geometry as measured through the Session's clip model, and undo/redo
+// restores the previous edit state consistently.
+TEST_CASE ("Epic 4 clip editing: move/trim/split/duplicate/delete/loop change geometry")
+{
+    auto dir = scratchDirectory ("clip-edit");
+    auto wavFile = writeSineWav (dir.getChildFile ("take.wav"), 48000.0, 2.0);
+    REQUIRE (wavFile.existsAsFile());
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("ClipEdit.tracktionedit")));
+    REQUIRE (session.importAudioFile (wavFile));
+    REQUIRE (session.getNumAudioTracks() == 2);
+
+    const int track = 1; // the imported take's track
+
+    auto info = [&] (int clipIndex)
+    {
+        Session::ClipInfo i;
+        REQUIRE (session.getClipInfo (track, clipIndex, i));
+        return i;
+    };
+
+    int ci = -1;
+
+    {
+        const auto clips = session.getClips (track);
+        REQUIRE (clips.size() == 1);
+        ci = clips[0].clipIndex;
+        CHECK (clips[0].startSeconds == doctest::Approx (0.0));
+        CHECK (clips[0].lengthSeconds == doctest::Approx (2.0).epsilon (0.02));
+        CHECK (clips[0].isWave);
+    }
+
+    // --- move ---
+    REQUIRE (session.moveClip (track, ci, 1.0));
+    {
+        const auto i = info (ci);
+        CHECK (i.startSeconds == doctest::Approx (1.0));
+        CHECK (i.lengthSeconds == doctest::Approx (2.0).epsilon (0.02));
+        CHECK (i.offsetSeconds == doctest::Approx (0.0)); // content did not slide
+    }
+
+    // --- trim end ---
+    REQUIRE (session.trimClipEnd (track, ci, 2.5));
+    CHECK (info (ci).lengthSeconds == doctest::Approx (1.5).epsilon (0.01));
+
+    // --- undo restores the pre-trim length; redo re-applies it ---
+    REQUIRE (session.undo());
+    CHECK (info (ci).lengthSeconds == doctest::Approx (2.0).epsilon (0.02));
+    REQUIRE (session.canRedo());
+    REQUIRE (session.redo());
+    CHECK (info (ci).lengthSeconds == doctest::Approx (1.5).epsilon (0.01));
+
+    // --- trim start: the source content stays stationary (offset follows) ---
+    REQUIRE (session.trimClipStart (track, ci, 1.25));
+    {
+        const auto i = info (ci);
+        CHECK (i.startSeconds == doctest::Approx (1.25));
+        CHECK (i.endSeconds == doctest::Approx (2.5));
+        CHECK (i.lengthSeconds == doctest::Approx (1.25).epsilon (0.01));
+        CHECK (i.offsetSeconds == doctest::Approx (0.25).epsilon (0.01));
+    }
+
+    // --- split at 2.0 into two adjacent, content-continuous clips ---
+    REQUIRE (session.splitClip (track, ci, 2.0));
+    {
+        const auto clips = session.getClips (track);
+        REQUIRE (clips.size() == 2);
+        CHECK (clips[0].startSeconds == doctest::Approx (1.25));
+        CHECK (clips[0].endSeconds == doctest::Approx (2.0));
+        CHECK (clips[1].startSeconds == doctest::Approx (2.0));
+        CHECK (clips[1].endSeconds == doctest::Approx (2.5));
+    }
+
+    // --- duplicate the first clip immediately after it ---
+    const int firstIndex = session.getClips (track)[0].clipIndex;
+    const int duplicateIndex = session.duplicateClip (track, firstIndex);
+    REQUIRE (duplicateIndex >= 0);
+    {
+        const auto i = info (duplicateIndex);
+        CHECK (i.startSeconds == doctest::Approx (2.0));
+        CHECK (i.lengthSeconds == doctest::Approx (0.75).epsilon (0.01));
+    }
+    CHECK (session.getClips (track).size() == 3);
+
+    // --- delete the duplicate, then undo the delete ---
+    REQUIRE (session.deleteClip (track, duplicateIndex));
+    CHECK (session.getClips (track).size() == 2);
+    REQUIRE (session.undo());
+    CHECK (session.getClips (track).size() == 3);
+
+    // --- loop x3: the engine loops natively when the source is loopable,
+    //     otherwise the fallback repeats the clip on the timeline. Either way
+    //     the total repeated material triples. ---
+    const int loopTarget = session.getClips (track)[0].clipIndex;
+    const auto beforeCount = session.getClips (track).size();
+    const auto beforeLength = info (loopTarget).lengthSeconds;
+    REQUIRE (session.setClipLoop (track, loopTarget, 3));
+
+    const auto afterCount = session.getClips (track).size();
+    const auto afterLength = info (loopTarget).lengthSeconds;
+    INFO ("loop: count " << beforeCount << " -> " << afterCount
+          << ", length " << beforeLength << " -> " << afterLength);
+
+    const bool repeatedOnTimeline = (afterCount == beforeCount + 2);
+    const bool loopedNatively = (afterLength == doctest::Approx (beforeLength * 3.0).epsilon (0.02));
+    CHECK ((repeatedOnTimeline || loopedNatively));
+
+    // --- invalid requests are rejected, not corrupted ---
+    CHECK_FALSE (session.splitClip (track, loopTarget, 0.0));       // outside the clip
+    CHECK_FALSE (session.trimClipEnd (track, loopTarget, 0.0));     // would collapse
+    CHECK_FALSE (session.moveClip (999, 0, 1.0));                   // no such track
+
+    session.close();
+}
+
+//==============================================================================
+// Epic 4 (FR-ED-3, measured): a crossfade between adjacent clips removes the
+// click that a hard junction produces. The test renders the junction offline
+// twice — once with the clips butted together and once after the crossfade —
+// and compares the largest sample-to-sample step. A hard junction between a
+// ~0.49 sample and 0 shows a ~0.49 step; the equal-power crossfade smooths it.
+TEST_CASE ("Epic 4 crossfade removes the junction click (FR-ED-3, measured)")
+{
+    auto dir = scratchDirectory ("crossfade");
+    constexpr double sampleRate = 48000.0;
+
+    auto wavFile = writeSineWav (dir.getChildFile ("tone.wav"), sampleRate, 2.0, 0.5f, 440.0);
+    REQUIRE (wavFile.existsAsFile());
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Crossfade.tracktionedit")));
+    REQUIRE (session.importAudioFile (wavFile));
+
+    const int track = 1;
+
+    auto getInfo = [&] (int clipIndex)
+    {
+        Session::ClipInfo i;
+        REQUIRE (session.getClipInfo (track, clipIndex, i));
+        return i;
+    };
+
+    auto renderJunction = [&] (const juce::String& name)
+    {
+        auto dest = dir.getChildFile (name);
+        dest.deleteFile();
+
+        std::atomic<bool> finished { false };
+        bool succeeded = false;
+
+        auto handle = WavExport::start (*session.getEdit(), dest,
+                                        [&] (bool success, juce::File, juce::String)
+                                        {
+                                            succeeded = success;
+                                            finished = true;
+                                        },
+                                        true, { 0.90, 1.15 });
+
+        REQUIRE (handle != nullptr);
+
+        for (int i = 0; i < 400 && ! finished.load(); ++i)
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (25);
+
+        REQUIRE (finished.load());
+        REQUIRE (succeeded);
+        return dest;
+    };
+
+    // Clip A: the imported take trimmed to 0.987 s (so it ends mid-cycle at a
+    // ~+0.49 sample). Duplicate it butt-joined at 0.987 s; the copy restarts the
+    // source at 0, so the hard junction jumps from ~+0.49 to 0 — a click.
+    const int clipA = session.getClips (track)[0].clipIndex;
+    REQUIRE (session.trimClipEnd (track, clipA, 0.987));
+    const int clipB = session.duplicateClip (track, clipA);
+    REQUIRE (clipB >= 0);
+    REQUIRE (getInfo (clipB).startSeconds == doctest::Approx (0.987));
+
+    const auto hardStep = readWavMaxFirstDifference (renderJunction ("hard.wav"));
+
+    // Apply the crossfade and re-measure the same junction.
+    REQUIRE (session.crossfadeClipWithNext (track, clipA, 0.05));
+
+    // Geometry: the left clip now overlaps the right by exactly the crossfade
+    // length, with complementary equal-power fades.
+    {
+        const auto a = getInfo (clipA);
+        const auto b = getInfo (clipB);
+        CHECK (a.endSeconds == doctest::Approx (1.037).epsilon (1.0e-3));
+        CHECK (a.fadeOutSeconds == doctest::Approx (0.05).epsilon (1.0e-3));
+        CHECK (b.fadeInSeconds == doctest::Approx (0.05).epsilon (1.0e-3));
+        CHECK ((a.endSeconds - b.startSeconds) == doctest::Approx (0.05).epsilon (1.0e-3));
+    }
+
+    const auto fadedStep = readWavMaxFirstDifference (renderJunction ("faded.wav"));
+
+    MESSAGE ("crossfade junction max sample step: hard=" << hardStep
+             << ", crossfaded=" << fadedStep);
+
+    // The hard junction shows a large discontinuity...
+    CHECK (hardStep > 0.30f);
+    // ...while the crossfaded junction is smooth (well below the click) and the
+    // signal did not blow up.
+    CHECK (fadedStep < 0.15f);
+    CHECK (readWavPeak (renderJunction ("faded2.wav")) < 1.0f);
 
     session.close();
 }
