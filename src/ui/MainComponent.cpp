@@ -457,16 +457,35 @@ namespace rrs
             refreshTransportUi();
         };
 
-        // Epic 4 arrangement edit actions. Undo/redo are text buttons (an icon for
-        // "undo a generic edit" is ambiguous); the rest are compact chips.
+        // Epic 4 arrangement edit actions. Icon-only now (owner request: the edit
+        // row matches the icon-only action/transport rows). Each button keeps the
+        // same tooltip as before so the action stays discoverable on hover; the
+        // underlying text label is retained only as the button's accessible name
+        // (`paintButton` draws the glyph alone when `iconOnly` is set).
+        undoButton.setIconName ("arrow-counter-clockwise");
+        undoButton.setIconOnly (true);
         undoButton.setTooltip ("Undo the last edit (Cmd/Ctrl+Z)");
+        redoButton.setIconName ("arrow-clockwise");
+        redoButton.setIconOnly (true);
         redoButton.setTooltip ("Redo the last undone edit (Cmd/Ctrl+Shift+Z)");
+        splitClipButton.setIconName ("scissors");
+        splitClipButton.setIconOnly (true);
         splitClipButton.setTooltip ("Split the selected clip at the playhead (S)");
+        deleteClipButton.setIconName ("trash");
+        deleteClipButton.setIconOnly (true);
         deleteClipButton.setTooltip ("Delete the selected clip only (Delete key). "
-                                     "To delete the whole track use Remove track (trash).");
+                                     "To delete the whole track use the Remove track button.");
+        duplicateClipButton.setIconName ("copy");
+        duplicateClipButton.setIconOnly (true);
         duplicateClipButton.setTooltip ("Duplicate the selected clip (D)");
+        loopClipButton.setIconName ("repeat");
+        loopClipButton.setIconOnly (true);
         loopClipButton.setTooltip ("Loop the selected clip twice (L)");
+        crossfadeButton.setIconName ("arrows-left-right");
+        crossfadeButton.setIconOnly (true);
         crossfadeButton.setTooltip ("Crossfade the selected clip with the next one on its track (F)");
+        stretchClipButton.setIconName ("arrows-horizontal");
+        stretchClipButton.setIconOnly (true);
         stretchClipButton.setTooltip ("Time-stretch the selected clip to the region selection length");
 
         undoButton.onClick = [this] { undoEdit(); };
@@ -1597,15 +1616,17 @@ namespace rrs
 
         area.removeFromTop (8);
 
-        // Epic 4: arrangement edit row (Undo/Redo + clip operations).
-        auto editRow = area.removeFromTop (30);
+        // Epic 4: arrangement edit row (Undo/Redo + clip operations). Icon-only
+        // 32x32 squares with the same 4 px grouping as before; `iconOnly` makes
+        // `getPreferredWidth()` return the square size, so the old text-width
+        // clamp (jmax ..., 68) is gone.
+        auto editRow = area.removeFromTop (32);
 
         for (auto* b : { &undoButton, &redoButton, &splitClipButton, &deleteClipButton,
                          &duplicateClipButton, &loopClipButton, &crossfadeButton,
                          &stretchClipButton })
         {
-            const auto w = juce::jmax (b->getPreferredWidth(), 68);
-            b->setBounds (editRow.removeFromLeft (w).withSizeKeepingCentre (w, 28));
+            b->setBounds (editRow.removeFromLeft (32).withSizeKeepingCentre (32, 32));
             editRow.removeFromLeft (4);
         }
 
@@ -1931,7 +1952,7 @@ namespace rrs
                 // Discoverability hint (owner: "how do I delete the backing
                 // track?"): name both delete paths while a clip is selected.
                 showStatus ("Clip selected. Drag to move/trim (hold Alt to disable snapping). "
-                            "Delete removes this clip; Remove track (trash) removes the whole track.");
+                            "Delete removes this clip; Remove track removes the whole track.");
 
                 const auto info = clipInfoFor (index, clipIndex);
                 const auto length = session.getTimelineLengthSeconds();

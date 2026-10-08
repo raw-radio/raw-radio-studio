@@ -118,12 +118,16 @@ TEST_CASE ("brand icon cache parses and tints the vendored Phosphor SVGs")
 
     // Every vendored resource must resolve — guards against a renamed file
     // silently yielding a blank button. These are the Phosphor Icons (regular)
-    // names used by the transport / action rows and the device panel.
+    // names used by the transport / action rows, the arrangement edit row
+    // (undo/redo/split/delete/duplicate/loop/crossfade/stretch) and the device
+    // panel.
     for (const auto* name : { "file-plus", "folder-open", "floppy-disk", "floppy-disk-back",
                               "upload-simple", "download-simple", "x", "gear-six", "info",
                               "record", "headphones", "play", "pause", "stop", "skip-back",
                               "metronome", "timer", "plus", "trash", "waveform",
-                              "arrows-clockwise" })
+                              "arrows-clockwise",
+                              "arrow-counter-clockwise", "arrow-clockwise", "scissors",
+                              "copy", "repeat", "arrows-left-right", "arrows-horizontal" })
     {
         const auto rendered = cache.getIconImage (name, juce::Colours::white, 16);
         CHECK (rendered.isValid());

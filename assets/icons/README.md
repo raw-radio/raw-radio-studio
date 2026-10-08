@@ -21,7 +21,8 @@ fetched at build time) and compiled into the binary via `juce_add_binary_data`.
 `file-plus`, `folder-open`, `floppy-disk`, `floppy-disk-back`, `upload-simple`,
 `download-simple`, `x`, `gear-six`, `info`, `record`, `headphones`, `play`,
 `pause`, `stop`, `skip-back`, `metronome`, `timer`, `plus`, `trash`, `waveform`,
-`arrows-clockwise`.
+`arrows-clockwise`, `arrow-counter-clockwise`, `arrow-clockwise`, `scissors`,
+`copy`, `repeat`, `arrows-left-right`, `arrows-horizontal`.
 
 Semantic mapping used by the UI (`src/ui/MainComponent.cpp`,
 `src/ui/DevicePanel.cpp`):
@@ -49,6 +50,14 @@ Semantic mapping used by the UI (`src/ui/MainComponent.cpp`,
 | Remove track | `trash` |
 | Normalize | `waveform` |
 | Rescan devices | `arrows-clockwise` |
+| Undo (edit row) | `arrow-counter-clockwise` |
+| Redo (edit row) | `arrow-clockwise` |
+| Split (edit row) | `scissors` |
+| Delete clip (edit row) | `trash` (same glyph as Remove track; tooltips disambiguate) |
+| Duplicate (edit row) | `copy` |
+| Loop (edit row) | `repeat` |
+| Crossfade (edit row) | `arrows-left-right` |
+| Stretch (edit row) | `arrows-horizontal` |
 
 ## Local modification
 
@@ -75,7 +84,9 @@ blank button.
 PHOSPHOR_SHA=d42782b2abe747d904b971ccab48b182a1455f86
 for name in file-plus folder-open floppy-disk floppy-disk-back upload-simple \
             download-simple x gear-six info record headphones play pause stop \
-            skip-back metronome timer plus trash waveform arrows-clockwise; do
+            skip-back metronome timer plus trash waveform arrows-clockwise \
+            arrow-counter-clockwise arrow-clockwise scissors copy repeat \
+            arrows-left-right arrows-horizontal; do
   curl -sSL "https://raw.githubusercontent.com/phosphor-icons/core/$PHOSPHOR_SHA/assets/regular/$name.svg" \
     -o "/tmp/$name.svg"
   python3 - "$name" <<'PY'

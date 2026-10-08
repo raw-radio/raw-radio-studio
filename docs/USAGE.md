@@ -181,6 +181,8 @@ For a whole-session export, press **Export WAV** instead (no selection needed).
 
 Clips are drawn on each track lane as rectangles. Click a clip to select it
 (accent outline); the edit row under the transport enables the clip actions.
+Every button in that row is **icon-only** (matching the action and transport
+rows) — hover one to read its tooltip, which names the action and its shortcut.
 
 - **Move:** drag a selected clip's body left/right along the timeline.
 - **Trim:** drag a clip's left or right edge (within ~1/4 of the clip width).
@@ -190,29 +192,30 @@ Clips are drawn on each track lane as rectangles. Click a clip to select it
   clip boundaries, the playhead and the whole-second grid when it comes within
   ~6 px; a yellow line marks the boundary it will land on. **Hold `Alt`** during
   the drag to bypass snapping and place the edge freely.
-- **Delete a clip vs. a track:** **Delete** (`Delete` key) removes only the
-  selected clip. The trash **Remove track** button removes the whole track (with
-  all of its clips): it removes the selected clip's track, or the last track
-  when nothing is selected — use it to remove an imported backing track
-  ("minus").
-- **Split:** put the playhead inside the selected clip and press **Split** (or
-  `S`).
-- **Delete / Duplicate / Loop:** **Delete** (`Delete`), **Duplicate** (`D`),
-  **Loop** (`L`, toggles ×2 for sources with loop metadata, otherwise repeats
-  the clip on the timeline).
-- **Crossfade:** press **Crossfade** (`F`) — the clip is extended over the next
-  clip on its track and complementary equal-power (convex) fades are applied
-  across the overlap.
+- **Delete a clip vs. a track:** **Delete** (trash icon, `Delete` key) removes
+  only the selected clip. The same trash glyph is used by **Remove track**, which
+  removes the whole track (with all of its clips): it removes the selected clip's
+  track, or the last track when nothing is selected — use it to remove an
+  imported backing track ("minus"). The tooltips disambiguate the two.
+- **Split:** put the playhead inside the selected clip and press **Split**
+  (scissors icon, or `S`).
+- **Delete / Duplicate / Loop:** **Delete** (trash, `Delete`), **Duplicate**
+  (copy icon, `D`), **Loop** (repeat icon, `L`, toggles ×2 for sources with loop
+  metadata, otherwise repeats the clip on the timeline).
+- **Crossfade:** press **Crossfade** (left-right arrows icon, `F`) — the clip is
+  extended over the next clip on its track and complementary equal-power
+  (convex) fades are applied across the overlap.
 - **Time-stretch:** Shift-drag a region on the ruler, select a clip, then press
-  **Stretch**: the clip is time-stretched (with the free Signalsmith Stretch
-  library) to the region's length and replaced by a clip referencing the new
-  24-bit WAV under `Processed/` (the original file is kept).
+  **Stretch** (horizontal-arrows icon): the clip is time-stretched (with the free
+  Signalsmith Stretch library) to the region's length and replaced by a clip
+  referencing the new 24-bit WAV under `Processed/` (the original file is kept).
 - **Comping:** takes are stacked as overlapping clips on one track; assembling
   a master take from them is exposed through `Session::compTakes` (an API/headless
   feature for now — see `docs/EPIC4_GAPS.md`; the interactive take-lane UI is a
   follow-up).
-- **Undo/redo:** **Undo** / **Redo** buttons, or `Cmd/Ctrl+Z` and
-  `Cmd/Ctrl+Shift+Z`. Every edit (including a whole drag) is one undo step.
+- **Undo/redo:** **Undo** (counter-clockwise arrow icon) / **Redo** (clockwise
+  arrow icon) buttons, or `Cmd/Ctrl+Z` and `Cmd/Ctrl+Shift+Z`. Every edit
+  (including a whole drag) is one undo step.
 
 A drag only previews while you move; the edit is committed when you release the
 mouse, so a single drag is a single undo step.
