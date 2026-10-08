@@ -14,16 +14,44 @@ namespace rrs
     {
         addAndMakeVisible (trackBox);
         addAndMakeVisible (search);
+        addAndMakeVisible (knownLabel);
         addAndMakeVisible (knownList);
+        addAndMakeVisible (trackPluginLabel);
         addAndMakeVisible (trackPluginBox);
         addAndMakeVisible (statusLabel);
+        addAndMakeVisible (presetsLabel);
+        addAndMakeVisible (presetSelectLabel);
         addAndMakeVisible (presetBox);
+        addAndMakeVisible (presetNameLabel);
         addAndMakeVisible (presetName);
 
         for (auto* button : { &scanButton, &refreshButton, &insertButton,
                               &openButton, &removeButton, &savePresetButton, &loadPresetButton,
                               &closeButton })
             addAndMakeVisible (*button);
+
+        // Section headers (semi-bold) + inline field labels. Each label lives in
+        // its own laid-out row so it can never slide under another control.
+        for (auto* label : { &knownLabel, &trackPluginLabel, &presetsLabel })
+        {
+            label->setFont (brand::uiSemiBold (12.0f));
+            label->setColour (juce::Label::textColourId, brand::textSecondary);
+            label->setJustificationType (juce::Justification::centredLeft);
+        }
+
+        knownLabel.setText ("Available plugins", juce::dontSendNotification);
+        trackPluginLabel.setText ("Track plugin", juce::dontSendNotification);
+        presetsLabel.setText ("Presets", juce::dontSendNotification);
+
+        for (auto* label : { &presetSelectLabel, &presetNameLabel })
+        {
+            label->setFont (brand::uiRegular (12.0f));
+            label->setColour (juce::Label::textColourId, brand::textTertiary);
+            label->setJustificationType (juce::Justification::centredLeft);
+        }
+
+        presetSelectLabel.setText ("Preset", juce::dontSendNotification);
+        presetNameLabel.setText ("New", juce::dontSendNotification);
 
         trackBox.setTooltip ("Track to insert the plugin onto");
         search.setTextToShowWhenEmpty ("Search plugins (name, maker, format)", brand::textTertiary);
@@ -132,69 +160,96 @@ namespace rrs
         g.setFont (brand::uiSemiBold (16.0f));
         g.drawText ("Plugins", getLocalBounds().removeFromTop (34).reduced (14, 0),
                     juce::Justification::centredLeft);
-
-        g.setColour (brand::textSecondary);
-        g.setFont (brand::uiRegular (12.0f));
-        auto trackLabelArea = trackPluginBox.getBounds().withHeight (18).translated (0, -18);
-        g.drawText ("Track plugin + presets", trackLabelArea.reduced (14, 0),
-                    juce::Justification::centredLeft);
     }
 
     void PluginBrowser::resized()
     {
-        auto area = getLocalBounds().reduced (14);
-        area.removeFromTop (34); // title
+        // Spacing scale (mirrors the rest of the app): 4 / 8 / 12 / 16.
+        constexpr int margin = 14;
+        constexpr int gap = 8;
+        constexpr int labelH = 16;
+        constexpr int labelFieldGap = 4;
+        constexpr int sectionGap = 12;
+        constexpr int rowH = 28;
+        constexpr int actionW = 100;
+        constexpr int fieldLabelW = 64;
+        constexpr int listActionH = 32;
 
+        // Height of the bottom block (track plugin + presets + actions), fixed so
+        // it always fits and can never overlap the known-plugin list above it.
+        constexpr int lowerBlockH = labelH + labelFieldGap + rowH // track plugin
+                                    + sectionGap
+                                    + labelH + labelFieldGap + rowH + 6 + rowH // presets
+                                    + sectionGap
+                                    + listActionH;
+
+        auto area = getLocalBounds().reduced (margin);
+        area.removeFromTop (34); // title (painted)
+
+        // Track selector + search.
         auto top = area.removeFromTop (30);
         trackBox.setBounds (top.removeFromLeft (juce::jmin (260, top.getWidth() / 2)));
-        top.removeFromLeft (8);
+        top.removeFromLeft (gap);
         search.setBounds (top);
 
-        area.removeFromTop (8);
+        area.removeFromTop (gap);
 
-        // Bottom half: the track's current plugins + user presets + actions.
-        auto bottom = area.removeFromBottom (juce::jmax (200, area.getHeight() / 2));
-        area.removeFromBottom (8);
+        // Bottom block, anchored so it can never overlap the known list.
+        auto lower = area.removeFromBottom (lowerBlockH);
+        area.removeFromBottom (gap);
 
-        auto bottomActions = bottom.removeFromBottom (32);
-        openButton.setBounds (bottomActions.removeFromLeft (90));
-        bottomActions.removeFromLeft (8);
-        removeButton.setBounds (bottomActions.removeFromLeft (100));
+        // --- Track's existing plugins ---
+        trackPluginLabel.setBounds (lower.removeFromTop (labelH));
+        lower.removeFromTop (labelFieldGap);
+        trackPluginBox.setBounds (lower.removeFromTop (rowH));
+        lower.removeFromTop (sectionGap);
 
-        bottom.removeFromBottom (6);
-        trackPluginBox.setBounds (bottom.removeFromTop (30));
+        // --- Presets: select + Load, then name + Save (explicit rows) ---
+        presetsLabel.setBounds (lower.removeFromTop (labelH));
+        lower.removeFromTop (labelFieldGap);
 
-        // FR-MIX-6: preset list + Load, then the new-preset name + Save.
-        constexpr int actionWidth = 100;
+        auto presetRow = lower.removeFromTop (rowH);
+        presetSelectLabel.setBounds (presetRow.removeFromLeft (fieldLabelW));
+        presetRow.removeFromLeft (gap);
+        loadPresetButton.setBounds (presetRow.removeFromRight (actionW));
+        presetRow.removeFromRight (gap);
+        presetBox.setBounds (presetRow);
 
-        bottom.removeFromTop (8);
-        auto presetRow = bottom.removeFromTop (28);
-        presetBox.setBounds (presetRow.removeFromLeft (
-            juce::jmax (120, presetRow.getWidth() - actionWidth - 8)));
-        presetRow.removeFromLeft (8);
-        loadPresetButton.setBounds (presetRow);
+        lower.removeFromTop (6);
 
-        bottom.removeFromTop (6);
-        auto saveRow = bottom.removeFromTop (28);
-        presetName.setBounds (saveRow.removeFromLeft (
-            juce::jmax (120, saveRow.getWidth() - actionWidth - 8)));
-        saveRow.removeFromLeft (8);
-        savePresetButton.setBounds (saveRow);
+        auto saveRow = lower.removeFromTop (rowH);
+        presetNameLabel.setBounds (saveRow.removeFromLeft (fieldLabelW));
+        saveRow.removeFromLeft (gap);
+        savePresetButton.setBounds (saveRow.removeFromRight (actionW));
+        saveRow.removeFromRight (gap);
+        presetName.setBounds (saveRow);
 
-        // Middle: the known-plugin list + scan/insert actions.
-        auto listArea = area;
-        auto listActions = listArea.removeFromBottom (32);
+        lower.removeFromTop (sectionGap);
+
+        // --- Track-plugin actions, with Close on the right ---
+        auto actions = lower.removeFromTop (listActionH);
+        closeButton.setBounds (actions.removeFromRight (90));
+        actions.removeFromRight (gap);
+        openButton.setBounds (actions.removeFromLeft (90));
+        actions.removeFromLeft (gap);
+        removeButton.setBounds (actions.removeFromLeft (100));
+
+        // --- Known-plugin list (middle), actions below it with a real gap ---
+        knownLabel.setBounds (area.removeFromTop (labelH));
+        area.removeFromTop (labelFieldGap);
+
+        auto listActions = area.removeFromBottom (listActionH);
+        area.removeFromBottom (gap); // keeps Scan/Refresh off the list border
+
+        knownList.setBounds (area);
+
         scanButton.setBounds (listActions.removeFromLeft (90));
-        listActions.removeFromLeft (8);
+        listActions.removeFromLeft (gap);
         refreshButton.setBounds (listActions.removeFromLeft (100));
-        listActions.removeFromLeft (8);
+        listActions.removeFromLeft (gap);
         insertButton.setBounds (listActions.removeFromLeft (90));
-        listActions.removeFromLeft (8);
+        listActions.removeFromLeft (gap);
         statusLabel.setBounds (listActions);
-        knownList.setBounds (listArea);
-
-        // Close in the bottom-right corner.
-        closeButton.setBounds (getWidth() - 14 - 90, getHeight() - 14 - 30, 90, 30);
     }
 
     //==============================================================================

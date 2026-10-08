@@ -67,12 +67,17 @@ namespace rrs
 
         juce::ComboBox trackBox;
         juce::TextEditor search;
+        juce::Label knownLabel;
         juce::ListBox knownList { "known", this };
+        juce::Label trackPluginLabel;
         juce::ComboBox trackPluginBox;
         juce::Label statusLabel;
 
         // FR-MIX-6: user presets for the selected track plugin.
+        juce::Label presetsLabel;
+        juce::Label presetSelectLabel;
         juce::ComboBox presetBox;
+        juce::Label presetNameLabel;
         juce::TextEditor presetName;
 
         BrandButton scanButton { "Scan", BrandButton::Style::Primary };

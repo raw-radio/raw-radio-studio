@@ -299,7 +299,13 @@ target_sources(raw_radio_studio_integration_tests PRIVATE
     src/studio/PluginPresets.cpp
     src/studio/Session.cpp
     src/studio/StemsExport.cpp
-    src/studio/WavExport.cpp)
+    src/studio/WavExport.cpp
+    # UI sources needed by the plugin-browser layout regression test (BUG 2): the
+    # browser is a real component laid out at the minimum window size.
+    src/ui/PluginBrowser.cpp
+    src/ui/BrandButton.cpp
+    src/ui/IconCache.cpp
+    src/ui/BrandFonts.cpp)
 
 target_include_directories(raw_radio_studio_integration_tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -323,6 +329,7 @@ endif()
 
 target_link_libraries(raw_radio_studio_integration_tests PRIVATE
     raw_radio_studio_doctest
+    RawRadioStudioAssets
     tracktion::tracktion_engine
     tracktion::tracktion_graph
     juce::juce_audio_utils

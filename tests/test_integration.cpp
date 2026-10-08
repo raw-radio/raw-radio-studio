@@ -55,6 +55,7 @@ int main (int argc, char** argv)
 #include "studio/Session.h"
 #include "studio/StemsExport.h"
 #include "studio/WavExport.h"
+#include "ui/PluginBrowser.h"
 
 #include <algorithm>
 #include <atomic>
@@ -3182,5 +3183,58 @@ TEST_CASE ("stems export writes per-track stems and a master mix, 24-bit (FR-EXP
     CHECK (peakMaster <= 0.8f);
 
     handle.reset();
+    session.close();
+}
+
+//==============================================================================
+// Epic 3 (FR-MIX-4/6) layout regression: at the minimum window size the plugin
+// browser must not overlap any control. The old layout glued Scan/Refresh to the
+// list border and drew the "Track plugin + presets" caption over the buttons.
+// Every visible child must stay inside the panel and no two may intersect.
+TEST_CASE ("plugin browser layout has no overlaps at the minimum window size (FR-MIX-4/6)")
+{
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (
+        juce::File::getSpecialLocation (juce::File::tempDirectory)
+            .getChildFile ("raw-radio-studio-integration")
+            .getChildFile ("plugin-browser-layout")
+            .getChildFile ("Layout.tracktionedit")));
+
+    PluginHost host (audio.engine());
+    PluginBrowser browser (host, session);
+
+    // The MainComponent overlay caps the panel at 780x520; that is what the
+    // browser gets at the 1100x820 minimum window.
+    browser.setSize (780, 520);
+
+    auto children = browser.getChildren();
+    REQUIRE (children.size() > 0);
+
+    for (auto* child : children)
+    {
+        if (! child->isVisible())
+            continue;
+
+        INFO ("child bounds " << child->getBounds().toString()
+              << " panel " << browser.getLocalBounds().toString());
+        CHECK (browser.getLocalBounds().contains (child->getBounds()));
+    }
+
+    for (int i = 0; i < children.size(); ++i)
+    {
+        for (int j = i + 1; j < children.size(); ++j)
+        {
+            auto* a = children[i];
+            auto* b = children[j];
+
+            if (! a->isVisible() || ! b->isVisible())
+                continue;
+
+            INFO ("overlap " << a->getBounds().toString() << " vs " << b->getBounds().toString());
+            CHECK_FALSE (a->getBounds().intersects (b->getBounds()));
+        }
+    }
+
     session.close();
 }
