@@ -47,6 +47,11 @@ namespace rrs
         void mouseUp (const juce::MouseEvent&) override;
         bool keyPressed (const juce::KeyPress&) override;
 
+        /** Hover cursor feedback over the arrangement: resize cursors on a clip's
+            trim edges and corner-resize cursors on its fade handles, so the
+            editable zones are discoverable before the click. */
+        juce::MouseCursor getMouseCursor() override;
+
     private:
         void changeListenerCallback (juce::ChangeBroadcaster*) override;
         void timerCallback() override;
@@ -114,6 +119,13 @@ namespace rrs
         juce::Rectangle<int> clipRectFor (int trackIndex, const Session::ClipInfo&) const;
         /** Returns the topmost clip at `position` in `lane`, or -1. */
         int hitTestClip (int trackIndex, juce::Point<int> position) const;
+        /** Which edit zone `position` falls in inside `info`'s clip rectangle
+            (trim edges, fade corners or the body). Shared by mouseDown and the
+            hover cursor so a click and the cursor can never disagree. */
+        ClipDragMode zoneForPoint (int trackIndex, const Session::ClipInfo&,
+                                   juce::Point<int> position) const;
+        /** Mouse cursor for a drag zone (normal for the move/none zones). */
+        static juce::MouseCursor cursorForMode (ClipDragMode) noexcept;
         bool selectedClipExists() const;
         Session::ClipInfo selectedClipInfo() const;
         void commitClipDrag();

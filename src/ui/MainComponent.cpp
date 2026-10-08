@@ -1657,6 +1657,79 @@ namespace rrs
         return -1;
     }
 
+    MainComponent::ClipDragMode MainComponent::zoneForPoint (int trackIndex,
+                                                             const Session::ClipInfo& info,
+                                                             juce::Point<int> position) const
+    {
+        const auto rect = clipRectFor (trackIndex, info);
+        const auto edge = juce::jlimit (4, 10, rect.getWidth() / 4);
+        const auto x = position.x;
+        const bool nearTop = position.y <= rect.getY() + 8;
+
+        // Fade corners first: they sit inside the top 8 px of the clip and win
+        // over the trim edges, exactly as before (so a click and the cursor
+        // agree).
+        if (nearTop && x <= rect.getX() + 16)
+            return ClipDragMode::fadeIn;
+
+        if (nearTop && x >= rect.getRight() - 16)
+            return ClipDragMode::fadeOut;
+
+        if (x <= rect.getX() + edge)
+            return ClipDragMode::trimStart;
+
+        if (x >= rect.getRight() - edge)
+            return ClipDragMode::trimEnd;
+
+        return ClipDragMode::move;
+    }
+
+    juce::MouseCursor MainComponent::cursorForMode (ClipDragMode mode) noexcept
+    {
+        switch (mode)
+        {
+            case ClipDragMode::trimStart: return juce::MouseCursor::LeftEdgeResizeCursor;
+            case ClipDragMode::trimEnd:   return juce::MouseCursor::RightEdgeResizeCursor;
+            // Fade handles are the clip's top corners: corner-resize cursors read
+            // as "grab this corner".
+            case ClipDragMode::fadeIn:    return juce::MouseCursor::TopLeftCornerResizeCursor;
+            case ClipDragMode::fadeOut:   return juce::MouseCursor::TopRightCornerResizeCursor;
+            case ClipDragMode::move:
+            case ClipDragMode::none:
+            default:                      return juce::MouseCursor::NormalCursor;
+        }
+    }
+
+    juce::MouseCursor MainComponent::getMouseCursor()
+    {
+        // While a drag is in flight the zone it started with wins, so the cursor
+        // does not flicker when the pointer strays off the clip.
+        if (clipDragActive && clipDragMode != ClipDragMode::none)
+            return cursorForMode (clipDragMode);
+
+        if (! isEnabled())
+            return juce::MouseCursor::NormalCursor;
+
+        const auto position = getMouseXYRelative();
+
+        for (size_t i = 0; i < trackLaneRects.size(); ++i)
+        {
+            if (! trackLaneRects[i].contains (position))
+                continue;
+
+            const auto trackIndex = (int) i;
+            const auto clipIndex = hitTestClip (trackIndex, position);
+
+            if (clipIndex < 0)
+                break; // empty lane area: no clip cursor
+
+            return cursorForMode (zoneForPoint (trackIndex, clipInfoFor (trackIndex, clipIndex),
+                                                position));
+        }
+
+        return juce::MouseCursor::NormalCursor;
+    }
+
     Session::ClipInfo MainComponent::clipInfoFor (int trackIndex, int clipIndex) const
     {
         Session::ClipInfo info;
@@ -1764,7 +1837,6 @@ namespace rrs
                 selectClip (index, clipIndex);
 
                 const auto info = clipInfoFor (index, clipIndex);
-                const auto rect = clipRectFor (index, info);
                 const auto length = session.getTimelineLengthSeconds();
                 const auto mouseSeconds = Timeline::secondsForX (e.getPosition().x, length, trackLaneArea);
 
@@ -1780,21 +1852,7 @@ namespace rrs
                 dragPreviewFadeIn = info.fadeInSeconds;
                 dragPreviewFadeOut = info.fadeOutSeconds;
                 clipDragActive = true;
-
-                const auto edge = juce::jlimit (4, 10, rect.getWidth() / 4);
-                const auto x = e.getPosition().x;
-                const bool nearTop = e.getPosition().y <= rect.getY() + 8;
-
-                if (nearTop && x <= rect.getX() + 16)
-                    clipDragMode = ClipDragMode::fadeIn;
-                else if (nearTop && x >= rect.getRight() - 16)
-                    clipDragMode = ClipDragMode::fadeOut;
-                else if (x <= rect.getX() + edge)
-                    clipDragMode = ClipDragMode::trimStart;
-                else if (x >= rect.getRight() - edge)
-                    clipDragMode = ClipDragMode::trimEnd;
-                else
-                    clipDragMode = ClipDragMode::move;
+                clipDragMode = zoneForPoint (index, info, e.getPosition());
 
                 return;
             }
