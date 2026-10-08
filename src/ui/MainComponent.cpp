@@ -1696,6 +1696,10 @@ namespace rrs
         constexpr double eps = 1.0e-4;
         bool changed = false;
 
+        // Clear any stale error so a failed drag reports the *current* failure
+        // (below), not a message left over from an earlier operation.
+        session.clearLastError();
+
         switch (mode)
         {
             case ClipDragMode::move:
@@ -1714,11 +1718,15 @@ namespace rrs
                 break;
 
             case ClipDragMode::fadeIn:
-                changed = session.setClipFadeIn (dragTrackIndex, dragClipIndex, dragPreviewFadeIn);
+                // A click on the fade corner with no movement must not create an
+                // empty undo transaction.
+                if (std::abs (dragPreviewFadeIn - dragOriginalFadeIn) > eps)
+                    changed = session.setClipFadeIn (dragTrackIndex, dragClipIndex, dragPreviewFadeIn);
                 break;
 
             case ClipDragMode::fadeOut:
-                changed = session.setClipFadeOut (dragTrackIndex, dragClipIndex, dragPreviewFadeOut);
+                if (std::abs (dragPreviewFadeOut - dragOriginalFadeOut) > eps)
+                    changed = session.setClipFadeOut (dragTrackIndex, dragClipIndex, dragPreviewFadeOut);
                 break;
 
             case ClipDragMode::none:

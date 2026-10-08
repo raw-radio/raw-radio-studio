@@ -322,8 +322,8 @@ namespace rrs
         // Fader.
         const auto& f = strip.fader;
         const auto cx = (float) f.getCentreX();
-        const auto top = (float) f.getY() + 4.0f;
-        const auto bottom = (float) f.getBottom() - 4.0f;
+        float top = 0.0f, bottom = 0.0f;
+        mixer_layout::faderTravelExtents (f, top, bottom);
         // Fader law is linear in dB (FaderTaper.h): the thumb sits at the taper
         // position for the stored dB, and bottoms out to a mute detent. The
         // gain label shows "-inf" once the taper is at/below its floor.
@@ -489,9 +489,7 @@ namespace rrs
 
         if (dragTarget == DragTarget::Fader)
         {
-            const auto top = (float) strip.fader.getY() + 4.0f;
-            const auto bottom = (float) strip.fader.getBottom() - 4.0f;
-            const auto t = juce::jlimit (0.0f, 1.0f, (bottom - (float) pos.y) / juce::jmax (1.0f, bottom - top));
+            const auto t = mixer_layout::faderPosAtY (strip.fader, (float) pos.y);
             const auto db = fader::level.posToDb (t);
 
             if (strip.isMaster)

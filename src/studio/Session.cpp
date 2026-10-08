@@ -32,6 +32,16 @@ namespace rrs
         // make it survive save/open and to re-apply it at record start.
         const juce::Identifier idCountInMode  { "rrsCountInMode" };
 
+        // Fallback clip looping (clips whose source carries no loop metadata —
+        // the engine can't loop them natively, so `setClipLoop` butt-joins
+        // copies on the timeline). These mark the fallback loop so it can be
+        // turned off again deterministically and survive save/open:
+        //   * idLoopCount on the *looped original* — total passes (> 1).
+        //   * idLoopSource on each *generated copy* — the item ID of that
+        //     original, so the copies belonging to it can be found and removed.
+        const juce::Identifier idLoopCount  { "rrsLoopCount" };
+        const juce::Identifier idLoopSource { "rrsLoopSource" };
+
         // Record trim range: enough to rescue a quiet mic without absurd boosts.
         constexpr float minInputGainDb = -24.0f;
         constexpr float maxInputGainDb =  24.0f;
@@ -1275,7 +1285,12 @@ namespace rrs
         info.endSeconds = pos.time.getEnd().inSeconds();
         info.lengthSeconds = pos.time.getLength().inSeconds();
         info.offsetSeconds = pos.offset.inSeconds();
-        info.isLooping = clip.isLooping();
+        // Native engine looping, or a fallback timeline loop: both must report
+        // as looping so the UI toggle offers "disable" (and does not keep
+        // accumulating copies).
+        info.isLooping = clip.isLooping()
+                         || clip.state.hasProperty (idLoopCount)
+                         || clip.state.hasProperty (idLoopSource);
         info.isMuted = clip.isMuted();
 
         if (auto* audioClip = dynamic_cast<te::AudioClipBase*> (&clip))
@@ -1445,48 +1460,119 @@ namespace rrs
         auto* track = getTrack (trackIndex);
         te::Clip::Ptr original (clipAt (trackIndex, clipIndex));
 
-        if (edit == nullptr || track == nullptr || original == nullptr || numLoops < 1)
+        if (edit == nullptr || track == nullptr || original == nullptr)
             return false;
 
         if (auto* audioClip = dynamic_cast<te::AudioClipBase*> (original.get()))
         {
             // Native looping when the source carries loop information (beat
             // markers/tempo); otherwise fall through to timeline repetition.
+            // `numLoops <= 1` disables the loop (the UI passes 0 to toggle off).
             if (audioClip->canLoop())
             {
-                edit->getUndoManager().beginNewTransaction ("Loop clip");
-
                 if (numLoops <= 1)
+                {
+                    if (! audioClip->isLooping())
+                        return true; // Already off — no empty undo transaction.
+
+                    edit->getUndoManager().beginNewTransaction ("Loop clip");
                     audioClip->disableLooping();
+                }
                 else
+                {
+                    edit->getUndoManager().beginNewTransaction ("Loop clip");
                     audioClip->setNumberOfLoops (numLoops);
+                }
 
                 afterClipEdit();
                 return true;
             }
         }
 
-        if (numLoops <= 1)
-            return true; // Nothing to repeat.
-
         // No loop metadata: repeat the clip on the timeline `numLoops` times.
+        // Find the loop's root first: the selected clip may itself be one of the
+        // generated copies, in which case the operation belongs to its original.
+        auto* root = original.get();
+
+        if (root->state.hasProperty (idLoopSource))
+        {
+            const auto sourceId = root->state.getProperty (idLoopSource).toString();
+
+            for (auto* candidate : track->getClips())
+                if (candidate->itemID.toString() == sourceId)
+                {
+                    root = candidate;
+                    break;
+                }
+        }
+
+        if (numLoops <= 1)
+        {
+            // Disable: remove every generated copy of this loop and clear the
+            // original's marker. Idempotent when already off (no transaction).
+            juce::Array<te::Clip*> copies;
+            const auto rootId = root->itemID.toString();
+
+            for (auto* candidate : track->getClips())
+                if (candidate != root
+                    && candidate->state.getProperty (idLoopSource).toString() == rootId)
+                    copies.add (candidate);
+
+            if (copies.isEmpty() && ! root->state.hasProperty (idLoopCount))
+                return true; // Nothing to repeat.
+
+            edit->getUndoManager().beginNewTransaction ("Loop clip");
+
+            for (auto* copy : copies)
+                copy->removeFromParent();
+
+            root->state.removeProperty (idLoopCount, &edit->getUndoManager());
+
+            afterClipEdit();
+            return true;
+        }
+
         edit->getUndoManager().beginNewTransaction ("Loop clip");
 
-        auto nextStart = original->getPosition().time.getEnd();
-        const auto length = original->getPosition().time.getLength();
+        const auto rootId = root->itemID.toString();
+        const auto rootName = root->getName();
+
+        // Drop copies from a previous fallback loop first: `numLoops` is the
+        // exact total, so re-enabling without an intervening off must not
+        // accumulate another round of copies.
+        {
+            juce::Array<te::Clip*> staleCopies;
+
+            for (auto* candidate : track->getClips())
+                if (candidate != root
+                    && candidate->state.getProperty (idLoopSource).toString() == rootId)
+                    staleCopies.add (candidate);
+
+            for (auto* copy : staleCopies)
+                copy->removeFromParent();
+        }
+
+        auto nextStart = root->getPosition().time.getEnd();
+        const auto length = root->getPosition().time.getLength();
 
         for (int i = 1; i < numLoops; ++i)
         {
-            auto* copy = te::insertClipCopy (*track, te::ClipCopy::fromClip (*original)
+            auto* copy = te::insertClipCopy (*track, te::ClipCopy::fromClip (*root)
                                                        .withNewItemID (*edit));
 
             if (copy == nullptr)
                 return false;
 
             copy->setStart (nextStart, false, true);
-            copy->setName (original->getName() + " (loop " + juce::String (i + 1) + ")");
+            copy->setName (rootName + " (loop " + juce::String (i + 1) + ")");
+            copy->state.setProperty (idLoopSource, rootId, &edit->getUndoManager());
             nextStart = nextStart + length;
         }
+
+        // Mark the original last, *after* the copies were taken from its state,
+        // so idLoopCount does not leak into the copies (they identify the loop
+        // through idLoopSource).
+        root->state.setProperty (idLoopCount, numLoops, &edit->getUndoManager());
 
         afterClipEdit();
         return true;

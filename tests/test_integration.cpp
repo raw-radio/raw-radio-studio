@@ -1153,6 +1153,125 @@ TEST_CASE ("Epic 4 clip editing: move/trim/split/duplicate/delete/loop change ge
     session.close();
 }
 
+// BLOCKER 2 regression: `setClipLoop(..., 0)` must be accepted and actually turn
+// looping off — for a natively loopable source and for the timeline fallback
+// (clips with no loop metadata). Previously `numLoops < 1` was rejected, so the
+// toggle could never disable a loop, and the fallback kept accumulating copies.
+TEST_CASE ("Epic 4 loop toggle: numLoops 0 disables native and fallback loops")
+{
+    auto dir = scratchDirectory ("loop-toggle");
+    auto wavFile = writeSineWav (dir.getChildFile ("take.wav"), 48000.0, 2.0);
+    REQUIRE (wavFile.existsAsFile());
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("LoopToggle.tracktionedit")));
+    REQUIRE (session.importAudioFile (wavFile));
+
+    const int track = 1; // the imported take's track
+    const auto baseline = session.getClips (track);
+    REQUIRE (baseline.size() == 1);
+    const int ci = baseline[0].clipIndex;
+    const auto originalLength = baseline[0].lengthSeconds;
+    CHECK_FALSE (baseline[0].isLooping);
+
+    // Loop x3 (native when the source carries loop metadata, otherwise two
+    // butt-joined copies on the timeline).
+    REQUIRE (session.setClipLoop (track, ci, 3));
+    {
+        Session::ClipInfo looped;
+        REQUIRE (session.getClipInfo (track, ci, looped));
+        CHECK (looped.isLooping); // the UI toggle relies on this to offer "off"
+    }
+
+    const bool fallback = (session.getClips (track).size() == 3);
+
+    {
+        Session::ClipInfo looped;
+        REQUIRE (session.getClipInfo (track, ci, looped));
+
+        if (fallback)
+            CHECK (looped.lengthSeconds == doctest::Approx (originalLength).epsilon (0.02));
+        else
+            CHECK (looped.lengthSeconds == doctest::Approx (originalLength * 3.0).epsilon (0.02));
+    }
+
+    // Loop off — accepted and restoring exactly the original clip.
+    REQUIRE (session.setClipLoop (track, ci, 0));
+
+    {
+        Session::ClipInfo off;
+        REQUIRE (session.getClipInfo (track, ci, off));
+        CHECK_FALSE (off.isLooping);
+        CHECK (off.lengthSeconds == doctest::Approx (originalLength).epsilon (0.02));
+    }
+
+    CHECK (session.getClips (track).size() == 1);
+
+    // Toggling off when already off is a harmless, idempotent no-op.
+    CHECK (session.setClipLoop (track, ci, 0));
+    CHECK (session.getClips (track).size() == 1);
+
+    session.close();
+}
+
+// BLOCKER 2 regression, fallback branch: when the source carries no loop
+// metadata the engine cannot loop natively, so `setClipLoop` butt-joins copies
+// on the timeline. Turning the loop off must remove exactly those copies (it
+// previously did nothing at all, so copies accumulated).
+TEST_CASE ("Epic 4 fallback loop: setClipLoop(0) removes the generated copies")
+{
+    auto dir = scratchDirectory ("loop-fallback");
+    auto wavFile = writeSineWav (dir.getChildFile ("take.wav"), 48000.0, 2.0);
+    REQUIRE (wavFile.existsAsFile());
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("LoopFallback.tracktionedit")));
+    REQUIRE (session.importAudioFile (wavFile));
+
+    const int track = 1;
+    const auto baseline = session.getClips (track);
+    REQUIRE (baseline.size() == 1);
+    const int ci = baseline[0].clipIndex;
+    const auto originalLength = baseline[0].lengthSeconds;
+
+    // Force the fallback branch: mark the clip one-shot so `canLoop()` is false
+    // (a normal imported clip is loopable via the engine's tempo defaults).
+    {
+        auto* audioClip = dynamic_cast<te::AudioClipBase*> (
+            te::getAudioTracks (*session.getEdit())[track]->getClips()[ci]);
+        REQUIRE (audioClip != nullptr);
+        audioClip->getLoopInfo().state.setProperty (te::IDs::oneShot, true, nullptr);
+        REQUIRE_FALSE (audioClip->canLoop());
+    }
+
+    REQUIRE (session.setClipLoop (track, ci, 3));
+
+    {
+        const auto clips = session.getClips (track);
+        REQUIRE (clips.size() == 3); // original + two butt-joined copies
+        CHECK (clips[0].isLooping);  // reported as looping so the UI can turn it off
+        CHECK (clips[0].lengthSeconds == doctest::Approx (originalLength).epsilon (0.02));
+    }
+
+    // Re-applying the loop is exact, not cumulative.
+    REQUIRE (session.setClipLoop (track, ci, 3));
+    CHECK (session.getClips (track).size() == 3);
+
+    // Loop off removes every generated copy and restores the single original.
+    REQUIRE (session.setClipLoop (track, ci, 0));
+
+    {
+        const auto clips = session.getClips (track);
+        REQUIRE (clips.size() == 1);
+        CHECK_FALSE (clips[0].isLooping);
+        CHECK (clips[0].lengthSeconds == doctest::Approx (originalLength).epsilon (0.02));
+    }
+
+    session.close();
+}
+
 //==============================================================================
 // Epic 4 (FR-ED-3, measured): a crossfade between adjacent clips removes the
 // click that a hard junction produces. The test renders the junction offline

@@ -72,11 +72,12 @@ foreach(_raw_radio_dep IN ITEMS
     endif()
 endforeach()
 
-# Signalsmith Stretch is header-only and ships no CMake usage requirement we can
-# use as-is: its own CMakeLists delegates FFTs to the separate signalsmith-linear
-# repo via FetchContent (configure-time network). We therefore do NOT add its
-# subdirectory; we expose the headers through a plain INTERFACE target and rely
-# on the self-contained `dsp/` copy bundled at the pinned tag 1.1.0.
+# Signalsmith Stretch is header-only and, at the pinned tag 1.1.0, its
+# submodule ships no CMakeLists at all (the README's FetchContent-based
+# signalsmith-linear delegation lives on later revisions, not this tag). We
+# therefore do NOT add its subdirectory; we expose the headers through a plain
+# INTERFACE target and rely on the self-contained `dsp/` copy bundled at the
+# pinned tag 1.1.0.
 if(NOT EXISTS "${RAW_RADIO_STUDIO_SIGNALSMITH_STRETCH_DIR}/signalsmith-stretch.h")
     message(FATAL_ERROR
         "Dependency submodule is not initialised: "

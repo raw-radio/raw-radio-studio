@@ -134,9 +134,23 @@ namespace rrs
         // Fold the `outputLatency` pre-roll back into the signal (reversed and
         // negated) so the rendered result has no leading gap and its first
         // samples are not the transform's latency pad.
+        //
+        // BLOCKER 1 (ASan heap-buffer-overflow): the fold writes
+        // [outputLatency, 2*outputLatency) into a buffer of
+        // `outputLength + outputLatency` samples, so a full-length fold needs
+        // `outputLength >= outputLatency`. A clip shorter than the transform's
+        // latency (a few tens of ms) violates that and would write past the end.
+        // The kept output is [outputLatency, outputLatency + outputLength); when
+        // the clip is shorter than the latency that whole span is still inside
+        // the buffer, so clamping the fold to the available output length both
+        // avoids the overflow and folds exactly the samples that are kept.
+        const auto foldLength = juce::jmin (outputLatency, outputLength);
+
         for (int ch = 0; ch < (int) numChannels; ++ch)
-            for (int i = 0; i < outputLatency; ++i)
+            for (int i = 0; i < foldLength; ++i)
             {
+                // `i < foldLength <= outputLatency` keeps the read index >= 0 and
+                // the write index < outputLength + outputLatency (buffer size).
                 const auto trimmed = paddedOutput.getSample (ch, outputLatency - 1 - i);
                 paddedOutput.addSample (ch, outputLatency + i, -trimmed);
             }

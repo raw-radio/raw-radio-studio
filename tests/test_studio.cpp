@@ -873,6 +873,36 @@ TEST_CASE ("time-stretch rejects invalid requests instead of producing garbage")
     CHECK (TimeStretch::process (input, 48000.0, 1.0).ok);
 }
 
+// BLOCKER 1 regression (revealed under ASan). Signalsmith's default preset uses
+// a ~0.12 s window, so its output latency is ~2880 samples at 48 kHz. A clip
+// shorter than that used to write the latency fold past the end of the padded
+// output buffer (heap-buffer-overflow, silent in Release). The call must stay
+// memory-safe and return exactly the requested length.
+TEST_CASE ("time-stretch is safe for a clip shorter than the transform's latency (ASan regression)")
+{
+    constexpr double sampleRate = 48000.0;
+    constexpr int shortLength = 512; // << output latency (~2880 @ 48 kHz)
+
+    const auto input = makeSine (2, shortLength, sampleRate, 440.0, 0.5f);
+    const auto result = TimeStretch::process (input, sampleRate, 1.0);
+
+    REQUIRE (result.ok);
+    CHECK (result.error.isEmpty());
+    CHECK (result.audio.getNumSamples() == shortLength);
+
+    bool allFinite = true;
+
+    for (int ch = 0; ch < result.audio.getNumChannels() && allFinite; ++ch)
+        for (int i = 0; i < result.audio.getNumSamples(); ++i)
+            if (! std::isfinite (result.audio.getSample (ch, i)))
+            {
+                allFinite = false;
+                break;
+            }
+
+    CHECK (allFinite);
+}
+
 //==============================================================================
 TEST_CASE ("24-bit WAV export round-trips with the correct format")
 {

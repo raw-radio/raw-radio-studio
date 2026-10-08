@@ -22,6 +22,11 @@ namespace rrs::mixer_layout
         travel. Enough for the 10 pt mono readout plus vertical padding. */
     inline constexpr int levelReadoutHeight = 14;
 
+    /** Vertical end inset (px) at the top and bottom of a fader's travel, so a
+        full-travel thumb stays inside the strip. The single source of truth for
+        drawing, hit-testing and dragging. */
+    inline constexpr float faderEndInset = 4.0f;
+
     /** Splits the strip column left between the control rows (bottom) and the
         top of the strip into the level-readout row (top) and the fader travel
         (the rest, strictly below the readout).
@@ -37,14 +42,32 @@ namespace rrs::mixer_layout
         faderTravel = inner;
     }
 
+    /** Top and bottom Y of a fader's *travel* (the thumb centre's limits). */
+    inline void faderTravelExtents (juce::Rectangle<int> fader,
+                                    float& top, float& bottom) noexcept
+    {
+        top    = (float) fader.getY() + faderEndInset;
+        bottom = (float) fader.getBottom() - faderEndInset;
+    }
+
     /** Thumb centre Y for a taper position `t` (0 = bottom of travel, 1 = top)
-        inside a fader area, using the strip's 4 px end inset. Shared by drawing
-        and hit-testing so the two can never disagree. */
+        inside a fader area, using the strip's end inset. Shared by drawing and
+        hit-testing so the two can never disagree. */
     inline float faderThumbY (juce::Rectangle<int> fader, float t) noexcept
     {
-        const auto top    = (float) fader.getY() + 4.0f;
-        const auto bottom = (float) fader.getBottom() - 4.0f;
+        float top = 0.0f, bottom = 0.0f;
+        faderTravelExtents (fader, top, bottom);
         t = juce::jlimit (0.0f, 1.0f, t);
         return bottom - t * (bottom - top);
+    }
+
+    /** Inverse of `faderThumbY()`: the taper position (0..1) for a pointer at
+        `y` in a fader area. Used by dragging so it can never diverge from the
+        drawn thumb. */
+    inline float faderPosAtY (juce::Rectangle<int> fader, float y) noexcept
+    {
+        float top = 0.0f, bottom = 0.0f;
+        faderTravelExtents (fader, top, bottom);
+        return juce::jlimit (0.0f, 1.0f, (bottom - y) / juce::jmax (1.0f, bottom - top));
     }
 }
