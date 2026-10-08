@@ -79,121 +79,140 @@ namespace rrs
         return juce::jlimit (minWidth, maxWidth, 2 * padX + iconPart + textWidth);
     }
 
-    void BrandButton::paintButton (juce::Graphics& g,
-                                   bool shouldDrawButtonAsHighlighted,
-                                   bool shouldDrawButtonAsDown)
+    BrandButton::Appearance BrandButton::getAppearance (bool shouldDrawButtonAsHighlighted,
+                                                       bool shouldDrawButtonAsDown,
+                                                       bool focused) const
     {
+        Appearance a;
+        a.background      = brand::bgTertiary;
+        a.borderColour    = brand::border;
+        a.textColour      = brand::textPrimary;
+        a.gradientTop     = brand::accent;
+        a.gradientBottom  = brand::accentDeep;
+
         const auto enabled = isEnabled();
         const auto on = getToggleState();
-
-        auto bounds = getLocalBounds().toFloat().reduced (0.5f);
-
-        auto background = brand::bgTertiary;
-        auto borderColour = brand::border;
-        auto textColour = brand::textPrimary;
-        auto useGradient = false;
-        auto gradientTop = brand::accent;
-        auto gradientBottom = brand::accentDeep;
 
         switch (style)
         {
             case Style::Primary:
-                useGradient = true;
-                borderColour = juce::Colours::transparentBlack;
+                a.useGradient = true;
+                a.borderColour = juce::Colours::transparentBlack;
 
                 if (shouldDrawButtonAsDown)
                 {
-                    gradientTop = brand::accent;
-                    gradientBottom = brand::accentDeep.darker (0.1f);
+                    a.gradientTop = brand::accent;
+                    a.gradientBottom = brand::accentDeep.darker (0.1f);
                 }
                 else if (shouldDrawButtonAsHighlighted)
                 {
-                    gradientTop = brand::accentHover;
-                    gradientBottom = brand::accent;
+                    a.gradientTop = brand::accentHover;
+                    a.gradientBottom = brand::accent;
                 }
                 break;
 
             case Style::Record:
                 if (on)
                 {
-                    background = shouldDrawButtonAsHighlighted ? brand::recordHover : brand::record;
-                    borderColour = background;
-                    textColour = brand::textPrimary;
+                    a.background = shouldDrawButtonAsHighlighted ? brand::recordHover : brand::record;
+                    a.borderColour = a.background;
+                    a.textColour = brand::textPrimary;
                 }
                 else
                 {
-                    textColour = brand::record;
-                    borderColour = shouldDrawButtonAsHighlighted ? brand::record : brand::border;
+                    a.textColour = brand::record;
+                    a.borderColour = shouldDrawButtonAsHighlighted ? brand::record : brand::border;
                 }
                 break;
 
             case Style::Transport:
-                background = shouldDrawButtonAsHighlighted ? brand::bgElevated : brand::bgTertiary;
-                borderColour = shouldDrawButtonAsHighlighted ? brand::borderHover : brand::border;
+                a.background = shouldDrawButtonAsHighlighted ? brand::bgElevated : brand::bgTertiary;
+                a.borderColour = shouldDrawButtonAsHighlighted ? brand::borderHover : brand::border;
 
                 if (on)
                 {
-                    background = brand::accentMuted;
-                    borderColour = brand::accent;
-                    textColour = brand::accent;
+                    a.background = brand::accentMuted;
+                    a.borderColour = brand::accent;
+                    a.textColour = brand::accent;
                 }
                 break;
 
             case Style::Chip:
                 if (on && hasOnColours)
                 {
-                    background = onBackground;
-                    borderColour = onBorder;
-                    textColour = onText;
+                    a.background = onBackground;
+                    a.borderColour = onBorder;
+                    a.textColour = onText;
                 }
                 else
                 {
-                    background = brand::bgTertiary;
-                    borderColour = shouldDrawButtonAsHighlighted ? brand::borderHover : brand::border;
-                    textColour = brand::textSecondary;
+                    a.background = brand::bgTertiary;
+                    a.borderColour = shouldDrawButtonAsHighlighted ? brand::borderHover : brand::border;
+                    a.textColour = brand::textSecondary;
                 }
                 break;
 
             case Style::Secondary:
             default:
-                background = shouldDrawButtonAsHighlighted ? brand::bgElevated : brand::bgTertiary;
-                borderColour = shouldDrawButtonAsHighlighted ? brand::borderHover : brand::border;
-                textColour = brand::textPrimary;
+                a.background = shouldDrawButtonAsHighlighted ? brand::bgElevated : brand::bgTertiary;
+                a.borderColour = shouldDrawButtonAsHighlighted ? brand::borderHover : brand::border;
+                a.textColour = brand::textPrimary;
                 break;
         }
 
         if (! enabled)
         {
-            background = brand::bgPanel;
-            borderColour = brand::border;
-            textColour = brand::textDisabled;
-            useGradient = false;
+            a.background = brand::bgPanel;
+            a.borderColour = brand::border;
+            a.textColour = brand::textDisabled;
+            a.useGradient = false;
+        }
+        else if (focused)
+        {
+            // Keyboard focus is shown by thickening the ONE state border, never by
+            // stacking a second accent ring on top of it. The old 2 px accent
+            // (orange) focus ring over the green Monitor chip read as both the
+            // Arm and Monitor states at once (BUG B).
+            a.borderThickness = 2.0f;
+
+            // Primary has no border of its own: give the focus state a visible
+            // one so the thicker border is actually seen.
+            if (a.borderColour.isTransparent())
+                a.borderColour = brand::textPrimary;
         }
 
-        if (useGradient && enabled)
+        return a;
+    }
+
+    void BrandButton::paintButton (juce::Graphics& g,
+                                   bool shouldDrawButtonAsHighlighted,
+                                   bool shouldDrawButtonAsDown)
+    {
+        // Resolve the whole appearance from the button's *actual* state first.
+        // Every paint then re-fills the background and draws exactly one border,
+        // so no fill/outline can survive from a previous state (BUG B).
+        const auto a = getAppearance (shouldDrawButtonAsHighlighted, shouldDrawButtonAsDown,
+                                      hasKeyboardFocus (false));
+
+        auto bounds = getLocalBounds().toFloat().reduced (0.5f);
+
+        if (a.useGradient)
         {
-            juce::ColourGradient gradient (gradientTop, bounds.getCentreX(), bounds.getY(),
-                                           gradientBottom, bounds.getCentreX(), bounds.getBottom(), false);
+            juce::ColourGradient gradient (a.gradientTop, bounds.getCentreX(), bounds.getY(),
+                                           a.gradientBottom, bounds.getCentreX(), bounds.getBottom(), false);
             g.setGradientFill (gradient);
         }
         else
         {
-            g.setColour (background);
+            g.setColour (a.background);
         }
 
         g.fillRoundedRectangle (bounds, cornerRadius);
 
-        if (enabled && ! borderColour.isTransparent())
+        if (isEnabled() && ! a.borderColour.isTransparent())
         {
-            g.setColour (borderColour);
-            g.drawRoundedRectangle (bounds, cornerRadius, 1.0f);
-        }
-
-        // 2 px accent focus ring for keyboard navigation.
-        if (enabled && hasKeyboardFocus (false))
-        {
-            g.setColour (brand::accent);
-            g.drawRoundedRectangle (bounds.reduced (1.5f), juce::jmax (1.0f, cornerRadius - 1.0f), 2.0f);
+            g.setColour (a.borderColour);
+            g.drawRoundedRectangle (bounds, cornerRadius, a.borderThickness);
         }
 
         // Content: optional icon + label, laid out and centred as a single unit.
@@ -206,7 +225,7 @@ namespace rrs
                 const auto glyph = juce::jmin (iconOnlyGlyphSize, getWidth(), getHeight());
                 const auto target = juce::Rectangle<int> (glyph, glyph)
                                         .withCentre (getLocalBounds().getCentre());
-                IconCache::getInstance().drawIcon (g, iconName, textColour, target);
+                IconCache::getInstance().drawIcon (g, iconName, a.textColour, target);
             }
 
             return;
@@ -222,11 +241,11 @@ namespace rrs
         if (iconName.isNotEmpty())
         {
             auto iconArea = content.removeFromLeft (iconSize);
-            IconCache::getInstance().drawIcon (g, iconName, textColour, iconArea);
+            IconCache::getInstance().drawIcon (g, iconName, a.textColour, iconArea);
             content.removeFromLeft (iconLabelGap);
         }
 
-        g.setColour (textColour);
+        g.setColour (a.textColour);
         g.setFont (getLabelFont());
         g.drawText (getButtonText(), content, juce::Justification::centredLeft, false);
     }

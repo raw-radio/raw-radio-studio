@@ -85,10 +85,13 @@ namespace rrs
 
         buildTransportUi();
 
-        // Arm and Monitor are toggle chips with distinct on-states: arm uses the
-        // brand accent, monitor uses the success tint.
+        // Arm, Monitor and Click are toggle chips with distinct on-states so each
+        // reads as exactly one state (BUG B): arm uses the brand accent, monitor
+        // the success tint, click the warning tint. Without on-colours a Chip
+        // toggle looked identical on and off.
         armButton.setOnColours (brand::accentMuted, brand::accent, brand::accent);
         monitorButton.setOnColours (brand::success.withAlpha (0.25f), brand::success, brand::success);
+        metronomeButton.setOnColours (brand::warning.withAlpha (0.25f), brand::warning, brand::warning);
 
         // Icon-only action buttons (owner request): no text labels, each with a
         // hover tooltip describing the action. 32x32 squares in the action row.
@@ -344,10 +347,11 @@ namespace rrs
                 return;
 
             if (! session.setTrackArmed (armButton.getToggleState()))
-            {
                 showStatus (session.getLastError(), true);
-                refreshTransportUi();
-            }
+
+            // Re-derive the chip from the session immediately: if the session
+            // rejected the change, the button must not keep a stale on-state.
+            refreshTransportUi();
         };
 
         monitorButton.onClick = [this]
@@ -356,6 +360,9 @@ namespace rrs
                 return;
 
             session.setMonitoringEnabled (monitorButton.getToggleState());
+
+            // Single source of truth is the session, never the local toggle.
+            refreshTransportUi();
         };
 
         metronomeButton.onClick = [this]

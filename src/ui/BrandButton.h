@@ -39,6 +39,28 @@ namespace rrs
         /** Overrides for the "on" appearance of a Chip. */
         void setOnColours (juce::Colour background, juce::Colour borderColour, juce::Colour textColour);
 
+        /** The complete, single visual state used by `paintButton`.
+
+            Derived purely from the button's real state (toggle + enabled +
+            highlight/down + focus) and its style, so a repaint always draws
+            exactly one background and one border. Exposed so tests can assert
+            the button never stacks a second, differently-coloured outline (BUG B)
+            and that Arm / Monitor remain visually distinct. */
+        struct Appearance
+        {
+            juce::Colour background;
+            juce::Colour borderColour;
+            juce::Colour textColour;
+            float borderThickness = 1.0f;
+            bool useGradient = false;
+            juce::Colour gradientTop;
+            juce::Colour gradientBottom;
+        };
+
+        Appearance getAppearance (bool shouldDrawButtonAsHighlighted,
+                                  bool shouldDrawButtonAsDown,
+                                  bool hasFocus) const;
+
         void setCornerRadius (float radius) noexcept;
         void setLabelFont (juce::Font newFont);
 

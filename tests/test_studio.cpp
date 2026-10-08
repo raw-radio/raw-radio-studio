@@ -24,6 +24,7 @@
 #include "ui/FaderTaper.h"
 #include "ui/IconCache.h"
 #include "ui/MeterBallistics.h"
+#include "ui/MixerLayout.h"
 
 #include <cmath>
 #include <cstdlib>
@@ -699,6 +700,53 @@ TEST_CASE ("fader taper: linear level law and a non-linear S-curve trim")
         CHECK (level.posToDb (5.0f) == doctest::Approx (6.0f));
         CHECK (level.dbToPos (-1000.0f) == doctest::Approx (0.0f));
         CHECK (level.dbToPos (1000.0f) == doctest::Approx (1.0f));
+    }
+}
+
+//==============================================================================
+// BUG A (owner report): on the input channel strips the level readout was drawn
+// at the top of the fader travel, so the thumb covered it once the fader was
+// raised. The strip must reserve a dedicated readout row above the travel; the
+// thumb at the top of its throw must never intersect that row — at any window
+// size.
+TEST_CASE ("mixer strip reserves a level-readout row the fader thumb can never cover (BUG A)")
+{
+    using namespace rrs::mixer_layout;
+
+    // `inner` is the strip column left between the control rows and the top of
+    // the strip. Cover the real minimum-window strip (short) through a tall one.
+    for (const int innerHeight : { 40, 56, 72, 86, 120, 200 })
+    {
+        juce::Rectangle<int> inner (10, 100, 80, innerHeight);
+        juce::Rectangle<int> levelRow, travel;
+        splitLevelAndFader (inner, levelRow, travel);
+
+        INFO ("inner height " << innerHeight);
+        REQUIRE (levelRow.getHeight() == levelReadoutHeight);
+        REQUIRE_FALSE (levelRow.isEmpty());
+        REQUIRE_FALSE (travel.isEmpty());
+
+        // The readout sits strictly above the travel and is tall enough for the
+        // 10 pt mono readout.
+        CHECK (travel.getY() >= levelRow.getBottom());
+        CHECK (levelRow.getHeight() >= 12);
+
+        // No fader position — including the top (1.0) and out-of-range values —
+        // may place the 18x6 thumb inside the readout row.
+        for (const float t : { -1.0f, 0.0f, 0.25f, 0.5f, 0.75f, 1.0f, 2.0f })
+        {
+            const auto thumbY = faderThumbY (travel, t);
+            const juce::Rectangle<float> thumb ((float) travel.getCentreX() - 9.0f, thumbY - 3.0f,
+                                                18.0f, 6.0f);
+
+            INFO ("taper pos " << t << " thumb " << thumb.toString());
+            CHECK_FALSE (thumb.toNearestInt().intersects (levelRow));
+
+            // The thumb also stays inside the fader travel itself (never spills
+            // into the pan row below or the readout above).
+            CHECK (thumb.getY() >= (float) travel.getY());
+            CHECK (thumb.getBottom() <= (float) travel.getBottom());
+        }
     }
 }
 

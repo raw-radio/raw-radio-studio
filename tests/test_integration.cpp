@@ -55,6 +55,8 @@ int main (int argc, char** argv)
 #include "studio/Session.h"
 #include "studio/StemsExport.h"
 #include "studio/WavExport.h"
+#include "ui/BrandButton.h"
+#include "ui/BrandColours.h"
 #include "ui/PluginBrowser.h"
 
 #include <algorithm>
@@ -3693,4 +3695,64 @@ TEST_CASE ("plugin browser layout has no overlaps at the minimum window size (FR
     }
 
     session.close();
+}
+
+//==============================================================================
+// BUG B (owner report): the Arm/Monitor toggle chips above the timeline drew two
+// stacked outlines at once — the green Monitor/on border *plus* the orange
+// accent keyboard-focus ring — which read as the Arm and Monitor states being on
+// together. Every chip must resolve to exactly ONE border, in its own state
+// colour, and focus must not introduce a second, differently-coloured outline.
+TEST_CASE ("toggle chips resolve to one state-coloured outline, never stacked (BUG B)")
+{
+    juce::ScopedJuceInitialiser_GUI juceInit;
+
+    BrandButton monitor ("Monitor", BrandButton::Style::Chip);
+    monitor.setOnColours (brand::success.withAlpha (0.25f), brand::success, brand::success);
+    monitor.setSize (72, 36);
+
+    // --- Off -----------------------------------------------------------------
+    monitor.setToggleState (false, juce::dontSendNotification);
+
+    const auto off = monitor.getAppearance (false, false, false);
+    CHECK (off.borderColour == brand::border);
+    CHECK (off.textColour == brand::textSecondary);
+    CHECK (off.borderColour != brand::accent);
+
+    // Focus may not paint the accent orange on a Monitor chip: that is exactly
+    // the "Arm + Monitor both outlined" report.
+    const auto offFocused = monitor.getAppearance (false, false, true);
+    CHECK (offFocused.borderColour != brand::accent);
+    CHECK (offFocused.borderColour == off.borderColour);
+    CHECK (offFocused.borderThickness > off.borderThickness);
+
+    // --- On ------------------------------------------------------------------
+    monitor.setToggleState (true, juce::dontSendNotification);
+
+    const auto on = monitor.getAppearance (false, false, false);
+    CHECK (on.borderColour == brand::success);
+    CHECK (on.textColour == brand::success);
+
+    // Focus thickens the SAME green border; it does not add a second outline.
+    const auto onFocused = monitor.getAppearance (false, false, true);
+    CHECK (onFocused.borderColour == brand::success);
+    CHECK (onFocused.borderColour != brand::accent);
+    CHECK (onFocused.borderThickness > on.borderThickness);
+
+    // --- Arm must stay visually distinct from Monitor ------------------------
+    BrandButton arm ("Arm", BrandButton::Style::Chip);
+    arm.setOnColours (brand::accentMuted, brand::accent, brand::accent);
+    arm.setSize (72, 36);
+    arm.setToggleState (true, juce::dontSendNotification);
+
+    const auto armOn = arm.getAppearance (false, false, false);
+    CHECK (armOn.borderColour == brand::accent);
+    CHECK (armOn.borderColour != on.borderColour); // orange (Arm) vs green (Monitor)
+
+    // --- A disabled button is inert and never stacks -------------------------
+    monitor.setEnabled (false);
+    const auto disabled = monitor.getAppearance (false, false, true);
+    CHECK (disabled.borderColour == brand::border);
+    CHECK (disabled.textColour == brand::textDisabled);
+    CHECK_FALSE (disabled.useGradient);
 }

@@ -50,6 +50,7 @@ namespace rrs
             juce::Rectangle<int> input; ///< Track: input-mapping chip (FR-REC-3). Unused on master.
             juce::Rectangle<int> trim;  ///< Track: record trim (FR-REC-4). Input tracks only.
             juce::Rectangle<int> meter;
+            juce::Rectangle<int> level; ///< Dedicated gain readout row ABOVE the fader (BUG A).
             juce::Rectangle<int> fader;
             juce::Rectangle<int> pan;
             juce::Rectangle<int> mute;

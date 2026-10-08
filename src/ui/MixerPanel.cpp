@@ -5,6 +5,7 @@
 #include "BrandColours.h"
 #include "BrandFonts.h"
 #include "FaderTaper.h"
+#include "MixerLayout.h"
 
 namespace rrs
 {
@@ -99,30 +100,29 @@ namespace rrs
             c.meter = inner.removeFromRight (12);
             inner.removeFromRight (4);
 
+            // Buttons row: the master bus has mute only (FR-MIX-1: no sibling to
+            // isolate, so solo is not applicable at the master); tracks get
+            // mute + solo.
+            auto buttons = inner.removeFromBottom (20);
+
             if (isMaster)
             {
-                // FR-MIX-1: master fader + pan + mute (no solo: the master bus has
-                // no sibling to isolate, so solo is not applicable at the master).
-                auto buttons = inner.removeFromBottom (20);
                 c.mute = buttons.reduced (1);
-
-                auto panRow = inner.removeFromBottom (18);
-                inner.removeFromBottom (4);
-                c.pan = panRow;
-                c.fader = inner;
             }
             else
             {
-                auto buttons = inner.removeFromBottom (20);
                 c.mute = buttons.removeFromLeft (buttons.getWidth() / 2).reduced (1);
                 buttons.removeFromLeft (2);
                 c.solo = buttons.reduced (1);
-
-                auto panRow = inner.removeFromBottom (18);
-                inner.removeFromBottom (4);
-                c.pan = panRow;
-                c.fader = inner;
             }
+
+            auto panRow = inner.removeFromBottom (18);
+            inner.removeFromBottom (4);
+            c.pan = panRow;
+
+            // BUG A: reserve a dedicated readout row above the fader travel so
+            // the thumb can never cover the level text at the top of its throw.
+            mixer_layout::splitLevelAndFader (inner, c.level, c.fader);
 
             return c;
         };
@@ -328,7 +328,7 @@ namespace rrs
         // position for the stored dB, and bottoms out to a mute detent. The
         // gain label shows "-inf" once the taper is at/below its floor.
         const auto t = fader::level.dbToPos (gainDb);
-        const auto thumbY = bottom - t * (bottom - top);
+        const auto thumbY = mixer_layout::faderThumbY (f, t);
 
         g.setColour (brand::meterTrough);
         g.fillRoundedRectangle (juce::Rectangle<float> (cx - 2.0f, top, 4.0f, bottom - top), 2.0f);
@@ -339,12 +339,13 @@ namespace rrs
         g.setColour (brand::textPrimary);
         g.fillRoundedRectangle (juce::Rectangle<float> (cx - 9.0f, thumbY - 3.0f, 18.0f, 6.0f), 3.0f);
 
+        // Level readout, drawn in its own reserved row above the fader travel so
+        // the thumb can never overlap it (BUG A).
         g.setColour (brand::textTertiary);
         g.setFont (brand::monoRegular (10.0f));
         g.drawText (fader::level.isSilentDb (gainDb) ? juce::String ("-inf")
                                                      : juce::String (gainDb, 1),
-                    juce::Rectangle<int> (f.getX(), (int) top - 2, f.getWidth(), 12),
-                    juce::Justification::centred);
+                    strip.level, juce::Justification::centred);
 
         // Pan (per track and master, FR-MIX-1).
         const auto& p = strip.pan;
