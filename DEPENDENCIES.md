@@ -15,6 +15,7 @@ branch in CI or release builds.
 |-----------|----------------|---------------------|------------|-------------------|
 | **JUCE** | `third_party/JUCE` | <https://github.com/juce-framework/JUCE.git> | tag `9.0.3` | `be29c81492b6151c8ea8d14c840e1311963b3a83` |
 | **Tracktion Engine** | `third_party/tracktion_engine` | <https://github.com/Tracktion/tracktion_engine.git> | `develop` (`VERSION.md` = **3.5.0**) | `2d2d452fd0336805cadb78268436e83b4a9f68e6` |
+| **Signalsmith Stretch** | `third_party/signalsmith-stretch` | <https://github.com/Signalsmith-Audio/signalsmith-stretch.git> | tag `1.1.0` | `44c8f865af9da8c29cc4a70a2d5a3ec83639c711` |
 
 Initialise them with:
 
@@ -22,8 +23,35 @@ Initialise them with:
 git submodule update --init
 ```
 
-`shallow = true` is set for both in `.gitmodules`, so the checkout is shallow at
-the pinned commit.
+`shallow = true` is set for all of them in `.gitmodules`, so the checkout is
+shallow at the pinned commit.
+
+## OQ-2 — Time-stretch library licence verdict
+
+**Status: RESOLVED — Signalsmith Stretch (MIT) selected; SoundTouch not needed.**
+
+FR-ED-5 requires a **free** time-stretch/pitch-shift library that is
+AGPLv3-compatible. Two candidates were on the table:
+
+| Candidate | License | Verdict |
+|-----------|---------|---------|
+| **Signalsmith Stretch** | **MIT** | **SELECTED** — permissive, AGPLv3-compatible, no copyleft/relink obligation. |
+| SoundTouch | LGPL-2.1 | Acceptable via dynamic linking, but imposes relink/notice obligations; not needed. |
+
+Signalsmith Stretch is MIT (Copyright (c) 2022 Geraint Luff / Signalsmith Audio
+Ltd.); the copy of the Signalsmith DSP library bundled in its `dsp/` folder is
+also MIT (Copyright (c) 2021). MIT is one-way compatible into an AGPLv3 combined
+work: the MIT terms reduce to attribution + notice preservation, with no
+copyleft on the combined binary.
+
+**Why tag `1.1.0`, not a later revision:** from around `1.2.0` upstream
+delegates its FFT/DSP layer to the separate `signalsmith-linear` repository via
+`FetchContent`, which would require **configure-time network access** and a
+second pinned dependency. `1.1.0` is **self-contained** (it bundles `dsp/`), so
+it fits this project's "no configure-time download" rule with a single submodule.
+Only the header-only `signalsmith-stretch.h` + `dsp/` are compiled; the library's
+own `CMakeLists.txt` (which would use FetchContent) is **not** used.
+
 
 ## How JUCE is wired into Tracktion Engine
 

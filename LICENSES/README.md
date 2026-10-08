@@ -6,6 +6,13 @@ directory:
 - `JUCE.txt` — JUCE Framework (`third_party/JUCE`, pinned to tag **9.0.3**).
 - `tracktion_engine.txt` — Tracktion Engine (`third_party/tracktion_engine`,
   pinned to `develop` commit **2d2d452f**).
+- `SignalsmithStretch.txt` — Signalsmith Stretch
+  (`third_party/signalsmith-stretch`, pinned to tag **1.1.0**): **MIT**
+  (Copyright (c) 2022 Geraint Luff / Signalsmith Audio Ltd.). Header-only; used
+  for FR-ED-5 time-stretch/pitch-shift.
+- `SignalsmithStretch-dsp.txt` — the copy of the Signalsmith DSP library bundled
+  inside Signalsmith Stretch's `dsp/` folder at tag **1.1.0**: **MIT**
+  (Copyright (c) 2021 Geraint Luff / Signalsmith Audio Ltd.).
 - `VST3-SDK.txt` — VST3 SDK, bundled inside JUCE's pinned tree
   (`juce_audio_processors_headless/format_types/VST3_SDK/`): **MIT**
   (Copyright Steinberg Media Technologies GmbH). Compiled in with

@@ -528,7 +528,9 @@ branch is used in CI or release builds.
 - **Compatibility:** JUCE 9.0.3 + Tracktion Engine 3.5.0 verified compatible in Epic 0
   ([§10.3](#103-risk--open-question--juce-9--tracktion-engine-compatibility)); documented fallback
   is JUCE **8.0.13** (upstream's own nested pin).
-- Time-stretch libraries (Signalsmith Stretch / SoundTouch) pinned similarly when adopted (Epic 4).
+- Time-stretch libraries pinned similarly when adopted: **Signalsmith Stretch**
+  is a git submodule pinned to tag `1.1.0` (commit `44c8f865`); see
+  [`DEPENDENCIES.md`](../DEPENDENCIES.md) / OQ-2.
 
 ---
 
@@ -656,8 +658,8 @@ components; Tracktion Engine supplies no UI.
 |-----------|---------|------|-------|
 | Tracktion Engine | GPLv3-or-later / commercial dual | Core DAW engine | Free tier only valid for GPLv3(+) projects. |
 | JUCE | AGPLv3 / commercial dual | Framework, GUI, device I/O, plugin hosting | Combined via GPLv3 §13. |
-| Signalsmith Stretch | (free — verify exact terms) | Time-stretch/pitch (Epic 4) | Pin; confirm AGPL compatibility. **Open question** on exact license text. |
-| SoundTouch | LGPL | Alternative time-stretch/pitch | LGPL dynamic linking acceptable; verify. |
+| Signalsmith Stretch | MIT (verified — `LICENSES/SignalsmithStretch.txt`) | Time-stretch/pitch (Epic 4) | **ADOPTED** — pinned tag `1.1.0` (self-contained; bundles its MIT `dsp/`). AGPLv3-compatible. |
+| SoundTouch | LGPL-2.1 | Time-stretch alternative | **Not adopted** — LGPL relink obligation avoided; Signalsmith (MIT) selected. |
 | **RubberBand** | GPLv2+ | — | **EXCLUDED** (AGPL compatibility concern). |
 | **Elastique** | Commercial | — | **EXCLUDED** (NG5). |
 
@@ -1019,8 +1021,11 @@ Epic 0 ──► Epic 1 ──► Epic 2 ──► Epic 3 ──► Epic 4 ─�
 
 - **Risk:** The "free" choice must be confirmed AGPL-compatible; exact license text of Signalsmith
   Stretch needs verification.
-- **Mitigation:** verify before Epic 4 integration; SoundTouch (LGPL) as an alternative; keep the
-  decision reversible behind an abstraction.
+- **Resolution (OQ-2 closed):** Signalsmith Stretch is **MIT** (library and its bundled `dsp/`
+  copy); SoundTouch is LGPL-2.1. MIT was selected — permissive, no copyleft or relink obligation.
+  Pinned as a git submodule at tag `1.1.0` (`44c8f865`); that revision is self-contained (later
+  revisions pull `signalsmith-linear` via FetchContent, which this project avoids). The decision
+  remains behind an abstraction (`rrs::TimeStretch`) so it is still reversible.
 
 ### 10.9 Decisions & open questions
 
@@ -1042,8 +1047,10 @@ mirrored as ADRs in [§12](#12-decisions-baseline-adr-table).
 These are tracked as open and are expected to be resolved by engineering agents during the
 indicated epics (OQ-3 was resolved during Epic 0).
 
-- **OQ-2 — Time-stretch library (Epic 4):** Signalsmith Stretch exact license terms vs SoundTouch
-  (LGPL); final selection pending license verification ([§10.8](#108-risk--time-stretch-library-licensing)).
+- **OQ-2 — Time-stretch library (Epic 4):** **RESOLVED.** **Signalsmith Stretch (MIT)** selected
+  over SoundTouch (LGPL-2.1); pinned as a git submodule at tag **1.1.0**
+  (`44c8f865`). MIT is AGPLv3-compatible with no relink obligation. See
+  [`DEPENDENCIES.md`](../DEPENDENCIES.md#oq-2--time-stretch-library-licence-verdict) and §10.8.
 - **OQ-3 — JUCE 9 / Tracktion compatibility (Epic 0):** **RESOLVED.** JUCE **9.0.3** + Tracktion
   Engine **3.5.0** verified compatible by building on macOS arm64 + Ubuntu 24.04; documented
   fallback JUCE **8.0.13**

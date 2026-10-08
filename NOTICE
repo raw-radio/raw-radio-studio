@@ -30,10 +30,11 @@ THIRD-PARTY INVENTORY
 
 Pinned source dependencies (git submodules — exact commits; see DEPENDENCIES.md):
 
-  | Component         | Pinned commit SHA                          | Version | License (SPDX)                | Role                                  |
-  |-------------------|--------------------------------------------|---------|-------------------------------|---------------------------------------|
-  | Tracktion Engine  | 2d2d452fd0336805cadb78268436e83b4a9f68e6   | 3.5.0   | GPL-3.0-or-later / commercial | Core multitrack audio engine (no UI)  |
-  | JUCE              | be29c81492b6151c8ea8d14c840e1311963b3a83   | 9.0.3   | AGPL-3.0-or-later / commercial| Framework: GUI, audio device I/O, plugins |
+  | Component           | Pinned commit SHA                          | Version | License (SPDX)                | Role                                  |
+  |---------------------|--------------------------------------------|---------|-------------------------------|---------------------------------------|
+  | Tracktion Engine    | 2d2d452fd0336805cadb78268436e83b4a9f68e6   | 3.5.0   | GPL-3.0-or-later / commercial | Core multitrack audio engine (no UI)  |
+  | JUCE                | be29c81492b6151c8ea8d14c840e1311963b3a83   | 9.0.3   | AGPL-3.0-or-later / commercial| Framework: GUI, audio device I/O, plugins |
+  | Signalsmith Stretch | 44c8f865af9da8c29cc4a70a2d5a3ec83639c711   | 1.1.0   | MIT                           | Time-stretch / pitch-shift (Epic 4)   |
 
   * Tracktion Engine — https://github.com/Tracktion/tracktion_engine
     License: GNU General Public License v3.0 or later (free tier), or a
@@ -52,6 +53,20 @@ Pinned source dependencies (git submodules — exact commits; see DEPENDENCIES.m
   JUCE is registered before Tracktion Engine in the build, so Tracktion Engine
   is compiled against the pinned JUCE above (its own bundled `modules/juce`
   submodule is intentionally not used). See DEPENDENCIES.md.
+
+  * Signalsmith Stretch — https://github.com/Signalsmith-Audio/signalsmith-stretch
+    License: **MIT** (Copyright (c) 2022 Geraint Luff / Signalsmith Audio Ltd.).
+    A permissive license compatible with AGPLv3: MIT imposes only attribution
+    and the notice-preservation condition, adds no copyleft obligation of its
+    own, and is one-way compatible into AGPLv3-covered combined works. Used for
+    offline time-stretch / pitch-shift (FR-ED-5). Pinned at tag `1.1.0`; this
+    revision is **self-contained** — it bundles its own Signalsmith DSP copy
+    (`dsp/`, also MIT, Copyright (c) 2021) and does **not** pull a transitive
+    dependency at configure time (later revisions delegate to the separate
+    `signalsmith-linear` repo). Full license texts:
+    `LICENSES/SignalsmithStretch.txt` (library) and
+    `LICENSES/SignalsmithStretch-dsp.txt` (bundled DSP). Chosen over SoundTouch
+    (LGPL-2.1) to avoid any dynamic-linking / relink obligation.
 
 Vendored (test-only) dependencies:
 
@@ -122,10 +137,9 @@ Plugin hosting (Epic 3 — host only; no plugins are bundled or shipped):
 
 Not yet vendored (future epics — pinned similarly when adopted):
 
-  | Component           | Expected license          | Role                        | Status     |
-  |---------------------|---------------------------|-----------------------------|------------|
-  | Signalsmith Stretch | free — verify exact terms | Time-stretch (Epic 4)       | DEFERRED   |
-  | SoundTouch          | LGPL                      | Time-stretch alternative    | DEFERRED   |
+  | Component   | Expected license | Role                     | Status                                            |
+  |-------------|------------------|--------------------------|---------------------------------------------------|
+  | SoundTouch  | LGPL-2.1         | Time-stretch alternative | NOT ADOPTED — Signalsmith Stretch (MIT) selected  |
 
 Explicitly EXCLUDED (do not add):
 
