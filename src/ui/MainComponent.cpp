@@ -57,8 +57,14 @@ namespace rrs
                               &addTrackButton, &removeTrackButton,
                               &settingsButton, &aboutButton,
                               &armButton, &recordButton, &playButton, &stopButton, &goToStartButton,
-                              &monitorButton, &metronomeButton })
+                              &monitorButton, &metronomeButton,
+                              &undoButton, &redoButton, &splitClipButton, &deleteClipButton,
+                              &duplicateClipButton, &loopClipButton, &crossfadeButton,
+                              &stretchClipButton })
             addAndMakeVisible (*button);
+
+        // Epic 4: the arrangement accepts keyboard editing (Delete/Split/undo...).
+        setWantsKeyboardFocus (true);
 
         // Epic 3 overlays (hidden until their action button is pressed).
         addChildComponent (pluginBrowser);
@@ -422,6 +428,28 @@ namespace rrs
             session.goToStart();
             refreshTransportUi();
         };
+
+        // Epic 4 arrangement edit actions. Undo/redo are text buttons (an icon for
+        // "undo a generic edit" is ambiguous); the rest are compact chips.
+        undoButton.setTooltip ("Undo the last edit (Cmd/Ctrl+Z)");
+        redoButton.setTooltip ("Redo the last undone edit (Cmd/Ctrl+Shift+Z)");
+        splitClipButton.setTooltip ("Split the selected clip at the playhead (S)");
+        deleteClipButton.setTooltip ("Delete the selected clip (Delete)");
+        duplicateClipButton.setTooltip ("Duplicate the selected clip (D)");
+        loopClipButton.setTooltip ("Loop the selected clip twice (L)");
+        crossfadeButton.setTooltip ("Crossfade the selected clip with the next one on its track (F)");
+        stretchClipButton.setTooltip ("Time-stretch the selected clip to the region selection length");
+
+        undoButton.onClick = [this] { undoEdit(); };
+        redoButton.onClick = [this] { redoEdit(); };
+        splitClipButton.onClick = [this] { splitSelectedAtPlayhead(); };
+        deleteClipButton.onClick = [this] { deleteSelectedClip(); };
+        duplicateClipButton.onClick = [this] { duplicateSelectedClip(); };
+        loopClipButton.onClick = [this] { loopSelectedClip(); };
+        crossfadeButton.onClick = [this] { crossfadeSelectedClip(); };
+        stretchClipButton.onClick = [this] { stretchSelectedClip(); };
+
+        refreshEditButtons();
     }
 
     void MainComponent::refreshTransportUi()
@@ -492,6 +520,10 @@ namespace rrs
         removeTrackButton.setEnabled (hasEdit && ! busy && session.getNumAudioTracks() > 1);
         mixerPanel.setEnabled (! busy);
         timeline.setEnabled (hasEdit && ! busy);
+
+        // Epic 4: keep the arrangement edit actions in step with undo state and
+        // the selected clip.
+        refreshEditButtons();
 
         newButton.setEnabled (! busy);
         openButton.setEnabled (! busy);
@@ -1327,23 +1359,97 @@ namespace rrs
                         g.fillRoundedRectangle (laneRect.withWidth (3.0f), 1.5f);
                     }
 
-                    // Two non-overlapping text rows inside the lane: the track
-                    // name in the top ~20 px, the clip count in the ~16 px below
-                    // it. Split a single inner rectangle (rather than rebuilding
-                    // `lane.reduced(10)` per row) so the rows can never overlap.
+                    // Two non-overlapping rows inside the lane: the track name in
+                    // the top ~20 px and the clip strip below it. Split a single
+                    // inner rectangle so the rows can never overlap.
                     auto inner = lane.reduced (10, 4);
                     auto nameArea = inner.removeFromTop (20);
-                    auto clipArea = inner.removeFromTop (16);
 
                     g.setColour (brand::textPrimary);
                     g.setFont (brand::uiMedium (13.0f));
                     g.drawText (track->getName() + (armed ? "   [ARMED]" : ""),
                                 nameArea, juce::Justification::centredLeft);
 
-                    g.setColour (brand::textTertiary);
-                    g.setFont (brand::uiRegular (11.0f));
-                    g.drawText (juce::String (track->getClips().size()) + " clip(s)",
-                                clipArea, juce::Justification::centredLeft);
+                    // Epic 4: draw the track's clips on the timeline. The clip
+                    // strip sits below the name row; each clip's rectangle comes
+                    // from the same x<->time map as the ruler and the playhead.
+                    auto clipBand = juce::Rectangle<int> (inner.getX(), inner.getY(),
+                                                          inner.getWidth(),
+                                                          juce::jmax (8, inner.getHeight() - 2));
+                    const auto timelineLength = juce::jmax (1.0e-6, session.getTimelineLengthSeconds());
+
+                    for (const auto& clip : session.getClips (index))
+                    {
+                        auto startSeconds = clip.startSeconds;
+                        auto endSeconds = clip.endSeconds;
+                        auto fadeIn = clip.fadeInSeconds;
+                        auto fadeOut = clip.fadeOutSeconds;
+
+                        const bool isDraggedClip = clipDragActive
+                                                    && dragTrackIndex == index
+                                                    && dragClipIndex == clip.clipIndex;
+
+                        if (isDraggedClip)
+                        {
+                            startSeconds = dragPreviewStart;
+                            endSeconds = dragPreviewEnd;
+                            fadeIn = dragPreviewFadeIn;
+                            fadeOut = dragPreviewFadeOut;
+                        }
+
+                        const auto x1 = Timeline::xForSeconds (startSeconds, timelineLength, trackLaneArea);
+                        const auto x2 = Timeline::xForSeconds (endSeconds, timelineLength, trackLaneArea);
+                        auto r = juce::Rectangle<int> (x1, clipBand.getY(),
+                                                       juce::jmax (3, x2 - x1),
+                                                       clipBand.getHeight());
+
+                        const bool selected = (index == selectedTrackIndex
+                                               && clip.clipIndex == selectedClipIndex);
+
+                        g.setColour (selected ? brand::accent.withAlpha (0.55f)
+                                              : brand::accentMuted.withAlpha (0.8f));
+                        g.fillRoundedRectangle (r.toFloat(), 3.0f);
+
+                        // Fade ramps: a darkening triangle over each attenuated edge.
+                        g.setColour (brand::bgWindow.withAlpha (0.6f));
+
+                        if (fadeIn > 0.0)
+                        {
+                            const auto px = juce::jmax (0, Timeline::xForSeconds (startSeconds + fadeIn,
+                                                                                  timelineLength, trackLaneArea) - x1);
+                            juce::Path p;
+                            p.addTriangle ((float) x1, (float) r.getY(),
+                                           (float) (x1 + px), (float) r.getY(),
+                                           (float) x1, (float) r.getBottom());
+                            g.fillPath (p);
+                        }
+
+                        if (fadeOut > 0.0)
+                        {
+                            const auto px = juce::jmax (0, x2 - Timeline::xForSeconds (endSeconds - fadeOut,
+                                                                                       timelineLength, trackLaneArea));
+                            juce::Path p;
+                            p.addTriangle ((float) x2, (float) r.getY(),
+                                           (float) (x2 - px), (float) r.getY(),
+                                           (float) x2, (float) r.getBottom());
+                            g.fillPath (p);
+                        }
+
+                        if (selected)
+                        {
+                            g.setColour (brand::accent);
+                            g.drawRoundedRectangle (r.toFloat().reduced (0.5f), 3.0f, 2.0f);
+                        }
+
+                        if (r.getWidth() > 40)
+                        {
+                            g.setColour (brand::textPrimary);
+                            g.setFont (brand::uiRegular (10.0f));
+                            g.drawText ((clip.isLooping ? juce::String ("\u21bb ") : juce::String())
+                                            + clip.name,
+                                        r.reduced (6, 0), juce::Justification::centredLeft);
+                        }
+                    }
 
                     ++index;
                 }
@@ -1433,6 +1539,20 @@ namespace rrs
 
         area.removeFromTop (8);
 
+        // Epic 4: arrangement edit row (Undo/Redo + clip operations).
+        auto editRow = area.removeFromTop (30);
+
+        for (auto* b : { &undoButton, &redoButton, &splitClipButton, &deleteClipButton,
+                         &duplicateClipButton, &loopClipButton, &crossfadeButton,
+                         &stretchClipButton })
+        {
+            const auto w = juce::jmax (b->getPreferredWidth(), 68);
+            b->setBounds (editRow.removeFromLeft (w).withSizeKeepingCentre (w, 28));
+            editRow.removeFromLeft (4);
+        }
+
+        area.removeFromTop (8);
+
         // Bottom-anchored: status line, then the action row (which may wrap to a
         // second line when the window is narrow — layoutActionRow reports the
         // height it consumed).
@@ -1501,21 +1621,170 @@ namespace rrs
             trackLaneRects.push_back (lanes.removeFromTop (juce::jmin (46, lanes.getHeight())));
     }
 
+    juce::Rectangle<int> MainComponent::clipRectFor (int trackIndex, const Session::ClipInfo& info) const
+    {
+        if (trackIndex < 0 || trackIndex >= (int) trackLaneRects.size())
+            return {};
+
+        auto inner = trackLaneRects[(size_t) trackIndex].reduced (10, 4);
+        inner.removeFromTop (20);
+
+        auto band = juce::Rectangle<int> (inner.getX(), inner.getY(), inner.getWidth(),
+                                          juce::jmax (8, inner.getHeight() - 2));
+
+        const auto length = juce::jmax (1.0e-6, session.getTimelineLengthSeconds());
+        const auto x1 = Timeline::xForSeconds (info.startSeconds, length, trackLaneArea);
+        const auto x2 = Timeline::xForSeconds (info.endSeconds, length, trackLaneArea);
+        return { x1, band.getY(), juce::jmax (3, x2 - x1), band.getHeight() };
+    }
+
+    int MainComponent::hitTestClip (int trackIndex, juce::Point<int> position) const
+    {
+        const auto clips = session.getClips (trackIndex);
+
+        // Topmost first: the last drawn (highest start / highest index) wins.
+        for (auto it = clips.rbegin(); it != clips.rend(); ++it)
+            if (clipRectFor (trackIndex, *it).contains (position))
+                return it->clipIndex;
+
+        return -1;
+    }
+
+    Session::ClipInfo MainComponent::clipInfoFor (int trackIndex, int clipIndex) const
+    {
+        Session::ClipInfo info;
+        session.getClipInfo (trackIndex, clipIndex, info);
+        return info;
+    }
+
+    bool MainComponent::selectedClipExists() const
+    {
+        Session::ClipInfo info;
+        return selectedTrackIndex >= 0 && selectedClipIndex >= 0
+               && session.getClipInfo (selectedTrackIndex, selectedClipIndex, info);
+    }
+
+    Session::ClipInfo MainComponent::selectedClipInfo() const
+    {
+        return clipInfoFor (selectedTrackIndex, selectedClipIndex);
+    }
+
+    void MainComponent::selectClip (int trackIndex, int clipIndex)
+    {
+        selectedTrackIndex = clipIndex >= 0 ? trackIndex : -1;
+        selectedClipIndex = clipIndex >= 0 ? clipIndex : -1;
+        refreshEditButtons();
+        repaint();
+    }
+
+    void MainComponent::commitClipDrag()
+    {
+        if (! clipDragActive)
+            return;
+
+        clipDragActive = false;
+        const auto mode = clipDragMode;
+        clipDragMode = ClipDragMode::none;
+
+        constexpr double eps = 1.0e-4;
+        bool changed = false;
+
+        switch (mode)
+        {
+            case ClipDragMode::move:
+                if (std::abs (dragPreviewStart - dragOriginalStart) > eps)
+                    changed = session.moveClip (dragTrackIndex, dragClipIndex, dragPreviewStart);
+                break;
+
+            case ClipDragMode::trimStart:
+                if (std::abs (dragPreviewStart - dragOriginalStart) > eps)
+                    changed = session.trimClipStart (dragTrackIndex, dragClipIndex, dragPreviewStart);
+                break;
+
+            case ClipDragMode::trimEnd:
+                if (std::abs (dragPreviewEnd - dragOriginalEnd) > eps)
+                    changed = session.trimClipEnd (dragTrackIndex, dragClipIndex, dragPreviewEnd);
+                break;
+
+            case ClipDragMode::fadeIn:
+                changed = session.setClipFadeIn (dragTrackIndex, dragClipIndex, dragPreviewFadeIn);
+                break;
+
+            case ClipDragMode::fadeOut:
+                changed = session.setClipFadeOut (dragTrackIndex, dragClipIndex, dragPreviewFadeOut);
+                break;
+
+            case ClipDragMode::none:
+            default:
+                break;
+        }
+
+        if (changed)
+            showStatus ("Clip edited.");
+        else if (mode != ClipDragMode::none && ! session.getLastError().isEmpty())
+            showStatus (session.getLastError(), true);
+
+        refreshEditButtons();
+        repaint();
+    }
+
     void MainComponent::mouseDown (const juce::MouseEvent& e)
     {
         if (exportInProgress)
             return;
 
-        // Empty areas (below the lanes) are ignored; only a real lane toggles.
+        grabKeyboardFocus();
+
         for (size_t i = 0; i < trackLaneRects.size(); ++i)
         {
             if (! trackLaneRects[i].contains (e.getPosition()))
                 continue;
 
             const auto index = (int) i;
+            const auto clipIndex = hitTestClip (index, e.getPosition());
 
-            // Imported/backing tracks are playback-only: don't attempt to arm
-            // them (the Session would reject it anyway).
+            // Clicking a clip selects it and starts a move/trim/fade drag.
+            if (clipIndex >= 0)
+            {
+                selectClip (index, clipIndex);
+
+                const auto info = clipInfoFor (index, clipIndex);
+                const auto rect = clipRectFor (index, info);
+                const auto length = session.getTimelineLengthSeconds();
+                const auto mouseSeconds = Timeline::secondsForX (e.getPosition().x, length, trackLaneArea);
+
+                dragTrackIndex = index;
+                dragClipIndex = clipIndex;
+                dragOriginalStart = info.startSeconds;
+                dragOriginalEnd = info.endSeconds;
+                dragOriginalFadeIn = info.fadeInSeconds;
+                dragOriginalFadeOut = info.fadeOutSeconds;
+                dragMouseDownSeconds = mouseSeconds;
+                dragPreviewStart = info.startSeconds;
+                dragPreviewEnd = info.endSeconds;
+                dragPreviewFadeIn = info.fadeInSeconds;
+                dragPreviewFadeOut = info.fadeOutSeconds;
+                clipDragActive = true;
+
+                const auto edge = juce::jlimit (4, 10, rect.getWidth() / 4);
+                const auto x = e.getPosition().x;
+                const bool nearTop = e.getPosition().y <= rect.getY() + 8;
+
+                if (nearTop && x <= rect.getX() + 16)
+                    clipDragMode = ClipDragMode::fadeIn;
+                else if (nearTop && x >= rect.getRight() - 16)
+                    clipDragMode = ClipDragMode::fadeOut;
+                else if (x <= rect.getX() + edge)
+                    clipDragMode = ClipDragMode::trimStart;
+                else if (x >= rect.getRight() - edge)
+                    clipDragMode = ClipDragMode::trimEnd;
+                else
+                    clipDragMode = ClipDragMode::move;
+
+                return;
+            }
+
+            // Empty lane area keeps the Epic 1/2 arm/disarm behaviour.
             if (! session.getInputTrackIndices().contains (index))
             {
                 showStatus (session.getTrackName (index) + " is a backing track (playback only).");
@@ -1532,6 +1801,233 @@ namespace rrs
             refreshTransportUi();
             return;
         }
+
+        // Clicked outside every lane: drop the clip selection.
+        selectClip (-1, -1);
+    }
+
+    void MainComponent::mouseDrag (const juce::MouseEvent& e)
+    {
+        if (! clipDragActive)
+            return;
+
+        const auto length = session.getTimelineLengthSeconds();
+        const auto mouseSeconds = Timeline::secondsForX (e.getPosition().x, length, trackLaneArea);
+        const auto delta = mouseSeconds - dragMouseDownSeconds;
+        constexpr double minLen = 0.01;
+
+        switch (clipDragMode)
+        {
+            case ClipDragMode::move:
+                dragPreviewStart = juce::jmax (0.0, dragOriginalStart + delta);
+                dragPreviewEnd = dragPreviewStart + (dragOriginalEnd - dragOriginalStart);
+                break;
+
+            case ClipDragMode::trimStart:
+                dragPreviewStart = juce::jlimit (0.0, dragOriginalEnd - minLen,
+                                                 dragOriginalStart + delta);
+                dragPreviewEnd = dragOriginalEnd;
+                break;
+
+            case ClipDragMode::trimEnd:
+                dragPreviewEnd = juce::jmax (dragOriginalStart + minLen, dragOriginalEnd + delta);
+                dragPreviewStart = dragOriginalStart;
+                break;
+
+            case ClipDragMode::fadeIn:
+                dragPreviewFadeIn = juce::jlimit (0.0, dragPreviewEnd - dragPreviewStart,
+                                                  dragOriginalFadeIn + delta);
+                break;
+
+            case ClipDragMode::fadeOut:
+                dragPreviewFadeOut = juce::jlimit (0.0, dragPreviewEnd - dragPreviewStart,
+                                                   dragOriginalFadeOut + delta);
+                break;
+
+            case ClipDragMode::none:
+            default:
+                break;
+        }
+
+        repaint();
+    }
+
+    void MainComponent::mouseUp (const juce::MouseEvent&)
+    {
+        commitClipDrag();
+    }
+
+    bool MainComponent::keyPressed (const juce::KeyPress& key)
+    {
+        const auto mods = key.getModifiers();
+        const auto code = key.getKeyCode();
+
+        if (mods.isCommandDown() && (code == 'z' || code == 'Z'))
+        {
+            if (mods.isShiftDown())
+                redoEdit();
+            else
+                undoEdit();
+
+            return true;
+        }
+
+        if (code == juce::KeyPress::deleteKey || code == juce::KeyPress::backspaceKey)
+        {
+            deleteSelectedClip();
+            return true;
+        }
+
+        if (! mods.isCommandDown() && ! mods.isAltDown())
+        {
+            if (code == 's' || code == 'S') { splitSelectedAtPlayhead(); return true; }
+            if (code == 'd' || code == 'D') { duplicateSelectedClip(); return true; }
+            if (code == 'l' || code == 'L') { loopSelectedClip(); return true; }
+            if (code == 'f' || code == 'F') { crossfadeSelectedClip(); return true; }
+        }
+
+        return false;
+    }
+
+    void MainComponent::splitSelectedAtPlayhead()
+    {
+        if (! selectedClipExists())
+            return;
+
+        const auto playhead = session.getPositionSeconds();
+
+        if (! session.splitClip (selectedTrackIndex, selectedClipIndex, playhead))
+            showStatus (session.getLastError().isNotEmpty() ? session.getLastError()
+                                                           : "Move the playhead inside the clip to split it.",
+                        session.getLastError().isNotEmpty());
+        else
+            showStatus ("Split clip at " + formatTime (playhead) + ".");
+
+        selectClip (-1, -1);
+        refreshTransportUi();
+    }
+
+    void MainComponent::deleteSelectedClip()
+    {
+        if (! selectedClipExists())
+            return;
+
+        if (session.deleteClip (selectedTrackIndex, selectedClipIndex))
+            showStatus ("Deleted clip.");
+        else
+            showStatus (session.getLastError(), true);
+
+        selectClip (-1, -1);
+        refreshTransportUi();
+    }
+
+    void MainComponent::duplicateSelectedClip()
+    {
+        if (! selectedClipExists())
+            return;
+
+        const int newIndex = session.duplicateClip (selectedTrackIndex, selectedClipIndex);
+
+        if (newIndex >= 0)
+        {
+            selectClip (selectedTrackIndex, newIndex);
+            showStatus ("Duplicated clip.");
+        }
+        else
+        {
+            showStatus (session.getLastError(), true);
+        }
+
+        refreshTransportUi();
+    }
+
+    void MainComponent::loopSelectedClip()
+    {
+        if (! selectedClipExists())
+            return;
+
+        const auto info = selectedClipInfo();
+        const int loops = info.isLooping ? 0 : 2; // toggle between off and x2
+
+        if (session.setClipLoop (selectedTrackIndex, selectedClipIndex, loops))
+            showStatus (loops > 1 ? "Looped clip x2." : "Looping disabled.");
+        else
+            showStatus (session.getLastError(), true);
+
+        refreshTransportUi();
+    }
+
+    void MainComponent::crossfadeSelectedClip()
+    {
+        if (! selectedClipExists())
+            return;
+
+        if (session.crossfadeClipWithNext (selectedTrackIndex, selectedClipIndex, 0.05))
+            showStatus ("Crossfaded clip with the next clip (50 ms).");
+        else
+            showStatus (session.getLastError().isNotEmpty() ? session.getLastError()
+                                                           : "No adjacent clip to crossfade with.",
+                        true);
+
+        refreshTransportUi();
+    }
+
+    void MainComponent::stretchSelectedClip()
+    {
+        if (! selectedClipExists())
+            return;
+
+        if (! session.hasSelection())
+        {
+            showStatus ("Select a region on the ruler first; the clip stretches to the region length.", true);
+            return;
+        }
+
+        const auto target = session.getSelectionEndSeconds() - session.getSelectionStartSeconds();
+
+        if (session.stretchClipToDuration (selectedTrackIndex, selectedClipIndex, target))
+            showStatus ("Time-stretched clip to " + juce::String (target, 3) + " s.");
+        else
+            showStatus (session.getLastError(), true);
+
+        selectClip (-1, -1);
+        refreshTransportUi();
+    }
+
+    void MainComponent::undoEdit()
+    {
+        if (! session.undo())
+            return;
+
+        showStatus ("Undo.");
+        selectClip (-1, -1);
+        refreshTransportUi();
+    }
+
+    void MainComponent::redoEdit()
+    {
+        if (! session.redo())
+            return;
+
+        showStatus ("Redo.");
+        selectClip (-1, -1);
+        refreshTransportUi();
+    }
+
+    void MainComponent::refreshEditButtons()
+    {
+        const bool hasEdit = session.getEdit() != nullptr
+                             && ! exportInProgress && ! stemsInProgress;
+        const bool hasSelection = hasEdit && selectedClipExists();
+
+        undoButton.setEnabled (hasEdit && session.canUndo());
+        redoButton.setEnabled (hasEdit && session.canRedo());
+        splitClipButton.setEnabled (hasSelection);
+        deleteClipButton.setEnabled (hasSelection);
+        duplicateClipButton.setEnabled (hasSelection);
+        loopClipButton.setEnabled (hasSelection);
+        crossfadeButton.setEnabled (hasSelection);
+        stretchClipButton.setEnabled (hasSelection && session.hasSelection());
     }
 
     int MainComponent::layoutActionRow (juce::Rectangle<int> area)

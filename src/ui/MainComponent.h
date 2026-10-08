@@ -43,6 +43,9 @@ namespace rrs
         void paint (juce::Graphics&) override;
         void resized() override;
         void mouseDown (const juce::MouseEvent&) override;
+        void mouseDrag (const juce::MouseEvent&) override;
+        void mouseUp (const juce::MouseEvent&) override;
+        bool keyPressed (const juce::KeyPress&) override;
 
     private:
         void changeListenerCallback (juce::ChangeBroadcaster*) override;
@@ -98,6 +101,33 @@ namespace rrs
             engine order, so lane clicks map straight onto track indices. */
         void rebuildTrackLaneRects();
 
+        //==========================================================================
+        // Arrangement clip editing (Epic 4 — FR-ED-1/2/3/4/5/6)
+        //
+        // The arrangement draws clips as rectangles inside the lanes and turns
+        // mouse drags into edit operations. A drag only previews (repaint); the
+        // edit is committed on mouse-up as a single undoable Session call.
+        enum class ClipDragMode { none, move, trimStart, trimEnd, fadeIn, fadeOut };
+
+        void selectClip (int trackIndex, int clipIndex);
+        Session::ClipInfo clipInfoFor (int trackIndex, int clipIndex) const;
+        juce::Rectangle<int> clipRectFor (int trackIndex, const Session::ClipInfo&) const;
+        /** Returns the topmost clip at `position` in `lane`, or -1. */
+        int hitTestClip (int trackIndex, juce::Point<int> position) const;
+        bool selectedClipExists() const;
+        Session::ClipInfo selectedClipInfo() const;
+        void commitClipDrag();
+        void refreshEditButtons();
+
+        void splitSelectedAtPlayhead();
+        void deleteSelectedClip();
+        void duplicateSelectedClip();
+        void loopSelectedClip();
+        void crossfadeSelectedClip();
+        void stretchSelectedClip();
+        void undoEdit();
+        void redoEdit();
+
         static juce::String formatTime (double seconds);
 
         //==============================================================================
@@ -130,6 +160,12 @@ namespace rrs
         BrandButton routingButton { "Routing" };
         BrandButton addTrackButton { "Add track" }, removeTrackButton { "Remove track" };
         BrandButton settingsButton { "Settings" }, aboutButton { "About" };
+
+        /** Epic 4 arrangement edit actions (second action row). */
+        BrandButton undoButton { "Undo" }, redoButton { "Redo" };
+        BrandButton splitClipButton { "Split" }, deleteClipButton { "Delete" };
+        BrandButton duplicateClipButton { "Duplicate" }, loopClipButton { "Loop" };
+        BrandButton crossfadeButton { "Crossfade" }, stretchClipButton { "Stretch" };
 
         BrandButton armButton { "Arm", BrandButton::Style::Chip };
         BrandButton recordButton { "Record", BrandButton::Style::Record };
@@ -196,6 +232,20 @@ namespace rrs
         /** Lane rectangles in `trackLaneArea`, engine-track order (FR-REC-2:
             click a lane to arm/disarm it). */
         std::vector<juce::Rectangle<int>> trackLaneRects;
+
+        //--- Epic 4 clip-edit selection + drag state ---
+        int selectedTrackIndex = -1;
+        int selectedClipIndex = -1;
+
+        ClipDragMode clipDragMode = ClipDragMode::none;
+        int dragTrackIndex = -1;
+        int dragClipIndex = -1;
+        double dragMouseDownSeconds = 0.0;
+        double dragOriginalStart = 0.0, dragOriginalEnd = 0.0;
+        double dragOriginalFadeIn = 0.0, dragOriginalFadeOut = 0.0;
+        double dragPreviewStart = 0.0, dragPreviewEnd = 0.0;
+        double dragPreviewFadeIn = 0.0, dragPreviewFadeOut = 0.0;
+        bool clipDragActive = false;
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)
     };
