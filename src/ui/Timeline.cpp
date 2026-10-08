@@ -14,12 +14,6 @@ namespace rrs
     {
         setTooltip ("Click or drag to move the playhead. Shift-drag to select a "
                     "region, then use Export region.");
-        startTimerHz (30);
-    }
-
-    Timeline::~Timeline()
-    {
-        stopTimer();
     }
 
     //==============================================================================
@@ -44,11 +38,6 @@ namespace rrs
     }
 
     //==============================================================================
-    void Timeline::timerCallback()
-    {
-        repaint();
-    }
-
     void Timeline::seekFromX (int x)
     {
         if (! isEnabled() || session.getEdit() == nullptr)

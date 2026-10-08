@@ -300,7 +300,10 @@ namespace rrs
         session.addChangeListener (this);
 
         setSize (1200, 900);
-        startTimerHz (10);
+        // Single clock for the whole arrangement (see timerCallback): the ruler
+        // and the lanes are both repainted from this timer, so their playhead
+        // lines move in lockstep.
+        startTimerHz (30);
 
         refreshTransportUi();
         runStartupRecovery();
@@ -1293,7 +1296,23 @@ namespace rrs
 
     void MainComponent::timerCallback()
     {
-        refreshTransportUi();
+        // One clock for the ruler and the lanes (Epic 4 playhead fix). The ruler
+        // used to repaint on its own 30 Hz timer and the lanes on this 10 Hz one,
+        // so the ruler playhead visibly lagged the lane playhead. Both are now
+        // repainted from this single ~30 Hz tick. The transport/status chrome is
+        // heavier, so it is refreshed only every third tick (still ~10 Hz for the
+        // time readout); the playhead still repaints on every tick.
+        if (++uiRefreshTicks >= 3)
+        {
+            uiRefreshTicks = 0;
+            refreshTransportUi(); // repaints the lanes as a side effect
+        }
+        else
+        {
+            repaint();
+        }
+
+        timeline.repaint();
     }
 
     //==============================================================================

@@ -251,6 +251,10 @@ namespace rrs
         juce::String statusMessage;
         bool statusIsError = false;
 
+        /** Counts 30 Hz timer ticks so the heavier transport/status chrome is
+            refreshed ~10 Hz while the playhead is repainted every tick. */
+        int uiRefreshTicks = 0;
+
         juce::Rectangle<int> trackLaneArea;
 
         /** Lane rectangles in `trackLaneArea`, engine-track order (FR-REC-2:

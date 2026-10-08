@@ -10,8 +10,12 @@
 // down through the track lanes) via the static helpers, so the ruler and the
 // lanes can never disagree about where a given time sits.
 //
-// UI-only: reads the position/length from the Session on its own timer and
-// seeks on the message thread. Never touches the audio thread.
+// UI-only: reads the position/length from the Session and seeks on the message
+// thread. Never touches the audio thread.
+//
+// The ruler no longer runs its own timer: MainComponent drives a single ~30 Hz
+// repaint that covers the ruler and the lanes together, so the two playhead
+// lines can never drift apart (they used to repaint at 30 Hz and 10 Hz).
 
 #pragma once
 
@@ -22,8 +26,7 @@
 namespace rrs
 {
     class Timeline final : public juce::Component,
-                           public juce::SettableTooltipClient,
-                           private juce::Timer
+                           public juce::SettableTooltipClient
     {
     public:
         /** Fixed strip height so MainComponent can reserve the space. */
@@ -34,7 +37,6 @@ namespace rrs
         static constexpr int hInset = 8;
 
         explicit Timeline (Session&);
-        ~Timeline() override;
 
         void paint (juce::Graphics&) override;
         void mouseDown (const juce::MouseEvent&) override;
@@ -50,7 +52,6 @@ namespace rrs
         static double secondsForX (int x, double length, juce::Rectangle<int> area) noexcept;
 
     private:
-        void timerCallback() override;
         void seekFromX (int x);
 
         /** A "nice" ruler tick spacing (seconds) that keeps labels legible for
