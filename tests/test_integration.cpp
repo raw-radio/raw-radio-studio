@@ -275,6 +275,31 @@ namespace
 
         return maxDiff;
     }
+
+    /** Rough dominant frequency of channel 0 over [startSample, endSample) from
+        zero crossings. Used to identify which take a comp region plays. */
+    double estimateFrequency (const juce::AudioBuffer<float>& buffer, double sampleRate,
+                              int startSample, int endSample)
+    {
+        startSample = juce::jmax (0, startSample);
+        endSample = juce::jmin (buffer.getNumSamples(), endSample);
+
+        if (endSample <= startSample + 1)
+            return 0.0;
+
+        int crossings = 0;
+
+        for (int i = startSample + 1; i < endSample; ++i)
+        {
+            const auto a = buffer.getSample (0, i - 1);
+            const auto b = buffer.getSample (0, i);
+
+            if ((a <= 0.0f && b > 0.0f) || (a >= 0.0f && b < 0.0f))
+                ++crossings;
+        }
+
+        return (double) crossings / 2.0 / ((double) (endSample - startSample) / sampleRate);
+    }
 }
 
 //==============================================================================
@@ -1217,6 +1242,141 @@ TEST_CASE ("Epic 4 crossfade removes the junction click (FR-ED-3, measured)")
     CHECK (fadedStep < 0.15f);
     CHECK (readWavPeak (renderJunction ("faded2.wav")) < 1.0f);
 
+    session.close();
+}
+
+//==============================================================================
+// Epic 4 (FR-ED-4, measured): assemble a master take from three stacked takes
+// non-destructively. The comp is built on a new track as trimmed copies of the
+// chosen takes; the takes and their files are left untouched. Rendering the comp
+// (with the take track muted) and measuring each region's pitch proves which
+// take each region plays.
+TEST_CASE ("Epic 4 comping: master take from 3 takes is non-destructive (FR-ED-4)")
+{
+    auto dir = scratchDirectory ("comp");
+    constexpr double sampleRate = 48000.0;
+
+    auto take1 = writeSineWav (dir.getChildFile ("take1.wav"), sampleRate, 1.0, 0.5f, 220.0);
+    auto take2 = writeSineWav (dir.getChildFile ("take2.wav"), sampleRate, 1.0, 0.5f, 330.0);
+    auto take3 = writeSineWav (dir.getChildFile ("take3.wav"), sampleRate, 1.0, 0.5f, 440.0);
+    REQUIRE (take1.existsAsFile());
+    REQUIRE (take2.existsAsFile());
+    REQUIRE (take3.existsAsFile());
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Comp.tracktionedit")));
+
+    auto* edit = session.getEdit();
+    REQUIRE (edit != nullptr);
+
+    // One track with three overlapping takes (all 0..1 s). The raw track pointer
+    // is scoped so it is released while the edit is still alive: a Tracktion
+    // Track doesn't outlive its Edit, and releasing the Ptr after close() would
+    // tear down clips against a destroyed edit.
+    const int takeTrack = 1;
+    {
+        auto takeTrackPtr = edit->insertNewAudioTrack (te::TrackInsertPoint::getEndOfTracks (*edit),
+                                                       nullptr, true);
+        REQUIRE (takeTrackPtr != nullptr);
+
+        for (auto* f : { &take1, &take2, &take3 })
+            takeTrackPtr->insertWaveClip (f->getFileNameWithoutExtension(), *f,
+                                          { { te::TimePosition(), te::TimeDuration::fromSeconds (1.0) }, {} },
+                                          false);
+    }
+
+    const auto takesBefore = session.getClips (takeTrack);
+    REQUIRE (takesBefore.size() == 3);
+    CHECK (session.getNumAudioTracks() == 2);
+
+    const juce::Array<int> takeIndices { takesBefore[0].clipIndex,
+                                         takesBefore[1].clipIndex,
+                                         takesBefore[2].clipIndex };
+    const juce::Array<double> boundaries { 0.4, 0.7 };
+    const juce::Array<int> chosen { 0, 1, 2 }; // take0 | take1 | take2
+
+    const int compTrack = session.compTakes (takeTrack, takeIndices, boundaries, chosen);
+    REQUIRE (compTrack >= 0);
+    CHECK (session.getNumAudioTracks() == 3);
+
+    // The comp is three butt-joined segments covering [0, 1].
+    {
+        const auto compClips = session.getClips (compTrack);
+        REQUIRE (compClips.size() == 3);
+        CHECK (compClips[0].startSeconds == doctest::Approx (0.0));
+        CHECK (compClips[0].endSeconds == doctest::Approx (0.4).epsilon (0.01));
+        CHECK (compClips[1].startSeconds == doctest::Approx (0.4));
+        CHECK (compClips[1].endSeconds == doctest::Approx (0.7).epsilon (0.01));
+        CHECK (compClips[2].startSeconds == doctest::Approx (0.7));
+        CHECK (compClips[2].endSeconds == doctest::Approx (1.0).epsilon (0.01));
+    }
+
+    // Non-destructive: the three takes and their files are untouched.
+    {
+        const auto takesAfter = session.getClips (takeTrack);
+        REQUIRE (takesAfter.size() == 3);
+
+        for (const auto& c : takesAfter)
+        {
+            CHECK (c.startSeconds == doctest::Approx (0.0));
+            CHECK (c.lengthSeconds == doctest::Approx (1.0).epsilon (0.01));
+            CHECK (c.isMuted == false);
+        }
+    }
+
+    CHECK (take1.existsAsFile());
+    CHECK (take2.existsAsFile());
+    CHECK (take3.existsAsFile());
+
+
+
+    // Render the comp alone: mute the take track (the input track has no clips).
+    REQUIRE (session.setTrackMute (takeTrack, true));
+
+    auto dest = dir.getChildFile ("comp.wav");
+    std::atomic<bool> finished { false };
+    bool succeeded = false;
+
+    auto handle = WavExport::start (*edit, dest,
+                                    [&] (bool success, juce::File, juce::String)
+                                    {
+                                        succeeded = success;
+                                        finished = true;
+                                    });
+
+    REQUIRE (handle != nullptr);
+
+    for (int i = 0; i < 400 && ! finished.load(); ++i)
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (25);
+
+    REQUIRE (finished.load());
+    REQUIRE (succeeded);
+
+    juce::WavAudioFormat wav;
+    std::unique_ptr<juce::AudioFormatReader> reader (
+        wav.createReaderFor (new juce::FileInputStream (dest), true));
+    REQUIRE (reader != nullptr);
+    REQUIRE (reader->lengthInSamples > (juce::int64) (0.9 * sampleRate));
+
+    juce::AudioBuffer<float> rendered ((int) reader->numChannels, (int) reader->lengthInSamples);
+    REQUIRE (reader->read (&rendered, 0, (int) reader->lengthInSamples, 0, true, true));
+
+    const auto measured1 = estimateFrequency (rendered, sampleRate,
+                                              (int) (0.05 * sampleRate), (int) (0.35 * sampleRate));
+    const auto measured2 = estimateFrequency (rendered, sampleRate,
+                                              (int) (0.45 * sampleRate), (int) (0.65 * sampleRate));
+    const auto measured3 = estimateFrequency (rendered, sampleRate,
+                                              (int) (0.75 * sampleRate), (int) (0.95 * sampleRate));
+
+    MESSAGE ("comp regions: " << measured1 << " Hz | " << measured2 << " Hz | "
+             << measured3 << " Hz (expected 220 | 330 | 440)");
+
+    CHECK (measured1 == doctest::Approx (220.0).epsilon (0.05));
+    CHECK (measured2 == doctest::Approx (330.0).epsilon (0.05));
+    CHECK (measured3 == doctest::Approx (440.0).epsilon (0.05));
+
+    handle.reset(); // release the renderer before the edit is torn down
     session.close();
 }
 

@@ -304,6 +304,24 @@ namespace rrs
             false when there is no right neighbour or either clip is not audio. */
         bool crossfadeClipWithNext (int trackIndex, int clipIndex, double seconds);
 
+        // --- Comping (FR-ED-4) ---
+        /** Non-destructively assembles a master take ("comp") on a **new track**
+            from `takeClipIndices` on `sourceTrackIndex`. The comp is split into
+            `chosenTakes.size()` butt-joined regions by `boundariesSeconds`
+            (ascending internal split points, `size()` == `chosenTakes.size() - 1`);
+            region `i` plays take `chosenTakes[i]`. Each segment is a trimmed copy
+            that references the take's original file — the takes and their files
+            are never modified. Returns the comp track index, or -1 on failure. */
+        int compTakes (int sourceTrackIndex,
+                       const juce::Array<int>& takeClipIndices,
+                       const juce::Array<double>& boundariesSeconds,
+                       const juce::Array<int>& chosenTakes);
+
+        /** Number of takes stored on a clip (native engine takes; 0 when none). */
+        int getClipTakeCount (int trackIndex, int clipIndex) const;
+        /** Human-readable take descriptions, or empty when the clip has none. */
+        juce::StringArray getClipTakeDescriptions (int trackIndex, int clipIndex) const;
+
         // --- Undo / redo (FR-ED-6) ---
         bool undo();
         bool redo();

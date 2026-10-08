@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <set>
 
 namespace rrs
@@ -1603,6 +1604,137 @@ namespace rrs
 
         afterClipEdit();
         return true;
+    }
+
+    //==============================================================================
+    // Comping (FR-ED-4): assemble a master take on a new track, non-destructively.
+    int Session::compTakes (int sourceTrackIndex,
+                            const juce::Array<int>& takeClipIndices,
+                            const juce::Array<double>& boundariesSeconds,
+                            const juce::Array<int>& chosenTakes)
+    {
+        if (edit == nullptr || takeClipIndices.isEmpty() || chosenTakes.isEmpty())
+            return -1;
+
+        if (boundariesSeconds.size() != chosenTakes.size() - 1)
+        {
+            lastError = "A comp needs exactly one fewer boundary than chosen takes.";
+            return -1;
+        }
+
+        if (getTrack (sourceTrackIndex) == nullptr)
+        {
+            lastError = "No such take track.";
+            return -1;
+        }
+
+        // Resolve the takes and find the span they cover.
+        std::vector<te::Clip::Ptr> takes ((size_t) takeClipIndices.size());
+        double spanStart = std::numeric_limits<double>::max();
+        double spanEnd = std::numeric_limits<double>::lowest();
+
+        for (int i = 0; i < takeClipIndices.size(); ++i)
+        {
+            te::Clip::Ptr clip (clipAt (sourceTrackIndex, takeClipIndices[i]));
+
+            if (clip == nullptr)
+            {
+                lastError = "Comp take not found.";
+                return -1;
+            }
+
+            const auto pos = clip->getPosition();
+            spanStart = juce::jmin (spanStart, pos.time.getStart().inSeconds());
+            spanEnd = juce::jmax (spanEnd, pos.time.getEnd().inSeconds());
+            takes[(size_t) i] = clip;
+        }
+
+        for (auto t : chosenTakes)
+            if (t < 0 || t >= takeClipIndices.size())
+            {
+                lastError = "Comp chose a take that does not exist.";
+                return -1;
+            }
+
+        double previous = spanStart;
+
+        for (auto boundary : boundariesSeconds)
+        {
+            if (! (boundary > previous && boundary < spanEnd))
+            {
+                lastError = "Comp boundaries must be ascending and inside the takes.";
+                return -1;
+            }
+
+            previous = boundary;
+        }
+
+        edit->getUndoManager().beginNewTransaction ("Comp takes");
+
+        auto compTrack = edit->insertNewAudioTrack (te::TrackInsertPoint::getEndOfTracks (*edit),
+                                                    nullptr, true);
+
+        if (compTrack == nullptr)
+        {
+            lastError = "Could not create the comp track.";
+            return -1;
+        }
+
+        compTrack->setName ("Comp");
+
+        const int numRegions = chosenTakes.size();
+
+        for (int region = 0; region < numRegions; ++region)
+        {
+            const auto regionStart = (region == 0) ? spanStart
+                                                   : boundariesSeconds[region - 1];
+            const auto regionEnd = (region == numRegions - 1) ? spanEnd
+                                                              : boundariesSeconds[region];
+
+            te::Clip& anchor = *takes[(size_t) chosenTakes[region]];
+
+            // Trimmed copy referencing the take's original file: the take and its
+            // file are never touched (non-destructive).
+            auto* segment = te::insertClipCopy (*compTrack,
+                                                te::ClipCopy::fromClip (anchor)
+                                                    .withNewItemID (*edit));
+
+            if (segment == nullptr)
+            {
+                lastError = "Could not insert a comp segment.";
+                return -1;
+            }
+
+            segment->setStart (te::TimePosition::fromSeconds (regionStart), true, false);
+            segment->setEnd (te::TimePosition::fromSeconds (regionEnd), true);
+            segment->setName (anchor.getName() + " comp");
+        }
+
+        afterClipEdit();
+
+        const auto tracks = te::getAudioTracks (*edit);
+
+        for (int i = 0; i < tracks.size(); ++i)
+            if (tracks[i] == compTrack.get())
+                return i;
+
+        return -1;
+    }
+
+    int Session::getClipTakeCount (int trackIndex, int clipIndex) const
+    {
+        if (auto* wave = dynamic_cast<te::WaveAudioClip*> (clipAt (trackIndex, clipIndex)))
+            return wave->getNumTakes (true);
+
+        return 0;
+    }
+
+    juce::StringArray Session::getClipTakeDescriptions (int trackIndex, int clipIndex) const
+    {
+        if (auto* wave = dynamic_cast<te::WaveAudioClip*> (clipAt (trackIndex, clipIndex)))
+            return wave->getTakeDescriptions();
+
+        return {};
     }
 
     //==============================================================================
