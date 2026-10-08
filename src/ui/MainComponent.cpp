@@ -577,7 +577,7 @@ namespace rrs
 
     void MainComponent::newSession()
     {
-        if (exportInProgress)
+        if (exportInProgress || stemsInProgress)
             return;
 
         confirmUnsavedChanges ("New session", [this]
@@ -608,7 +608,7 @@ namespace rrs
 
     void MainComponent::openSession()
     {
-        if (exportInProgress)
+        if (exportInProgress || stemsInProgress)
             return;
 
         confirmUnsavedChanges ("Open session", [this]
@@ -635,7 +635,7 @@ namespace rrs
 
     void MainComponent::closeSession()
     {
-        if (exportInProgress || session.getEdit() == nullptr)
+        if (exportInProgress || stemsInProgress || session.getEdit() == nullptr)
             return;
 
         juce::Component::SafePointer<MainComponent> safe (this);

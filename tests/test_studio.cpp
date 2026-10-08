@@ -788,6 +788,11 @@ TEST_CASE ("plugin presets store round-trips state and rejects unsafe names (FR-
     CHECK_FALSE (PluginPresets::isValidPresetName ("a/b"));
     CHECK_FALSE (PluginPresets::isValidPresetName ("a\\b"));
 
+    // Windows-reserved punctuation must be rejected too (the file store would
+    // otherwise fail to write such a name on Windows).
+    for (auto* bad : { "a*b", "a?b", "a\"b", "a<b", "a>b", "a|b", "a:b" })
+        CHECK_FALSE (PluginPresets::isValidPresetName (bad));
+
     // Round-trip a state blob.
     const char payload[] = "preset-state-bytes";
     juce::MemoryBlock state;

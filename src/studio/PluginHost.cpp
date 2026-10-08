@@ -28,12 +28,14 @@ namespace rrs
     PluginHost::~PluginHost()
     {
         // Abort an in-flight probe *before* waiting: a scan can block inside the
-        // (child-process) plugin probe for longer than the join timeout. Without
-        // cancelling first, stopThread() could time out and let the destructor
+        // (child-process) plugin probe for an unbounded time (a hung plugin
+        // probe is exactly the case cancelScan() cannot interrupt). A bounded
+        // stopThread(5000) could therefore time out and let the destructor
         // proceed to destroy `engine`/members while the worker is still running,
         // which the worker would then touch -> use-after-free / hang on exit.
+        // Join *unbounded* (-1) so the base ~Thread always sees a stopped worker.
         cancelScan();
-        stopThread (5000);
+        stopThread (-1);
     }
 
     juce::String PluginHost::getCurrentPluginName() const

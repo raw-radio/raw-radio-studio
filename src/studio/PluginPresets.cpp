@@ -25,14 +25,30 @@ namespace rrs
             return out.isNotEmpty() ? out : juce::String ("plugin");
         }
 
+        /** Characters that may never appear in a preset name/file. Beyond the
+            path separators/control characters (which break POSIX and Windows
+            paths alike) this includes the characters Windows forbids in a file
+            name: * ? " < > | :. Validation *rejects* them and sanitiseFileName
+            replaces them, so the accepted set and the written file name can
+            never diverge (a name that validates always maps to a writable file,
+            on every platform). */
+        bool isIllegalFileNameChar (juce::juce_wchar c)
+        {
+            return c < 32 || c == 127
+                || c == '/' || c == '\\' || c == ':'
+                || c == '*' || c == '?' || c == '"'
+                || c == '<' || c == '>' || c == '|';
+        }
+
         /** Preset *file* name: spaces and most punctuation are allowed for a
-            readable name, but path separators and control characters are not. */
+            readable name, but path separators, control characters and the
+            Windows-reserved punctuation are replaced with '_'. */
         juce::String sanitiseFileName (const juce::String& name)
         {
             juce::String out;
 
             for (auto c : name.trim())
-                out << (c == '/' || c == '\\' || c == ':' ? juce::juce_wchar ('_') : c);
+                out << (isIllegalFileNameChar (c) ? juce::juce_wchar ('_') : c);
 
             return out.trim();
         }
@@ -74,7 +90,7 @@ namespace rrs
             return false;
 
         for (auto c : trimmed)
-            if (c < 32 || c == 127 || c == '/' || c == '\\')
+            if (isIllegalFileNameChar (c))
                 return false;
 
         return true;

@@ -203,6 +203,11 @@ namespace rrs
     //==============================================================================
     bool Session::createNew (const juce::File& requestedFile)
     {
+        // A new session must not inherit the previous session's region selection:
+        // the bounds are transient UI state, so a stale [start, end] would
+        // highlight/render a region that no longer exists (FR-EXP-2).
+        clearSelection();
+
         auto file = requestedFile != juce::File() ? requestedFile : paths::defaultEditFile();
 
         if (! file.getParentDirectory().createDirectory())
@@ -231,6 +236,11 @@ namespace rrs
 
     bool Session::open (const juce::File& file)
     {
+        // Drop the previous session's region selection (transient, not
+        // serialised): otherwise the region highlight and Export-region would
+        // use times from the session that was just replaced (FR-EXP-2).
+        clearSelection();
+
         if (! file.existsAsFile())
         {
             lastError = "Session file does not exist:\n" + file.getFullPathName();
@@ -2318,6 +2328,10 @@ namespace rrs
         // also ends up OFF in the UI. This is a device teardown, not a user
         // preference change, so the remembered preference is left intact.
         applyMonitoringToDevices (false);
+
+        // The selection is transient UI state tied to the Edit: clear it before
+        // the early-out so a later open/new never sees stale region bounds.
+        clearSelection();
 
         if (edit == nullptr)
             return;
