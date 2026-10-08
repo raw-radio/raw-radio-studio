@@ -20,11 +20,14 @@
 #include "studio/PluginPresets.h"
 #include "studio/TimeStretch.h"
 #include "ui/BrandFonts.h"
+#include "ui/ClipSnap.h"
 #include "ui/DevicePanelLayout.h"
 #include "ui/FaderTaper.h"
 #include "ui/IconCache.h"
 #include "ui/MeterBallistics.h"
 #include "ui/MixerLayout.h"
+
+#include <vector>
 
 #include <cmath>
 #include <cstdlib>
@@ -1089,4 +1092,65 @@ TEST_CASE ("last-used file-dialog directory is remembered per operation (UI)")
     CHECK (storage.saveCount == savesBefore);
 
     exports.deleteRecursively();
+}
+
+//==============================================================================
+// Clip-edge snapping (Epic 4 UX). The core is a pure function so the exact
+// behaviour the arrangement relies on — nearest edge within threshold, ties to
+// the smaller time, non-positive threshold disables — is pinned here without a
+// window, a mouse or an Edit.
+TEST_CASE ("clip edge snapping picks the nearest boundary within the threshold")
+{
+    const std::vector<double> edges { 3.0, 5.0, 10.0 };
+
+    // Genuinely near 5 -> snaps to it.
+    {
+        const auto r = clipsnap::snapTimeToEdges (4.8, edges, 0.5);
+        CHECK (r.snapped);
+        CHECK (r.time == doctest::Approx (5.0));
+    }
+
+    // Nearest of two in-range edges wins (4.2 is 0.8 from 5.0, 1.2 from 3.0 but
+    // with a 1.5 threshold both are in range).
+    {
+        const auto r = clipsnap::snapTimeToEdges (4.2, edges, 1.5);
+        CHECK (r.snapped);
+        CHECK (r.time == doctest::Approx (5.0));
+    }
+
+    // Outside every threshold: unchanged and flagged as not snapped.
+    {
+        const auto r = clipsnap::snapTimeToEdges (7.0, edges, 0.5);
+        CHECK_FALSE (r.snapped);
+        CHECK (r.time == doctest::Approx (7.0));
+    }
+
+    // Exactly on the threshold edge is inclusive.
+    {
+        const auto r = clipsnap::snapTimeToEdges (3.5, edges, 0.5);
+        CHECK (r.snapped);
+        CHECK (r.time == doctest::Approx (3.0));
+    }
+
+    // A non-positive threshold disables snapping.
+    CHECK_FALSE (clipsnap::snapTimeToEdges (4.9, edges, 0.0).snapped);
+    CHECK_FALSE (clipsnap::snapTimeToEdges (4.9, edges, -1.0).snapped);
+
+    // No edges: candidate is returned unchanged.
+    {
+        const auto r = clipsnap::snapTimeToEdges (4.9, {}, 1.0);
+        CHECK_FALSE (r.snapped);
+        CHECK (r.time == doctest::Approx (4.9));
+    }
+
+    // Exact tie between 3.25 and 3.75 (both 0.25 from 3.5) resolves to the
+    // smaller time, independent of the order the edges were collected in.
+    CHECK (clipsnap::snapTimeToEdges (3.5, { 3.75, 3.25 }, 1.0).time == doctest::Approx (3.25));
+    CHECK (clipsnap::snapTimeToEdges (3.5, { 3.25, 3.75 }, 1.0).time == doctest::Approx (3.25));
+
+    // Deterministic repeat.
+    const auto a = clipsnap::snapTimeToEdges (2.9, edges, 0.5);
+    const auto b = clipsnap::snapTimeToEdges (2.9, edges, 0.5);
+    CHECK (a.time == doctest::Approx (b.time));
+    CHECK (a.snapped == b.snapped);
 }

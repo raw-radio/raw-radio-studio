@@ -186,6 +186,15 @@ Clips are drawn on each track lane as rectangles. Click a clip to select it
 - **Trim:** drag a clip's left or right edge (within ~1/4 of the clip width).
 - **Fade in/out:** drag the small top-left / top-right corner of a clip
   horizontally; the ramp is shaded on the clip.
+- **Snapping:** while moving or trimming, the dragged edge is pulled onto nearby
+  clip boundaries, the playhead and the whole-second grid when it comes within
+  ~6 px; a yellow line marks the boundary it will land on. **Hold `Alt`** during
+  the drag to bypass snapping and place the edge freely.
+- **Delete a clip vs. a track:** **Delete** (`Delete` key) removes only the
+  selected clip. The trash **Remove track** button removes the whole track (with
+  all of its clips): it removes the selected clip's track, or the last track
+  when nothing is selected — use it to remove an imported backing track
+  ("minus").
 - **Split:** put the playhead inside the selected clip and press **Split** (or
   `S`).
 - **Delete / Duplicate / Loop:** **Delete** (`Delete`), **Duplicate** (`D`),

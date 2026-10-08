@@ -114,6 +114,11 @@ namespace rrs
         // edit is committed on mouse-up as a single undoable Session call.
         enum class ClipDragMode { none, move, trimStart, trimEnd, fadeIn, fadeOut };
 
+        /** Snap pull distance, in pixels, converted to seconds at the current
+            zoom so the feel is constant on screen. Snap is bypassed by holding
+            Alt during a drag (see mouseDrag). */
+        static constexpr int snapThresholdPx = 6;
+
         void selectClip (int trackIndex, int clipIndex);
         Session::ClipInfo clipInfoFor (int trackIndex, int clipIndex) const;
         juce::Rectangle<int> clipRectFor (int trackIndex, const Session::ClipInfo&) const;
@@ -130,6 +135,13 @@ namespace rrs
         Session::ClipInfo selectedClipInfo() const;
         void commitClipDrag();
         void refreshEditButtons();
+
+        /** Edge times a dragged clip can snap to: every other clip's start/end
+            (across all tracks), the playhead and the whole-second grid.
+            Excludes the clip being dragged so it cannot snap to itself. */
+        std::vector<double> snapEdgesFor (int excludeTrack, int excludeClip) const;
+        /** Snap pull distance in seconds for the current arrangement width. */
+        double snapThresholdSeconds() const;
 
         void splitSelectedAtPlayhead();
         void deleteSelectedClip();
@@ -258,6 +270,11 @@ namespace rrs
         double dragPreviewStart = 0.0, dragPreviewEnd = 0.0;
         double dragPreviewFadeIn = 0.0, dragPreviewFadeOut = 0.0;
         bool clipDragActive = false;
+
+        /** Live snap state for the current drag: where the dragged edge will
+            land (seconds) and whether the indicator should be drawn. */
+        bool snapActive = false;
+        double snapTime = 0.0;
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)
     };

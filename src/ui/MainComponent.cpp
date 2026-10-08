@@ -6,6 +6,7 @@
 #include "studio/AudioImport.h"
 #include "ui/BrandColours.h"
 #include "ui/BrandFonts.h"
+#include "ui/ClipSnap.h"
 #include "ui/DevicePanelLayout.h"
 
 #include <array>
@@ -1494,6 +1495,19 @@ namespace rrs
                 g.fillRect (juce::Rectangle<float> (x - 1.0f, (float) trackLaneArea.getY() + 2.0f,
                                                     2.0f, (float) trackLaneArea.getHeight() - 4.0f));
             }
+
+            // Snap indicator: a subtle warning-tinted line at the boundary the
+            // dragged edge is being pulled onto, distinct from the accent
+            // playhead.
+            if (clipDragActive && snapActive)
+            {
+                const auto x = (float) Timeline::xForSeconds (snapTime,
+                                                              session.getTimelineLengthSeconds(),
+                                                              trackLaneArea);
+                g.setColour (brand::warning.withAlpha (0.9f));
+                g.fillRect (juce::Rectangle<float> (x - 1.0f, (float) trackLaneArea.getY() + 2.0f,
+                                                    2.0f, (float) trackLaneArea.getHeight() - 4.0f));
+            }
         }
     }
 
@@ -1763,6 +1777,7 @@ namespace rrs
             return;
 
         clipDragActive = false;
+        snapActive = false;
         const auto mode = clipDragMode;
         clipDragMode = ClipDragMode::none;
 
@@ -1816,6 +1831,46 @@ namespace rrs
         repaint();
     }
 
+    std::vector<double> MainComponent::snapEdgesFor (int excludeTrack, int excludeClip) const
+    {
+        std::vector<double> edges;
+
+        if (session.getEdit() == nullptr)
+            return edges;
+
+        // Every other clip's boundaries, across all tracks: takes on different
+        // lanes usually want to line up too.
+        for (int track = 0; track < session.getNumAudioTracks(); ++track)
+            for (const auto& clip : session.getClips (track))
+                if (! (track == excludeTrack && clip.clipIndex == excludeClip))
+                {
+                    edges.push_back (clip.startSeconds);
+                    edges.push_back (clip.endSeconds);
+                }
+
+        // Session start, the playhead and a whole-second grid are snap anchors.
+        edges.push_back (0.0);
+        edges.push_back (session.getPositionSeconds());
+
+        const auto length = session.getTimelineLengthSeconds();
+
+        for (double t = 1.0; t < length; t += 1.0)
+            edges.push_back (t);
+
+        return edges;
+    }
+
+    double MainComponent::snapThresholdSeconds() const
+    {
+        const auto length = session.getTimelineLengthSeconds();
+
+        if (length <= 0.0)
+            return 0.0;
+
+        const auto span = juce::jmax (1, trackLaneArea.getWidth() - 2 * Timeline::hInset);
+        return length * (double) snapThresholdPx / (double) span;
+    }
+
     void MainComponent::mouseDown (const juce::MouseEvent& e)
     {
         if (exportInProgress)
@@ -1852,6 +1907,7 @@ namespace rrs
                 dragPreviewFadeIn = info.fadeInSeconds;
                 dragPreviewFadeOut = info.fadeOutSeconds;
                 clipDragActive = true;
+                snapActive = false;
                 clipDragMode = zoneForPoint (index, info, e.getPosition());
 
                 return;
@@ -1889,23 +1945,97 @@ namespace rrs
         const auto delta = mouseSeconds - dragMouseDownSeconds;
         constexpr double minLen = 0.01;
 
+        // Snap is on by default; holding Alt bypasses it for one drag so clips can
+        // be placed free of the grid (documented in docs/USAGE*.md).
+        const bool snapping = ! e.mods.isAltDown();
+        const auto threshold = snapping ? snapThresholdSeconds() : 0.0;
+        const auto edges = snapping ? snapEdgesFor (dragTrackIndex, dragClipIndex)
+                                    : std::vector<double> {};
+
+        snapActive = false;
+
         switch (clipDragMode)
         {
             case ClipDragMode::move:
+            {
+                const auto clipLength = dragOriginalEnd - dragOriginalStart;
                 dragPreviewStart = juce::jmax (0.0, dragOriginalStart + delta);
-                dragPreviewEnd = dragPreviewStart + (dragOriginalEnd - dragOriginalStart);
+                dragPreviewEnd = dragPreviewStart + clipLength;
+
+                if (snapping)
+                {
+                    const auto startSnap = clipsnap::snapTimeToEdges (dragPreviewStart, edges, threshold);
+
+                    // The trailing edge is a snap candidate too; an end-snap that
+                    // would push the start before 0 is rejected.
+                    const auto endSnap = clipsnap::snapTimeToEdges (dragPreviewEnd, edges, threshold);
+                    const bool endUsable = endSnap.snapped && endSnap.time - clipLength >= 0.0;
+
+                    const auto startCorrection = startSnap.snapped
+                                                     ? std::abs (startSnap.time - dragPreviewStart)
+                                                     : threshold + 1.0;
+                    const auto endCorrection = endUsable
+                                                   ? std::abs (endSnap.time - dragPreviewEnd)
+                                                   : threshold + 1.0;
+
+                    // Start wins ties so the result is deterministic.
+                    if (startSnap.snapped && startCorrection <= endCorrection)
+                    {
+                        dragPreviewStart = startSnap.time;
+                        dragPreviewEnd = dragPreviewStart + clipLength;
+                        snapActive = true;
+                        snapTime = startSnap.time;
+                    }
+                    else if (endUsable)
+                    {
+                        dragPreviewEnd = endSnap.time;
+                        dragPreviewStart = dragPreviewEnd - clipLength;
+                        snapActive = true;
+                        snapTime = endSnap.time;
+                    }
+                }
                 break;
+            }
 
             case ClipDragMode::trimStart:
+            {
                 dragPreviewStart = juce::jlimit (0.0, dragOriginalEnd - minLen,
                                                  dragOriginalStart + delta);
                 dragPreviewEnd = dragOriginalEnd;
+
+                if (snapping)
+                {
+                    const auto snap = clipsnap::snapTimeToEdges (dragPreviewStart, edges, threshold);
+
+                    // Never let a snap collapse the clip past the minimum length.
+                    if (snap.snapped && snap.time <= dragOriginalEnd - minLen)
+                    {
+                        dragPreviewStart = snap.time;
+                        snapActive = true;
+                        snapTime = snap.time;
+                    }
+                }
                 break;
+            }
 
             case ClipDragMode::trimEnd:
+            {
                 dragPreviewEnd = juce::jmax (dragOriginalStart + minLen, dragOriginalEnd + delta);
                 dragPreviewStart = dragOriginalStart;
+
+                if (snapping)
+                {
+                    const auto snap = clipsnap::snapTimeToEdges (dragPreviewEnd, edges, threshold);
+
+                    if (snap.snapped && snap.time >= dragOriginalStart + minLen)
+                    {
+                        dragPreviewEnd = snap.time;
+                        snapActive = true;
+                        snapTime = snap.time;
+                    }
+                }
                 break;
+            }
 
             case ClipDragMode::fadeIn:
                 dragPreviewFadeIn = juce::jlimit (0.0, dragPreviewEnd - dragPreviewStart,
