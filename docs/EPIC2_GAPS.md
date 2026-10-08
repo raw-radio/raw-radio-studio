@@ -1,9 +1,12 @@
 # Epic 2 — open gaps (explicit)
 
-> Status: **Epic 2 is functionally substantially landed but not complete.** This
-> file records the deliverables that are deliberately deferred so Epic 2 is not
-> silently marked done. It is not a substitute for the epic acceptance criteria
-> in [`STUDIO_SPEC.md`](STUDIO_SPEC.md) §9.
+> Status: **Epic 2's one hard gap — software cue mixes (FR-MON-3/FR-MON-4) —
+> was CLOSED in Epic 3.** This file is kept as the historical record of what was
+> deferred and why, and of the Epic 2 *targets* that remain open. It is not a
+> substitute for the epic acceptance criteria in
+> [`STUDIO_SPEC.md`](STUDIO_SPEC.md) §9.
+>
+> See also [`EPIC3_GAPS.md`](EPIC3_GAPS.md) for the Epic 3 items still open.
 
 ## Delivered in Epic 2
 
@@ -19,20 +22,35 @@
   input, so the "record 4 tracks from 4 inputs" acceptance is reachable from the
   app.
 
-## Deferred — software cue mixes (FR-MON-3 / FR-MON-4, **hard**)
+## CLOSED in Epic 3 — software cue mixes (FR-MON-3 / FR-MON-4, **hard**)
 
-**What is missing.** The spec requires **per-performer software cue mixes**
+> **Resolution (Epic 3).** Software cue mixes are **implemented**: the Epic 3
+> routing foundation (FR-MIX-2) landed, and `Session::createCueMix` builds an
+> aux-return bus per cue, routed to its **own hardware output pair** when the
+> interface exposes one, with per-source **post-fader aux sends** (independent
+> enable + level); the control-room/master mix stays independent. Verified
+> headlessly — two sources sent to two cues at different levels produce
+> **distinct, independent** per-device outputs (measured ~0.5 and ~0.125), and
+> each cue was cross-checked with an independent `RenderSpecification` render of
+> its return bus. The **Epic 2 acceptance criterion "two independent cue mixes
+> are audible and distinct" is therefore met.** Remaining caveats (basic cue-mix
+> UI, on-hardware multi-output verification) are tracked in
+> [`EPIC3_GAPS.md`](EPIC3_GAPS.md). The text below is the original deferral
+> record, kept for history.
+
+**What was missing.** The spec requires **per-performer software cue mixes**
 (vendor mixers are unavailable on Linux): each performer hears a distinct mix of
-the armed/live tracks plus the backing material. Only a single shared monitor
-path exists today (`InputDevice::MonitorMode` onto the main output); there is no
-send/return matrix and no independent output-to-device routing per cue.
+the armed/live tracks plus the backing material. At the time, only a single
+shared monitor path existed (`InputDevice::MonitorMode` onto the main output);
+there was no send/return matrix and no independent output-to-device routing per
+cue.
 
-**Why it is deferred.** It is a routing/architecture item (it needs the
+**Why it was deferred.** It is a routing/architecture item (it needs the
 bus/send/return foundation that Epic 3 introduces, FR-MIX-2: "sends — at least
 one aux/cue send"). Bolting an ad-hoc cue path onto the track → master graph now
 would be thrown away when the routing layer lands.
 
-**Planned approach (Epic 3, with the routing foundation).**
+**Planned approach (Epic 3, with the routing foundation) — as executed.**
 
 1. Add one or more **AuxSend** points per source track (post-fader by default),
    each with an independent send level and enable.

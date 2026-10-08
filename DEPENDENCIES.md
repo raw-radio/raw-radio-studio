@@ -93,13 +93,14 @@ re-verify, update both pins deliberately, and re-run CI. Never auto-bump.
 ## Plugin hosting (Epic 3 — host only)
 
 Plugin hosting uses JUCE's facilities (surfaced by Tracktion Engine); **no new
-third-party SDK is vendored or downloaded**. The hosted formats are selected by
-compile-time JUCE flags, set in `CMakeLists.txt`:
+third-party SDK is vendored or downloaded** — the format SDKs are compiled from
+JUCE's pinned tree. The hosted formats are selected by compile-time JUCE flags,
+set in `CMakeLists.txt`:
 
 | Flag | Value | Notes |
 |------|-------|-------|
-| `JUCE_PLUGINHOST_VST3` | `1` | Default format (D11). VST3 bindings ship inside JUCE's pinned tree. |
-| `JUCE_PLUGINHOST_LV2` | `RAW_RADIO_STUDIO_ENABLE_LV2` (default `0`) | Opt-in via `-DRAW_RADIO_STUDIO_ENABLE_LV2=ON`. |
+| `JUCE_PLUGINHOST_VST3` | `1` | Default format (D11). VST3 bindings ship inside JUCE's pinned tree; the **VST3 SDK is MIT** (Steinberg) — see [`LICENSES/VST3-SDK.txt`](LICENSES/VST3-SDK.txt). |
+| `JUCE_PLUGINHOST_LV2` | `RAW_RADIO_STUDIO_ENABLE_LV2` (default `0`) | Opt-in via `-DRAW_RADIO_STUDIO_ENABLE_LV2=ON`. The **LV2 SDK** (lv2, lilv, serd, sord, sratom) is bundled inside JUCE's tree and is permissive **ISC**-style — see [`LICENSES/LV2-SDK.txt`](LICENSES/LV2-SDK.txt). |
 | `JUCE_PLUGINHOST_AU` | `1` on Apple only | macOS Audio Units; empty elsewhere (graceful absence). |
 | `JUCE_PLUGINHOST_VST` | **never set** | VST2 is not shipped (D24). |
 

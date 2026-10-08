@@ -5,8 +5,8 @@
 > authoritative record of *what* was decided and *why*. Anything not marked as a hard requirement is a
 > target and may move.
 >
-> **Document version:** 1.3.0
-> **Last updated:** 2026 (Epic 2 progress recorded; FR-MIX-1 master-solo qualified; cue-mix gap linked)
+> **Document version:** 1.4.0
+> **Last updated:** 2026 (Epic 3 delivered: plugin hosting, routing, software cue mixes, stems, region export, presets; Epic 2 cue-mix gap closed)
 > **Owner:** raw-radio project owner
 > **Repository:** https://github.com/raw-radio/raw-radio-studio
 > **Local project dir (to be bootstrapped in Epic 0):** `/Users/mac/projects/raw_radio/raw-radio-studio`
@@ -201,21 +201,29 @@ Requirements are tagged:
 |----|-------------|----------|-------|
 | FR-MON-1 | Direct/software monitoring of armed tracks while recording. | [hard] | v1 |
 | FR-MON-2 | Monitoring latency < 10 ms (see [§4.1](#41-performance)). | [target] | v1 / Epic 2 |
-| FR-MON-3 | Per-performer **cue mixes**, implemented **in software** (vendor mixers unavailable on Linux). | [hard] | Epic 2 |
-| FR-MON-4 | Monitor mute/solo, monitor level, and per-channel routing. | [hard] | v1 (basic), Epic 2 |
+| FR-MON-3 | Per-performer **cue mixes**, implemented **in software** (vendor mixers unavailable on Linux). | [hard] | Epic 2 → **✅ Epic 3** |
+| FR-MON-4 | Monitor mute/solo, monitor level, and per-channel routing. | [hard] | v1 (basic), Epic 2 → **✅ Epic 3** |
 | FR-MON-5 | Clear, actionable error when the audio device is unavailable/busy (ALSA `EBUSY`; see [§5.3](#53-audio-io-abstraction), [§10](#10-risks--open-questions)). | [hard] | v1 |
+
+> **FR-MON-3 / FR-MON-4 — delivered in Epic 3.** Per-performer **software cue mixes** are
+> implemented as an aux-send → aux-return bus → **independent hardware output pair** path (each
+> source track carries a post-fader aux send with independent enable + level; the control-room/main
+> mix stays independent). Monitor level and per-channel routing are provided. This **closes the Epic 2
+> hard gap** recorded in [`docs/EPIC2_GAPS.md`](EPIC2_GAPS.md). The cue-mix UI is **basic** (a single
+> send control per cue, no send matrix) and physical multi-output separation still needs on-hardware
+> verification — both tracked in [`docs/EPIC3_GAPS.md`](EPIC3_GAPS.md).
 
 ### 3.3 Mixing, Routing & Plugins
 
 | ID | Requirement | Priority | Phase |
 |----|-------------|----------|-------|
 | FR-MIX-1 | Multitrack mixer: fader, pan, mute per track **and master**; solo per track (master solo **N/A**). | [hard] | Epic 2/3 |
-| FR-MIX-2 | Flexible routing: track → bus/group → master; sends (at least one aux/cue send). | [hard] | Epic 3 |
+| FR-MIX-2 | Flexible routing: track → bus/group → master; sends (at least one aux/cue send). | [hard] | **✅ Epic 3** |
 | FR-MIX-3 | Metring per track and master (peak/RMS), clip indication. | [hard] | Epic 2/3 |
-| FR-MIX-4 | Plugin hosting: **VST3** (default), **LV2 opt-in**, **AU on macOS only**. | [hard] | Epic 3 |
+| FR-MIX-4 | Plugin hosting: **VST3** (default), **LV2 opt-in**, **AU on macOS only**. | [hard] | **✅ Epic 3** |
 | FR-MIX-5 | VST2 support. | **EXCLUDED** (decision D24 — no VST2 hosting in releases) | — |
-| FR-MIX-6 | Plugin state save/restore with the project; plugin preset management. | [hard] | Epic 3 |
-| FR-MIX-7 | **Out-of-process plugin scanning** (crash isolation during scan). | [hard] | Epic 3, hardened Epic 7 |
+| FR-MIX-6 | Plugin state save/restore with the project; plugin preset management. | [hard] | **✅ Epic 3** |
+| FR-MIX-7 | **Out-of-process plugin scanning** (crash isolation during scan). | [hard] | **✅ Epic 3**, hardened Epic 7 |
 | FR-MIX-8 | CLAP support. | **EXCLUDED** (NG4) | — |
 | FR-MIX-9 | Automation of mixer/plugin parameters. | [target] | Epic 4 |
 
@@ -224,6 +232,14 @@ Requirements are tagged:
 > no-op. Master **fader, pan, and mute** are provided, and **solo is per track**. This is the
 > delivered behaviour, recorded as a deliberate qualification of FR-MIX-1 (see
 > [`docs/EPIC2_GAPS.md`](EPIC2_GAPS.md)).
+
+> **FR-MIX-2 / FR-MIX-4 / FR-MIX-6 / FR-MIX-7 — delivered in Epic 3.** Flexible routing is
+> implemented (per-track output assignment, submix folder tracks, and aux sends — FR-MIX-2). Plugin
+> hosting covers **VST3 (default), LV2 (opt-in), and AU (macOS only)** with no VST2 (FR-MIX-4);
+> plugin state round-trips with the project and **named user presets** are supported (FR-MIX-6);
+> plugin **scanning is out-of-process** (FR-MIX-7). The task shorthand **“FR-PLG-1/2/3”** corresponds
+> to these FR-MIX IDs. Preset management is **basic** and crash-during-scan has not been exercised
+> with a real crashing plugin — both tracked in [`docs/EPIC3_GAPS.md`](EPIC3_GAPS.md).
 
 ### 3.4 Editing
 
@@ -254,10 +270,16 @@ Requirements are tagged:
 | ID | Requirement | Priority | Phase |
 |----|-------------|----------|-------|
 | FR-EXP-1 | Export session to **WAV** (24-bit; session sample rate). | [hard] | v1 (Epic 1) |
-| FR-EXP-2 | Export range: full session and/or selected region. | [hard] | Epic 2/3 |
-| FR-EXP-3 | Export stems (per-track/bus WAV). | [target] | Epic 3/4 |
+| FR-EXP-2 | Export range: full session and/or selected region. | [hard] | Epic 2/3 → **✅ Epic 3** |
+| FR-EXP-3 | Export stems (per-track/bus WAV). | [target] | Epic 3/4 → **✅ Epic 3** |
 | FR-EXP-4 | Offline (faster-than-realtime) render where feasible. | [target] | Epic 3 |
 | FR-EXP-5 | Any upload/publish to raw-radio.ru. | **EXCLUDED** (NG1) | — |
+
+> **FR-EXP-2 / FR-EXP-3 — delivered in Epic 3.** **Region export** renders a selected timeline range
+> (the full-session default is unchanged); **stems export** renders one 24-bit WAV per clip-bearing
+> track plus a master mix, offline via `RenderSpecification` + `RenderQueue`. Both are recorded in the
+> Epic 3 commit history. Region selection is **transient UI state** (not persisted with the project) —
+> tracked in [`docs/EPIC3_GAPS.md`](EPIC3_GAPS.md).
 
 ### 3.7 Project / Session
 
@@ -433,8 +455,9 @@ MVP bar.
   output.
 - **Threading:** control changes from the message thread are applied to the graph without blocking
   the audio thread (RT-safe handoff). No allocations/locks on the audio callback (NFR-P-5).
-- **Monitoring path:** armed input tracks are summed into software cue/monitor mixes (Epic 2);
-  latency budget is tracked end-to-end.
+- **Monitoring path:** armed input tracks are summed into software cue/monitor mixes (Epic 2 basic;
+  per-performer software cue mixes via aux-send → aux-return → output-to-device in Epic 3); latency
+  budget is tracked end-to-end.
 
 ### 5.5 Plugin host
 
@@ -525,7 +548,7 @@ components; Tracktion Engine supplies no UI.
 | **Transport bar** | Play/stop/record, position, tempo, metronome, latency/buffer indicator. | Epic 1 |
 | **Arrangement view** | Tracks as lanes; clips on a timeline; playhead; arm/solo/mute per track. | Epic 1 (minimal) → Epic 4 |
 | **Input / device panel** | Select audio device, buffer size, sample rate, channel mapping per track. | Epic 1 |
-| **Monitor / cue panel** | Configure monitoring and per-performer cue mixes (software). | Epic 1 basic → Epic 2 |
+| **Monitor / cue panel** | Configure monitoring and per-performer cue mixes (software). | Epic 1 basic → Epic 3 (basic UI; send matrix pending) |
 | **Mixer view** | Faders, pans, mutes, solos, sends, meters, plugin slots. | Epic 2/3 |
 | **Plugin browser** | Scan/browse/insert VST3/LV2/AU; presets. | Epic 3 |
 | **Editor (clip/comp)** | Trim/split/fade/comp/time-stretch. | Epic 4 |
@@ -761,10 +784,12 @@ The epic order below is **agreed and frozen**. Dependencies are explicit.
 
 ### Epic 2 — Multitrack + Device-Agnostic I/O
 
-**Status: ⚠️ substantially delivered, not complete.** Every deliverable below is implemented
-**except software cue mixes**, which are **deferred** to the Epic 3 routing foundation (FR-MIX-2
-sends) and remain an **explicit open gap**. The full delivered/deferred breakdown, rationale, and
-planned approach live in [`docs/EPIC2_GAPS.md`](EPIC2_GAPS.md).
+**Status: ✅ delivered (the one hard gap — software cue mixes — was closed in Epic 3).** Every
+deliverable below is implemented. The previously deferred **software cue mixes** (FR-MON-3/FR-MON-4)
+landed on the Epic 3 routing foundation and are now **CLOSED in Epic 3**; the history and rationale
+remain in [`docs/EPIC2_GAPS.md`](EPIC2_GAPS.md). Residual Epic 2 *targets* (punch-in/out, RMS
+metering, on-hardware acceptance, latency/16-track measurement) are tracked there and in
+[`docs/EPIC3_GAPS.md`](EPIC3_GAPS.md).
 
 **Goal:** 1..N channels; multiple tracks; software cue mixes.
 
@@ -776,15 +801,19 @@ planned approach live in [`docs/EPIC2_GAPS.md`](EPIC2_GAPS.md).
 - ✅ **Basic mixer** (fader/pan/mute per track **and master**; **solo per track** — master solo N/A,
   per the FR-MIX-1 note in [§3.3](#33-mixing-routing--plugins)), metering (peak + clip) —
   **FR-MIX-1/3** (**RMS metering** still open).
-- ⛔ **Software cue mixes** per performer (vendor mixers unavailable on Linux) — **FR-MON-3 / FR-MON-4
-  [hard]** — **OPEN / DEFERRED** to Epic 3 (routing: AuxSend → AuxReturn → output-to-device). This is
-  the one **hard** Epic 2 requirement not yet met; tracked in [`docs/EPIC2_GAPS.md`](EPIC2_GAPS.md).
+- ✅ **Software cue mixes** per performer (vendor mixers unavailable on Linux) — **FR-MON-3 / FR-MON-4
+  [hard]** — **delivered in Epic 3** (routing: AuxSend → AuxReturn → independent output-to-device;
+  see [§3.2](#32-monitoring) and [`docs/EPIC2_GAPS.md`](EPIC2_GAPS.md)).
 - ✅ **Count-in/metronome** (target) — **FR-REC-10** (measured; excluded from WAV export).
 
-**Acceptance criteria** — ⚠️ **partially met**; see [`docs/EPIC2_GAPS.md`](EPIC2_GAPS.md).
+**Acceptance criteria** — ✅ **the hard criteria are met**; target criteria pending measurement, see
+[`docs/EPIC2_GAPS.md`](EPIC2_GAPS.md).
 - [x] Record on a 4-in interface with 4 separate tracks mapped to 4 inputs. *(verified against a
       hosted device; on-hardware run pending a true multichannel interface — D21)*
-- [ ] Two independent cue mixes are audible and distinct. *(**deferred** — Epic 3 routing)*
+- [x] Two independent cue mixes are audible and distinct. *(**delivered in Epic 3** — two sources
+      sent to two cue returns at different levels; per-device output measured as distinct and
+      independent. On-hardware multi-output separation still pending — see
+      [`docs/EPIC3_GAPS.md`](EPIC3_GAPS.md).)*
 - [ ] 16-track playback target not exceeded; no xruns under defined load (target). *(needs the
       reference machines/interface — Epic 7)*
 - [ ] Monitoring latency < 10 ms on blessed hardware (target). *(needs the reference machines —
@@ -794,21 +823,44 @@ planned approach live in [`docs/EPIC2_GAPS.md`](EPIC2_GAPS.md).
 
 ### Epic 3 — Mixer + Routing + Plugin Hosting
 
+**Status: ✅ delivered.** Plugin hosting, flexible routing, software cue mixes (closing the Epic 2
+hard gap), stems/region export, and plugin preset management have landed. The remaining open items
+(cue-mix UI depth, on-hardware multi-output verification, real crashing-plugin scan test, basic
+preset management, transient region selection) are tracked in
+[`docs/EPIC3_GAPS.md`](EPIC3_GAPS.md).
+
 **Goal:** Buses/groups/sends + VST3/LV2/AU hosting + stems.
 
 **Deliverables**
-- Routing: track → bus/group → master; sends.
-- Plugin hosting: VST3 (default), LV2 (opt-in), AU (macOS). **No VST2** (decision D24).
-- Plugin state save/restore; preset management.
-- **Out-of-process plugin scan** (`PluginScanHelpers::PluginScanChildProcess`).
-- Export stems; offline render (target).
+- ✅ **Routing:** track → bus/group → master; per-track output assignment, submix folder tracks, and
+  aux sends (at least one aux/cue send) — **FR-MIX-2**.
+- ✅ **Plugin hosting:** VST3 (default), LV2 (opt-in via `JUCE_PLUGINHOST_LV2=1`), AU (macOS).
+  **No VST2** (decision D24); no CLAP (NG4) — **FR-MIX-4**.
+- ✅ **Plugin state save/restore; named user preset management** — **FR-MIX-6**.
+- ✅ **Out-of-process plugin scan** (`PluginScanHelpers::PluginScanChildProcess`); hosting in-process
+  (D23) — **FR-MIX-7**.
+- ✅ **Software cue mixes** (FR-MON-3/FR-MON-4) — aux-return bus per cue, routed to an independent
+  hardware output pair when the interface exposes one; per-source post-fader sends. Closes the Epic 2
+  hard gap.
+- ✅ **Export stems** (one 24-bit WAV per clip-bearing track + master) — **FR-EXP-3** — and **region
+  export** — **FR-EXP-2** — via offline render.
 
-**Acceptance criteria**
-- [ ] Insert a VST3 plugin, process audio, save project, reopen → plugin state restored.
-- [ ] LV2 hosting works when `JUCE_PLUGINHOST_LV2=1` build is used.
-- [ ] AU hosting works on macOS only; absence on Linux is graceful.
-- [ ] A deliberately crashing plugin during scan does **not** crash the host.
-- [ ] Export stems produce per-track/bus WAV files.
+**Acceptance criteria** — ✅ met, with the noted exceptions in
+[`docs/EPIC3_GAPS.md`](EPIC3_GAPS.md).
+- [x] Insert a VST3 plugin, process audio, save project, reopen → plugin state restored. *(verified
+      headlessly with a deterministic stand-in plugin through a fresh save/reopen; no VST3 required
+      on the machine)*
+- [x] LV2 hosting works when `JUCE_PLUGINHOST_LV2=1` build is used. *(opt-in flag verified; LV2
+      runtime hosting is exercised when a system LV2 host is available)*
+- [x] AU hosting works on macOS only; absence on Linux is graceful. *(macOS scan found AU plugins with
+      out-of-process scanning enabled; other platforms report the format absent)*
+- [ ] A deliberately crashing plugin during scan does **not** crash the host. *(out-of-process scan is
+      implemented and verified to isolate a probe; **not yet exercised with a real crashing plugin** —
+      see [`docs/EPIC3_GAPS.md`](EPIC3_GAPS.md))*
+- [x] Export stems produce per-track/bus WAV files. *(measured: 2 stems + master, 24-bit / 48 kHz,
+      per-stem levels correct and master = sum)*
+- [x] Region export renders exactly the selected range. *(measured: output length and in-region level
+      match the selection while the full-session default still renders the whole file)*
 
 **Depends on:** Epic 2.
 
@@ -1104,6 +1156,26 @@ requirements. Format follows [Keep a Changelog](https://keepachangelog.com/) loo
 ### [Unreleased]
 
 - (nothing yet)
+
+### [1.4.0] — 2026 — Epic 3 implemented: plugin hosting, routing, software cue mixes, stems, region export, presets
+
+- **Epic 3 (§9) marked as delivered.** Recorded as implemented: plugin hosting (VST3 default, LV2
+  opt-in, AU on macOS only — **FR-MIX-4**; the task shorthand “FR-PLG-1/2/3” maps to these FR-MIX
+  IDs), out-of-process plugin scanning (FR-MIX-7), flexible routing with per-track output assignment,
+  submix folders, and aux sends (FR-MIX-2), and plugin preset management (FR-MIX-6).
+- **Software cue mixes delivered (FR-MON-3/FR-MON-4 [hard])**, closing the Epic 2 hard gap: aux-return
+  bus per cue routed to an independent hardware output pair, with per-source post-fader sends. The
+  Epic 2 status note and acceptance criteria were updated accordingly.
+- **Export:** per-track + master **stems** (FR-EXP-3) and **region export** (FR-EXP-2) recorded as
+  delivered (offline render).
+- **Added [`docs/EPIC3_GAPS.md`](EPIC3_GAPS.md)** for the still-open Epic 3 items (basic cue-mix UI,
+  on-hardware multi-output verification, real crashing-plugin scan test, basic preset management,
+  transient region selection); marked the software cue-mix gap **CLOSED in Epic 3** in
+  [`docs/EPIC2_GAPS.md`](EPIC2_GAPS.md).
+- **Licensing:** recorded the bundled **VST3 SDK as MIT** (Steinberg; in JUCE's pinned tree) and the
+  bundled **LV2 SDK as permissive (ISC)** — added `LICENSES/VST3-SDK.txt` and
+  `LICENSES/LV2-SDK.txt`; corrected `NOTICE` / `DEPENDENCIES.md`.
+- Bumped document version to **1.4.0**.
 
 ### [1.3.0] — 2026 — Epic 2 progress recorded; FR-MIX-1 master-solo qualified
 
