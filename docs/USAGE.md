@@ -177,12 +177,46 @@ For a whole-session export, press **Export WAV** instead (no selection needed).
 
 ---
 
+## 8. Edit clips (Epic 4)
+
+Clips are drawn on each track lane as rectangles. Click a clip to select it
+(accent outline); the edit row under the transport enables the clip actions.
+
+- **Move:** drag a selected clip's body left/right along the timeline.
+- **Trim:** drag a clip's left or right edge (within ~1/4 of the clip width).
+- **Fade in/out:** drag the small top-left / top-right corner of a clip
+  horizontally; the ramp is shaded on the clip.
+- **Split:** put the playhead inside the selected clip and press **Split** (or
+  `S`).
+- **Delete / Duplicate / Loop:** **Delete** (`Delete`), **Duplicate** (`D`),
+  **Loop** (`L`, toggles ×2 for sources with loop metadata, otherwise repeats
+  the clip on the timeline).
+- **Crossfade:** press **Crossfade** (`F`) — the clip is extended over the next
+  clip on its track and complementary equal-power (convex) fades are applied
+  across the overlap.
+- **Time-stretch:** Shift-drag a region on the ruler, select a clip, then press
+  **Stretch**: the clip is time-stretched (with the free Signalsmith Stretch
+  library) to the region's length and replaced by a clip referencing the new
+  24-bit WAV under `Processed/` (the original file is kept).
+- **Comping:** takes are stacked as overlapping clips on one track; assembling
+  a master take from them is exposed through `Session::compTakes` (an API/headless
+  feature for now — see `docs/EPIC4_GAPS.md`; the interactive take-lane UI is a
+  follow-up).
+- **Undo/redo:** **Undo** / **Redo** buttons, or `Cmd/Ctrl+Z` and
+  `Cmd/Ctrl+Shift+Z`. Every edit (including a whole drag) is one undo step.
+
+A drag only previews while you move; the edit is committed when you release the
+mouse, so a single drag is a single undo step.
+
+---
+
 ## Where things live
 
 | Thing | Location |
 | --- | --- |
 | Sessions (`.tracktionedit`) | `<app data>/raw-radio-studio/Projects/` |
 | Recorded takes | `Recordings/` next to the session file |
+| Time-stretched clips | `Processed/` next to the session file |
 | Autosave temp version | `.tmp_<session name>` next to the session file |
 | Plugin presets | `<app data>/raw-radio-studio/Presets/<plugin-key>/<name>.rrspreset` |
 

@@ -32,6 +32,9 @@ licensing/corresponding-source section).
   on-hardware multi-output verification, real crashing-plugin scan test, basic
   preset management, transient region selection), so the epic is not silently
   marked complete.
+- [`EPIC4_GAPS.md`](EPIC4_GAPS.md) — Epic 4 items still open (snap/grid/markers/
+  tempo, automation, engine-CompManager comping, limited time-stretch UI, fade
+  curve choice), and the OQ-2 time-stretch licence resolution.
 
 Build runbook, compatibility notes, and CI/release notes will be expanded as
 later epics land.

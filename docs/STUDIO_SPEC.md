@@ -5,7 +5,7 @@
 > authoritative record of *what* was decided and *why*. Anything not marked as a hard requirement is a
 > target and may move.
 >
-> **Document version:** 1.4.0
+> **Document version:** 1.5.0
 > **Last updated:** 2026 (Epic 3 delivered: plugin hosting, routing, software cue mixes, stems, region export, presets; Epic 2 cue-mix gap closed)
 > **Owner:** raw-radio project owner
 > **Repository:** https://github.com/raw-radio/raw-radio-studio
@@ -871,18 +871,31 @@ preset management, transient region selection) are tracked in
 **Goal:** Clips, comping, fades, time-stretch/pitch.
 
 **Deliverables**
-- Arrangement editing: move/trim/split/duplicate/loop/delete clips.
-- Fades and crossfades.
-- Comping from multiple takes.
-- Time-stretch/pitch via **free libraries only** (Signalsmith Stretch / SoundTouch) — final choice
-  after license verification.
-- Undo/redo; snap/grid/markers/tempo (target); automation (target).
+- [x] Arrangement editing: move/trim/split/duplicate/loop/delete clips. *(interactive
+      arrangement: clips on track lanes; drag to move, drag edges to trim, top-corner fade
+      handles; split-at-playhead, duplicate, loop, delete, mute.)*
+- [x] Fades and crossfades. *(per-clip fade-in/out + equal-power crossfade between adjacent
+      clips; measured: junction step drops from 0.496 to 0.029 — the source's own slope.)*
+- [x] Comping from multiple takes. *(non-destructive master take on a new track from stacked
+      takes; measured 220|330|440 Hz per region. Engine `CompManager` take lanes are a
+      documented follow-up — see [`EPIC4_GAPS.md`](EPIC4_GAPS.md).)*
+- [x] Time-stretch/pitch via **free libraries only** — **Signalsmith Stretch (MIT)** selected
+      (OQ-2 resolved), pinned as a git submodule at tag `1.1.0`. *(stretch-to-target-duration
+      plus independent pitch shift; measured exact target lengths.)*
+- [x] Undo/redo across edit operations. *(every edit is one `UndoManager` transaction.)*
+- [~] Snap/grid/markers/tempo (target); automation (target). **Deferred** — see
+      [`EPIC4_GAPS.md`](EPIC4_GAPS.md).
 
 **Acceptance criteria**
-- [ ] Comp a master take from 3+ takes non-destructively.
-- [ ] Apply a crossfade between adjacent clips without artifacts.
-- [ ] Time-stretch a clip to a target duration using the chosen free library.
-- [ ] Undo/redo restores edit state consistently.
+- [x] Comp a master take from 3+ takes non-destructively. *(measured: 3 takes unchanged on
+      disk, comp renders 220|330|440 Hz by region.)*
+- [x] Apply a crossfade between adjacent clips without artifacts. *(measured: no junction
+      discontinuity in the offline render.)*
+- [x] Time-stretch a clip to a target duration using the chosen free library. *(measured: a
+      1.000 s clip renders to exactly 0.500 s; DSP unit test hits the target length and
+      preserves pitch.)*
+- [x] Undo/redo restores edit state consistently. *(measured: trim/split/duplicate/delete and
+      clip time-stretch all restore their previous state.)*
 
 **Depends on:** Epic 3 (mixer/plugin context helpful; core edit can proceed in parallel).
 
@@ -1163,6 +1176,25 @@ requirements. Format follows [Keep a Changelog](https://keepachangelog.com/) loo
 ### [Unreleased]
 
 - (nothing yet)
+
+### [1.5.0] — 2026 — Epic 4 implemented: arrangement editing, fades, comping, undo/redo, time-stretch
+
+- **Epic 4 (§9) marked as delivered** (snap/grid/markers/tempo and automation deferred as
+  `[target]`; see [`docs/EPIC4_GAPS.md`](EPIC4_GAPS.md)):
+  - arrangement editing — move / trim / split / duplicate / loop / delete / mute clips on the
+    timeline, with an interactive arrangement view (clip rectangles, drag to move, edge drags to
+    trim, top-corner fade handles) — FR-ED-1/FR-ED-2;
+  - fades and equal-power crossfades between adjacent clips — FR-ED-3;
+  - non-destructive comping from multiple stacked takes onto a new track — FR-ED-4;
+  - undo/redo across edit operations (one `UndoManager` transaction per edit) — FR-ED-6;
+  - time-stretch / pitch-shift — FR-ED-5.
+- **Resolved OQ-2** (time-stretch library): **Signalsmith Stretch (MIT)** selected over SoundTouch
+  (LGPL-2.1), pinned as a git submodule at tag **1.1.0** (self-contained; later revisions use
+  FetchContent for `signalsmith-linear`, avoided here). Updated §7.7, §10.8, §10.9.2, and the
+  dependency inventory in `NOTICE` / `DEPENDENCIES.md` / `LICENSES/`.
+- Added [`docs/EPIC4_GAPS.md`](EPIC4_GAPS.md) for the still-open Epic 4 items (snap/grid/markers/
+  tempo, automation, engine-`CompManager` take lanes, limited time-stretch UI, fade-curve choice).
+- Bumped document version to **1.5.0**.
 
 ### [1.4.0] — 2026 — Epic 3 implemented: plugin hosting, routing, software cue mixes, stems, region export, presets
 
