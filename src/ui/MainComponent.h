@@ -15,6 +15,7 @@
 #include <memory>
 
 #include "studio/AudioEngine.h"
+#include "studio/LastDirectoryStore.h"
 #include "studio/PluginHost.h"
 #include "studio/Session.h"
 #include "studio/StemsExport.h"
@@ -149,6 +150,28 @@ namespace rrs
         std::vector<juce::Rectangle<int>> actionDividers;
 
         std::unique_ptr<juce::PropertiesFile> settings;
+
+        /** Adapter exposing the app settings file to the last-directory store. */
+        struct SettingsStorage final : LastDirectoryStore::Storage
+        {
+            explicit SettingsStorage (juce::PropertiesFile& fileToUse) : file (fileToUse) {}
+
+            juce::String getValue (const juce::String& key) const override { return file.getValue (key); }
+            void setValue (const juce::String& key, const juce::String& value) override
+            {
+                file.setValue (key, value);
+            }
+            void save() override { file.saveIfNeeded(); }
+
+            juce::PropertiesFile& file;
+        };
+
+        /** Remembers the last directory the user chose for each file-dialog
+            operation kind (see studio/LastDirectoryStore.h). Created alongside
+            `settings` in loadSettings(). */
+        std::unique_ptr<SettingsStorage> settingsStorage;
+        std::unique_ptr<LastDirectoryStore> lastDirectories;
+
         std::shared_ptr<WavExport::Handle> exportHandle;
         bool exportInProgress = false;
         std::shared_ptr<StemsExport::Handle> stemsHandle;

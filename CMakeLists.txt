@@ -140,6 +140,7 @@ target_sources(raw_radio_studio PRIVATE
     src/main.cpp
     src/studio/AudioEngine.cpp
     src/studio/AudioImport.cpp
+    src/studio/LastDirectoryStore.cpp
     src/studio/PluginHost.cpp
     src/studio/PluginPresets.cpp
     src/studio/Session.cpp
@@ -251,6 +252,7 @@ juce_add_console_app(raw_radio_studio_tests
 
 target_sources(raw_radio_studio_tests PRIVATE
     tests/test_studio.cpp
+    src/studio/LastDirectoryStore.cpp
     src/studio/PluginPresets.cpp
     src/ui/BrandFonts.cpp
     src/ui/IconCache.cpp)

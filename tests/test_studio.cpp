@@ -16,6 +16,7 @@
 #include "studio/DeviceSelection.h"
 #include "studio/AppPaths.h"
 #include "studio/InputMapping.h"
+#include "studio/LastDirectoryStore.h"
 #include "studio/PluginPresets.h"
 #include "ui/BrandFonts.h"
 #include "ui/DevicePanelLayout.h"
@@ -814,4 +815,76 @@ TEST_CASE ("plugin presets store round-trips state and rejects unsafe names (FR-
     CHECK_FALSE (presets.listPresets (key).contains ("Warm 80s"));
 
     root.deleteRecursively();
+}
+
+//==============================================================================
+// Last-used file-dialog directory store: the path under test is the one the UI
+// depends on — the remembered directory is returned as the chooser default and
+// updated after a choice, per operation kind, with a fallback when nothing is
+// remembered (or the remembered folder no longer exists). Pure logic against an
+// in-memory storage, so no dialog is involved.
+namespace
+{
+    class FakeDirectoryStorage final : public LastDirectoryStore::Storage
+    {
+    public:
+        juce::String getValue (const juce::String& key) const override
+        {
+            return values.getValue (key, {});
+        }
+
+        void setValue (const juce::String& key, const juce::String& value) override
+        {
+            values.set (key, value);
+        }
+
+        void save() override { ++saveCount; }
+
+        juce::StringPairArray values;
+        int saveCount = 0;
+    };
+}
+
+TEST_CASE ("last-used file-dialog directory is remembered per operation (UI)")
+{
+    FakeDirectoryStorage storage;
+    LastDirectoryStore store (storage);
+
+    const auto tempRoot = juce::File::getSpecialLocation (juce::File::tempDirectory);
+    const auto projects = tempRoot.getChildFile ("rrs-lastdir-projects");
+    const auto exports  = tempRoot.getChildFile ("rrs-lastdir-exports");
+    projects.createDirectory();
+    exports.createDirectory();
+
+    // Nothing remembered yet: the caller's fallback is used.
+    CHECK (store.getDirectory (LastDirectoryStore::Kind::projects, projects) == projects);
+
+    // A file choice remembers its parent directory, under the projects key.
+    const auto projectFile = projects.getChildFile ("Song.tracktionedit");
+    store.rememberFile (LastDirectoryStore::Kind::projects, projectFile);
+    CHECK (storage.values.getValue (LastDirectoryStore::keyFor (LastDirectoryStore::Kind::projects), {})
+           == projects.getFullPathName());
+    CHECK (storage.saveCount == 1);
+
+    // Operations are independent: another kind still falls back.
+    CHECK (store.getDirectory (LastDirectoryStore::Kind::exportFile, exports) == exports);
+
+    // The remembered directory wins over the fallback on the next chooser.
+    CHECK (store.getDirectory (LastDirectoryStore::Kind::projects, exports) == projects);
+
+    // A folder chooser (stems) records the directory directly.
+    store.rememberDirectory (LastDirectoryStore::Kind::exportStems, exports);
+    CHECK (store.getDirectory (LastDirectoryStore::Kind::exportStems, projects) == exports);
+
+    // A stale remembered directory (deleted since) falls back rather than
+    // opening a chooser at a missing path.
+    projects.deleteRecursively();
+    CHECK (store.getDirectory (LastDirectoryStore::Kind::projects, exports) == exports);
+
+    // An empty file (dialog cancelled) is ignored: no write, no save.
+    const auto savesBefore = storage.saveCount;
+    store.rememberFile (LastDirectoryStore::Kind::projects, juce::File());
+    CHECK (storage.saveCount == savesBefore);
+
+    exports.deleteRecursively();
 }

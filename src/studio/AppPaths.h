@@ -15,8 +15,9 @@
 //                                    MainComponent's startup recovery).
 //       Projects/Recordings/       — recorded takes (crash-safe, incremental WAV)
 //
-// App settings (autosave interval, last session) are not handled here: they are
-// stored by a juce::PropertiesFile owned by MainComponent (see loadSettings()).
+// App settings (autosave interval, last session, last-used file-dialog
+// directories — see LastDirectoryStore.h) are not handled here: they are stored
+// by a juce::PropertiesFile owned by MainComponent (see loadSettings()).
 
 #pragma once
 

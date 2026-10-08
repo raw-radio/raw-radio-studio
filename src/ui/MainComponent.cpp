@@ -584,8 +584,12 @@ namespace rrs
 
         confirmUnsavedChanges ("New session", [this]
         {
-            auto chooser = std::make_shared<juce::FileChooser> ("New session",
-                                                                paths::projectsDirectory(), "*.tracktionedit");
+            auto startDir = lastDirectories != nullptr
+                                ? lastDirectories->getDirectory (LastDirectoryStore::Kind::projects,
+                                                                 paths::projectsDirectory())
+                                : paths::projectsDirectory();
+
+            auto chooser = std::make_shared<juce::FileChooser> ("New session", startDir, "*.tracktionedit");
 
             chooser->launchAsync (juce::FileBrowserComponent::saveMode
                                       | juce::FileBrowserComponent::canSelectFiles
@@ -599,6 +603,9 @@ namespace rrs
 
                                       if (! file.hasFileExtension ("tracktionedit"))
                                           file = file.withFileExtension ("tracktionedit");
+
+                                      if (lastDirectories != nullptr)
+                                          lastDirectories->rememberFile (LastDirectoryStore::Kind::projects, file);
 
                                       if (session.createNew (file))
                                           onSessionOpened();
@@ -615,8 +622,12 @@ namespace rrs
 
         confirmUnsavedChanges ("Open session", [this]
         {
-            auto chooser = std::make_shared<juce::FileChooser> ("Open session",
-                                                                paths::projectsDirectory(), "*.tracktionedit");
+            auto startDir = lastDirectories != nullptr
+                                ? lastDirectories->getDirectory (LastDirectoryStore::Kind::projects,
+                                                                 paths::projectsDirectory())
+                                : paths::projectsDirectory();
+
+            auto chooser = std::make_shared<juce::FileChooser> ("Open session", startDir, "*.tracktionedit");
 
             chooser->launchAsync (juce::FileBrowserComponent::openMode
                                       | juce::FileBrowserComponent::canSelectFiles,
@@ -626,6 +637,9 @@ namespace rrs
 
                                       if (file == juce::File())
                                           return;
+
+                                      if (lastDirectories != nullptr)
+                                          lastDirectories->rememberFile (LastDirectoryStore::Kind::projects, file);
 
                                       if (session.open (file))
                                           onSessionOpened();
@@ -685,8 +699,19 @@ namespace rrs
         if (exportInProgress || session.getEdit() == nullptr)
             return;
 
+        const auto currentFile = session.getEditFile();
+        const auto fallbackDir = currentFile != juce::File() ? currentFile.getParentDirectory()
+                                                             : paths::projectsDirectory();
+        auto startDir = lastDirectories != nullptr
+                            ? lastDirectories->getDirectory (LastDirectoryStore::Kind::projects, fallbackDir)
+                            : fallbackDir;
+
+        auto suggestedName = currentFile != juce::File() ? currentFile.getFileName()
+                                                         : juce::String ("Untitled Session.tracktionedit");
+
         auto chooser = std::make_shared<juce::FileChooser> ("Save session as",
-                                                            session.getEditFile(), "*.tracktionedit");
+                                                            startDir.getChildFile (suggestedName),
+                                                            "*.tracktionedit");
 
         chooser->launchAsync (juce::FileBrowserComponent::saveMode
                                   | juce::FileBrowserComponent::canSelectFiles
@@ -700,6 +725,9 @@ namespace rrs
 
                                   if (! file.hasFileExtension ("tracktionedit"))
                                       file = file.withFileExtension ("tracktionedit");
+
+                                  if (lastDirectories != nullptr)
+                                      lastDirectories->rememberFile (LastDirectoryStore::Kind::projects, file);
 
                                   if (session.saveAs (file))
                                   {
@@ -724,9 +752,13 @@ namespace rrs
             return;
         }
 
-        auto startDir = session.getEditFile() != juce::File()
-                            ? session.getEditFile().getParentDirectory()
-                            : paths::projectsDirectory();
+        auto fallbackDir = session.getEditFile() != juce::File()
+                               ? session.getEditFile().getParentDirectory()
+                               : paths::projectsDirectory();
+
+        auto startDir = lastDirectories != nullptr
+                            ? lastDirectories->getDirectory (LastDirectoryStore::Kind::importAudio, fallbackDir)
+                            : fallbackDir;
 
         auto chooser = std::make_shared<juce::FileChooser> ("Import audio file", startDir,
                                                             AudioImport::fileWildcard);
@@ -739,6 +771,9 @@ namespace rrs
 
                                   if (file == juce::File())
                                       return;
+
+                                  if (lastDirectories != nullptr)
+                                      lastDirectories->rememberFile (LastDirectoryStore::Kind::importAudio, file);
 
                                   if (session.importAudioFile (file))
                                   {
@@ -768,8 +803,15 @@ namespace rrs
             return;
         }
 
+        const auto defaultDestination = WavExport::defaultDestinationFor (session.getEditFile());
+
+        auto startDir = lastDirectories != nullptr
+                            ? lastDirectories->getDirectory (LastDirectoryStore::Kind::exportFile,
+                                                             defaultDestination.getParentDirectory())
+                            : defaultDestination.getParentDirectory();
+
         auto chooser = std::make_shared<juce::FileChooser> ("Export WAV",
-                                                            WavExport::defaultDestinationFor (session.getEditFile()),
+                                                            startDir.getChildFile (defaultDestination.getFileName()),
                                                             "*.wav");
 
         chooser->launchAsync (juce::FileBrowserComponent::saveMode
@@ -784,6 +826,9 @@ namespace rrs
 
                                   if (! file.hasFileExtension ("wav"))
                                       file = file.withFileExtension ("wav");
+
+                                  if (lastDirectories != nullptr)
+                                      lastDirectories->rememberFile (LastDirectoryStore::Kind::exportFile, file);
 
                                   beginWavExport (file, {}, "Exporting 24-bit WAV...");
                               });
@@ -823,7 +868,14 @@ namespace rrs
         destination = destination.getSiblingFile (destination.getFileNameWithoutExtension()
                                                   + " region" + destination.getFileExtension());
 
-        auto chooser = std::make_shared<juce::FileChooser> ("Export region WAV", destination, "*.wav");
+        auto startDir = lastDirectories != nullptr
+                            ? lastDirectories->getDirectory (LastDirectoryStore::Kind::exportFile,
+                                                             destination.getParentDirectory())
+                            : destination.getParentDirectory();
+
+        auto chooser = std::make_shared<juce::FileChooser> ("Export region WAV",
+                                                            startDir.getChildFile (destination.getFileName()),
+                                                            "*.wav");
 
         chooser->launchAsync (juce::FileBrowserComponent::saveMode
                                   | juce::FileBrowserComponent::canSelectFiles
@@ -837,6 +889,9 @@ namespace rrs
 
                                   if (! file.hasFileExtension ("wav"))
                                       file = file.withFileExtension ("wav");
+
+                                  if (lastDirectories != nullptr)
+                                      lastDirectories->rememberFile (LastDirectoryStore::Kind::exportFile, file);
 
                                   beginWavExport (file, { start, end },
                                                   "Exporting selected region (24-bit WAV)...");
@@ -914,9 +969,15 @@ namespace rrs
             return;
         }
 
+        const auto defaultDir = StemsExport::defaultDirectoryFor (session.getEditFile());
+
+        auto startDir = lastDirectories != nullptr
+                            ? lastDirectories->getDirectory (LastDirectoryStore::Kind::exportStems, defaultDir)
+                            : defaultDir;
+
         auto chooser = std::make_shared<juce::FileChooser> (
             "Export stems (choose a folder)",
-            StemsExport::defaultDirectoryFor (session.getEditFile()), juce::String());
+            startDir, juce::String());
 
         chooser->launchAsync (juce::FileBrowserComponent::openMode
                                   | juce::FileBrowserComponent::canSelectDirectories,
@@ -926,6 +987,10 @@ namespace rrs
 
                                   if (directory == juce::File())
                                       return;
+
+                                  if (lastDirectories != nullptr)
+                                      lastDirectories->rememberDirectory (LastDirectoryStore::Kind::exportStems,
+                                                                          directory);
 
                                   stemsInProgress = true;
 
@@ -993,7 +1058,8 @@ namespace rrs
                 << "A free, open-source (AGPLv3) tracking-first DAW.\n\n"
                 << "Combines Tracktion Engine (GPLv3-or-later) and JUCE (AGPLv3) under AGPLv3 "
                 << "via GPLv3 section 13. See the NOTICE and LICENSES/ files in the repository.\n\n"
-                << "Contributions use the Developer Certificate of Origin (DCO); no CLA.";
+                << "Contributions use the Developer Certificate of Origin (DCO); no CLA.\n\n"
+                << "Projects are stored in:\n" << paths::projectsDirectory().getFullPathName();
 
         juce::NativeMessageBox::showAsync (juce::MessageBoxOptions()
                                                .withIconType (juce::MessageBoxIconType::InfoIcon)
@@ -1006,7 +1072,9 @@ namespace rrs
     void MainComponent::showSettings()
     {
         juce::AlertWindow window ("Settings",
-                                  "Autosave interval in seconds (0 disables autosave):",
+                                  "Autosave interval in seconds (0 disables autosave):\n\n"
+                                  "Projects are stored in:\n"
+                                      + paths::projectsDirectory().getFullPathName(),
                                   juce::MessageBoxIconType::NoIcon);
         window.addTextEditor ("autosave", juce::String (session.getAutosaveIntervalSeconds()));
         window.addButton ("OK", 1);
@@ -1038,6 +1106,8 @@ namespace rrs
         options.osxLibrarySubFolder = "Application Support";
 
         settings = std::make_unique<juce::PropertiesFile> (options);
+        settingsStorage = std::make_unique<SettingsStorage> (*settings);
+        lastDirectories = std::make_unique<LastDirectoryStore> (*settingsStorage);
     }
 
     void MainComponent::saveSettings()
