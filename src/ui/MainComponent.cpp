@@ -118,7 +118,9 @@ namespace rrs
         clearRegionButton.setIconOnly (true);
         clearRegionButton.setTooltip ("Clear the region selection");
 
-        // Epic 3: plugin browser, routing/cue mixes, stems export.
+        // Epic 3: plugin browser, routing/cue mixes, stems export. Export stems is
+        // the one action whose function is not obvious from an icon, so it keeps a
+        // visible text label (owner could not find it as an icon-only button).
         pluginsButton.setIconName ("waveform");
         pluginsButton.setIconOnly (true);
         pluginsButton.setTooltip ("Plugin browser (scan/insert VST3/LV2/AU; open editors)");
@@ -126,8 +128,8 @@ namespace rrs
         routingButton.setIconOnly (true);
         routingButton.setTooltip ("Routing & software cue mixes (outputs, sends, submixes)");
         stemsButton.setIconName ("download-simple");
-        stemsButton.setIconOnly (true);
-        stemsButton.setTooltip ("Export per-track stems + master mix (24-bit WAV)");
+        stemsButton.setTooltip ("Export stems: one 24-bit WAV per track plus the master mix, "
+                                "written into a folder you choose");
 
         // Utility buttons are icon-only too (owner request): the action row no
         // longer overflows once Normalize / Add track / Remove track drop their

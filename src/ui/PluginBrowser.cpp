@@ -53,6 +53,12 @@ namespace rrs
         presetSelectLabel.setText ("Preset", juce::dontSendNotification);
         presetNameLabel.setText ("New", juce::dontSendNotification);
 
+        // Discoverability (UX): the preset section is labelled and each row has a
+        // tooltip, so Save/Load preset are not hidden controls.
+        presetsLabel.setTooltip ("Saved user presets for the selected track plugin");
+        presetSelectLabel.setTooltip ("Pick a saved preset, then press Load preset");
+        presetNameLabel.setTooltip ("Type a name for a new preset, then press Save preset");
+
         trackBox.setTooltip ("Track to insert the plugin onto");
         search.setTextToShowWhenEmpty ("Search plugins (name, maker, format)", brand::textTertiary);
         search.setFont (brand::uiRegular (14.0f));
@@ -80,8 +86,8 @@ namespace rrs
         insertButton.setTooltip ("Insert the selected plugin onto the track");
         openButton.setTooltip ("Open the selected track plugin's editor");
         removeButton.setTooltip ("Remove the selected track plugin");
-        savePresetButton.setTooltip ("Save the plugin's current state as a named user preset");
-        loadPresetButton.setTooltip ("Load the selected user preset into the plugin");
+        savePresetButton.setTooltip ("Save the plugin's current state under the name on the left");
+        loadPresetButton.setTooltip ("Load the preset selected on the left into the plugin");
         closeButton.setTooltip ("Close the plugin browser");
 
         trackBox.onChange = [this] { refreshTrackPlugins(); updateStatus(); };
