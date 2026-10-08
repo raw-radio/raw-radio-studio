@@ -152,7 +152,11 @@ namespace rrs
         addTrackButton.setTooltip ("Add an input track (maps to the next free input)");
         removeTrackButton.setIconName ("trash");
         removeTrackButton.setIconOnly (true);
-        removeTrackButton.setTooltip ("Remove the last track");
+        removeTrackButton.setTooltip ("Remove track (deletes the whole track and all its "
+                                      "clips). Removes the selected clip's track, or the last "
+                                      "track when no clip is selected — use it to remove an "
+                                      "imported backing track. To delete only a clip, use "
+                                      "Delete.");
 
         settingsButton.setIconName ("gear-six");
         settingsButton.setIconOnly (true);
@@ -276,10 +280,23 @@ namespace rrs
             if (exportInProgress)
                 return;
 
-            const auto last = session.getNumAudioTracks() - 1;
+            // Remove the track the user is pointing at: the selected clip's
+            // track when a clip is selected, otherwise the last track (the
+            // original behaviour). This is how the owner deletes an imported
+            // backing track ("minus") without it having to be the last one.
+            const int target = selectedClipExists() ? selectedTrackIndex
+                                                    : session.getNumAudioTracks() - 1;
+            const auto name = session.getTrackName (target);
 
-            if (! session.removeAudioTrack (last))
+            if (! session.removeAudioTrack (target))
+            {
                 showStatus (session.getLastError(), true);
+            }
+            else
+            {
+                selectClip (-1, -1); // the removed track's selection is gone
+                showStatus ("Removed track: " + name);
+            }
 
             refreshTransportUi();
         };
@@ -445,7 +462,8 @@ namespace rrs
         undoButton.setTooltip ("Undo the last edit (Cmd/Ctrl+Z)");
         redoButton.setTooltip ("Redo the last undone edit (Cmd/Ctrl+Shift+Z)");
         splitClipButton.setTooltip ("Split the selected clip at the playhead (S)");
-        deleteClipButton.setTooltip ("Delete the selected clip (Delete)");
+        deleteClipButton.setTooltip ("Delete the selected clip only (Delete key). "
+                                     "To delete the whole track use Remove track (trash).");
         duplicateClipButton.setTooltip ("Duplicate the selected clip (D)");
         loopClipButton.setTooltip ("Loop the selected clip twice (L)");
         crossfadeButton.setTooltip ("Crossfade the selected clip with the next one on its track (F)");
@@ -1909,6 +1927,11 @@ namespace rrs
             if (clipIndex >= 0)
             {
                 selectClip (index, clipIndex);
+
+                // Discoverability hint (owner: "how do I delete the backing
+                // track?"): name both delete paths while a clip is selected.
+                showStatus ("Clip selected. Drag to move/trim (hold Alt to disable snapping). "
+                            "Delete removes this clip; Remove track (trash) removes the whole track.");
 
                 const auto info = clipInfoFor (index, clipIndex);
                 const auto length = session.getTimelineLengthSeconds();
