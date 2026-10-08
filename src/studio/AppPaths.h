@@ -56,6 +56,12 @@ namespace rrs::paths
         return editFile.getParentDirectory().getChildFile ("Recordings");
     }
 
+    /** User plugin presets (FR-MIX-6): one subfolder per hosted plugin. */
+    inline juce::File presetsDirectory()
+    {
+        return appDataDirectory().getChildFile ("Presets");
+    }
+
     /** Path of the autosaved temp version of a session file (`.tmp_<name>` sibling).
         Mirrors tracktion::EditFileOperations::getTempVersionOfEditFile so recovery
         can be reasoned about (and tested) without the engine. */

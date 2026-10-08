@@ -2653,6 +2653,110 @@ TEST_CASE ("inserted hosted plugin processes audio and its state survives save/o
 }
 
 //==============================================================================
+// Epic 3 (FR-MIX-6) — plugin preset management. Save the plugin's current state
+// as a named user preset, change the parameter, load the preset back and assert
+// the state is restored. The preset is a JUCE state blob under the app preset
+// folder; loading also flushes it into the Edit so a save/reopen keeps it.
+TEST_CASE ("plugin presets: save/load restores the plugin state (FR-MIX-6, measured)")
+{
+    auto dir = scratchDirectory ("plugin-presets");
+    auto editFile = dir.getChildFile ("Presets.tracktionedit");
+    auto tone = writeSineWav (dir.getChildFile ("tone.wav"), 48000.0, 1.0);
+    REQUIRE (tone.existsAsFile());
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (editFile));
+
+    // Hermetic preset store: never touch the user's real app-data folder.
+    session.setPresetDirectory (dir.getChildFile ("presets"));
+    CHECK (session.getPresetDirectory() == dir.getChildFile ("presets"));
+
+    REQUIRE (session.importAudioFile (tone));
+    const int trackIndex = session.getNumAudioTracks() - 1;
+    REQUIRE (trackIndex >= 1);
+    REQUIRE (session.getTrack (trackIndex) != nullptr);
+
+    // Deterministic hosted-plugin factory (as the hosting test).
+    auto& pm = audio.engine().getPluginManager();
+    auto previousFactory = pm.createPluginInstance;
+    pm.createPluginInstance = [] (const juce::PluginDescription& d, double, int, juce::String&)
+        -> std::unique_ptr<juce::AudioPluginInstance>
+    {
+        if (d.name == "RRS Test Gain")
+            return std::make_unique<TestGainPlugin>();
+
+        return nullptr;
+    };
+
+    juce::PluginDescription desc;
+    desc.name = "RRS Test Gain";
+    desc.pluginFormatName = "VST3";
+    desc.fileOrIdentifier = "rrs_test_gain";
+    desc.manufacturerName = "RAW Radio";
+    desc.numInputChannels = 2;
+    desc.numOutputChannels = 2;
+    pm.knownPluginList.addType (desc);
+
+    REQUIRE (session.insertPlugin (trackIndex, desc, -1));
+    REQUIRE (session.getNumPlugins (trackIndex) == 1);
+
+    te::ExternalPlugin* external = nullptr;
+
+    for (auto* plugin : session.getTrack (trackIndex)->pluginList)
+        if (auto* e = dynamic_cast<te::ExternalPlugin*> (plugin))
+            external = e;
+
+    REQUIRE (external != nullptr);
+    external->initialiseFully();
+    auto* instance = dynamic_cast<TestGainPlugin*> (external->getAudioPluginInstance());
+    REQUIRE (instance != nullptr);
+
+    const auto key = session.getPluginPresetKey (trackIndex, 0);
+    REQUIRE (key.isNotEmpty());
+
+    // Save the plugin's 0.25 gain as "Quarter".
+    instance->gain = 0.25f;
+    REQUIRE (session.savePluginPreset (trackIndex, 0, "Quarter"));
+    CHECK (session.listPluginPresets (trackIndex, 0).contains ("Quarter"));
+
+    // Change the parameter, then load the preset back.
+    instance->gain = 1.0f;
+    REQUIRE (session.loadPluginPreset (trackIndex, 0, "Quarter"));
+    CHECK (instance->gain == doctest::Approx (0.25f));
+
+    // Invalid / missing presets fail cleanly (no crash, error surfaced).
+    CHECK_FALSE (session.loadPluginPreset (trackIndex, 0, "does not exist"));
+    CHECK_FALSE (session.savePluginPreset (trackIndex, 0, "bad/name"));
+
+    // The loaded state is persisted into the Edit: after save + reopen the plugin
+    // comes back at the preset's gain.
+    REQUIRE (session.save());
+    session.close();
+
+    Session reopened (audio);
+    REQUIRE (reopened.open (editFile));
+    const int reopenedTrack = reopened.getNumAudioTracks() - 1;
+    REQUIRE (reopened.getNumPlugins (reopenedTrack) == 1);
+
+    te::ExternalPlugin* reopenedExternal = nullptr;
+
+    for (auto* plugin : reopened.getTrack (reopenedTrack)->pluginList)
+        if (auto* e = dynamic_cast<te::ExternalPlugin*> (plugin))
+            reopenedExternal = e;
+
+    REQUIRE (reopenedExternal != nullptr);
+    reopenedExternal->initialiseFully();
+    auto* reopenedInstance = dynamic_cast<TestGainPlugin*> (reopenedExternal->getAudioPluginInstance());
+    REQUIRE (reopenedInstance != nullptr);
+    INFO ("reopened gain " << reopenedInstance->gain);
+    CHECK (reopenedInstance->gain == doctest::Approx (0.25f));
+
+    pm.createPluginInstance = previousFactory;
+    reopened.close();
+}
+
+//==============================================================================
 // Epic 3 (FR-MON-3 / FR-MON-4 [hard], closing the Epic 2 gap) — software cue
 // mixes.
 //

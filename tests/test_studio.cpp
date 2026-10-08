@@ -16,6 +16,7 @@
 #include "studio/DeviceSelection.h"
 #include "studio/AppPaths.h"
 #include "studio/InputMapping.h"
+#include "studio/PluginPresets.h"
 #include "ui/BrandFonts.h"
 #include "ui/DevicePanelLayout.h"
 #include "ui/FaderTaper.h"
@@ -24,6 +25,7 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 
 using namespace rrs;
@@ -756,4 +758,55 @@ TEST_CASE ("24-bit WAV export round-trips with the correct format")
             CHECK (readBack.getSample (ch, i) == doctest::Approx (source.getSample (ch, i)).epsilon (1.0e-3f));
 
     file.deleteFile();
+}
+
+//==============================================================================
+// FR-MIX-6: the user-preset store maps a plugin to a stable, filesystem-safe
+// folder key, validates names, and round-trips a state blob (save/list/load/
+// delete). Pure filesystem logic — no engine.
+TEST_CASE ("plugin presets store round-trips state and rejects unsafe names (FR-MIX-6)")
+{
+    const auto root = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                          .getChildFile ("raw-radio-studio-preset-test");
+    root.deleteRecursively();
+
+    PluginPresets presets (root);
+    CHECK (presets.getRootDirectory() == root);
+
+    // A key is stable and safe (never contains a path separator).
+    const auto key = PluginPresets::keyFor ("My/Fancy Plugin!", "VST3", "/p/plugin.vst3");
+    CHECK (key.isNotEmpty());
+    CHECK_FALSE (key.containsChar ('/'));
+    CHECK_FALSE (key.containsChar ('\\'));
+    CHECK (key == PluginPresets::keyFor ("My/Fancy Plugin!", "VST3", "/p/plugin.vst3"));
+    CHECK (key != PluginPresets::keyFor ("Other Plugin", "VST3", "/p/plugin.vst3"));
+
+    // Name validation.
+    CHECK (PluginPresets::isValidPresetName ("Warm 80s"));
+    CHECK_FALSE (PluginPresets::isValidPresetName (""));
+    CHECK_FALSE (PluginPresets::isValidPresetName ("   "));
+    CHECK_FALSE (PluginPresets::isValidPresetName ("a/b"));
+    CHECK_FALSE (PluginPresets::isValidPresetName ("a\\b"));
+
+    // Round-trip a state blob.
+    const char payload[] = "preset-state-bytes";
+    juce::MemoryBlock state;
+    state.append (payload, sizeof (payload));
+
+    CHECK (presets.savePreset (key, "Warm 80s", state));
+    CHECK (presets.listPresets (key).contains ("Warm 80s"));
+
+    juce::MemoryBlock loaded;
+    CHECK (presets.loadPreset (key, "Warm 80s", loaded));
+    CHECK (loaded.getSize() == state.getSize());
+    CHECK (std::memcmp (loaded.getData(), state.getData(), state.getSize()) == 0);
+
+    // Unknown preset / unsafe save fail cleanly.
+    CHECK_FALSE (presets.loadPreset (key, "nope", loaded));
+    CHECK_FALSE (presets.savePreset (key, "bad/name", state));
+
+    CHECK (presets.deletePreset (key, "Warm 80s"));
+    CHECK_FALSE (presets.listPresets (key).contains ("Warm 80s"));
+
+    root.deleteRecursively();
 }

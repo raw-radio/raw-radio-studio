@@ -1502,6 +1502,105 @@ namespace rrs
     }
 
     //==============================================================================
+    // Plugin preset management (FR-MIX-6)
+    juce::String Session::getPluginPresetKey (int trackIndex, int pluginIndex) const
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (track == nullptr)
+            return {};
+
+        if (auto* external = externalPluginAt (*track, pluginIndex))
+            return PluginPresets::keyFor (external->desc.name,
+                                          external->desc.pluginFormatName,
+                                          external->desc.fileOrIdentifier);
+
+        return {};
+    }
+
+    bool Session::savePluginPreset (int trackIndex, int pluginIndex, const juce::String& name)
+    {
+        auto* track = getTrack (trackIndex);
+        auto* external = track != nullptr ? externalPluginAt (*track, pluginIndex) : nullptr;
+        auto* instance = external != nullptr ? external->getAudioPluginInstance() : nullptr;
+
+        if (external == nullptr || instance == nullptr)
+        {
+            lastError = "No such plugin.";
+            return false;
+        }
+
+        if (! PluginPresets::isValidPresetName (name))
+        {
+            lastError = "Enter a preset name (no path separators).";
+            return false;
+        }
+
+        // Message-thread only: the plugin serialises its own state synchronously.
+        juce::MemoryBlock state;
+        instance->getStateInformation (state);
+
+        if (! presets.savePreset (getPluginPresetKey (trackIndex, pluginIndex), name, state))
+        {
+            lastError = "Could not write the preset to disk.";
+            return false;
+        }
+
+        clearLastError();
+        return true;
+    }
+
+    juce::StringArray Session::listPluginPresets (int trackIndex, int pluginIndex) const
+    {
+        return presets.listPresets (getPluginPresetKey (trackIndex, pluginIndex));
+    }
+
+    bool Session::loadPluginPreset (int trackIndex, int pluginIndex, const juce::String& name)
+    {
+        auto* track = getTrack (trackIndex);
+        auto* external = track != nullptr ? externalPluginAt (*track, pluginIndex) : nullptr;
+        auto* instance = external != nullptr ? external->getAudioPluginInstance() : nullptr;
+
+        if (external == nullptr || instance == nullptr)
+        {
+            lastError = "No such plugin.";
+            return false;
+        }
+
+        juce::MemoryBlock state;
+
+        if (! presets.loadPreset (getPluginPresetKey (trackIndex, pluginIndex), name, state))
+        {
+            lastError = "Could not read the preset.";
+            return false;
+        }
+
+        instance->setStateInformation (state.getData(), (int) state.getSize());
+
+        // Push the applied state back into the Edit's ValueTree (and its bus
+        // layout) so save/open and the offline render see the loaded preset.
+        external->flushPluginStateToValueTree();
+
+        if (edit != nullptr)
+            edit->restartPlayback();
+
+        save();
+        sendChangeMessage();
+        clearLastError();
+        return true;
+    }
+
+    void Session::setPresetDirectory (const juce::File& rootDirectory)
+    {
+        presets.setRootDirectory (rootDirectory);
+    }
+
+    juce::File Session::getPresetDirectory() const
+    {
+        return presets.getRootDirectory();
+    }
+
+    //==============================================================================
     // Routing: output assignment + submix folders + aux sends (FR-MIX-2, Epic 3)
     namespace
     {

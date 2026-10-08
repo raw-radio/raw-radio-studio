@@ -17,9 +17,12 @@ namespace rrs
         addAndMakeVisible (knownList);
         addAndMakeVisible (trackPluginBox);
         addAndMakeVisible (statusLabel);
+        addAndMakeVisible (presetBox);
+        addAndMakeVisible (presetName);
 
         for (auto* button : { &scanButton, &refreshButton, &insertButton,
-                              &openButton, &removeButton, &closeButton })
+                              &openButton, &removeButton, &savePresetButton, &loadPresetButton,
+                              &closeButton })
             addAndMakeVisible (*button);
 
         trackBox.setTooltip ("Track to insert the plugin onto");
@@ -34,6 +37,12 @@ namespace rrs
 
         trackPluginBox.setTooltip ("Plugins already on the track");
 
+        // FR-MIX-6: user presets for the selected plugin.
+        presetBox.setTooltip ("User presets for the selected plugin");
+        presetName.setTextToShowWhenEmpty ("Preset name", brand::textTertiary);
+        presetName.setFont (brand::uiRegular (14.0f));
+        presetName.setTooltip ("Name for a new user preset, then Save preset");
+
         statusLabel.setFont (brand::uiRegular (12.0f));
         statusLabel.setColour (juce::Label::textColourId, brand::textSecondary);
         statusLabel.setJustificationType (juce::Justification::centredLeft);
@@ -43,9 +52,20 @@ namespace rrs
         insertButton.setTooltip ("Insert the selected plugin onto the track");
         openButton.setTooltip ("Open the selected track plugin's editor");
         removeButton.setTooltip ("Remove the selected track plugin");
+        savePresetButton.setTooltip ("Save the plugin's current state as a named user preset");
+        loadPresetButton.setTooltip ("Load the selected user preset into the plugin");
         closeButton.setTooltip ("Close the plugin browser");
 
         trackBox.onChange = [this] { refreshTrackPlugins(); updateStatus(); };
+
+        // When a different plugin on the track is selected, its preset list is
+        // the one shown.
+        trackPluginBox.onChange = [this] { refreshPresets(); updateStatus(); };
+        presetBox.onChange = [this] { updatePresetControls(); };
+        presetName.onTextChange = [this] { updatePresetControls(); };
+        presetName.onReturnKey = [this] { savePresetClicked(); };
+        savePresetButton.onClick = [this] { savePresetClicked(); };
+        loadPresetButton.onClick = [this] { loadPresetClicked(); };
         scanButton.onClick = [this]
         {
             if (host.isScanning())
@@ -115,8 +135,8 @@ namespace rrs
 
         g.setColour (brand::textSecondary);
         g.setFont (brand::uiRegular (12.0f));
-        g.drawText ("Track plugins", getLocalBounds().removeFromBottom (getLocalBounds().getHeight() / 3)
-                                             .removeFromTop (22).reduced (14, 0),
+        auto trackLabelArea = trackPluginBox.getBounds().withHeight (18).translated (0, -18);
+        g.drawText ("Track plugin + presets", trackLabelArea.reduced (14, 0),
                     juce::Justification::centredLeft);
     }
 
@@ -132,16 +152,34 @@ namespace rrs
 
         area.removeFromTop (8);
 
-        // Bottom third: the track's current plugins + actions.
-        auto bottom = area.removeFromBottom (juce::jmax (120, area.getHeight() / 3));
+        // Bottom half: the track's current plugins + user presets + actions.
+        auto bottom = area.removeFromBottom (juce::jmax (200, area.getHeight() / 2));
         area.removeFromBottom (8);
 
         auto bottomActions = bottom.removeFromBottom (32);
         openButton.setBounds (bottomActions.removeFromLeft (90));
         bottomActions.removeFromLeft (8);
         removeButton.setBounds (bottomActions.removeFromLeft (100));
+
         bottom.removeFromBottom (6);
         trackPluginBox.setBounds (bottom.removeFromTop (30));
+
+        // FR-MIX-6: preset list + Load, then the new-preset name + Save.
+        constexpr int actionWidth = 100;
+
+        bottom.removeFromTop (8);
+        auto presetRow = bottom.removeFromTop (28);
+        presetBox.setBounds (presetRow.removeFromLeft (
+            juce::jmax (120, presetRow.getWidth() - actionWidth - 8)));
+        presetRow.removeFromLeft (8);
+        loadPresetButton.setBounds (presetRow);
+
+        bottom.removeFromTop (6);
+        auto saveRow = bottom.removeFromTop (28);
+        presetName.setBounds (saveRow.removeFromLeft (
+            juce::jmax (120, saveRow.getWidth() - actionWidth - 8)));
+        saveRow.removeFromLeft (8);
+        savePresetButton.setBounds (saveRow);
 
         // Middle: the known-plugin list + scan/insert actions.
         auto listArea = area;
@@ -205,11 +243,16 @@ namespace rrs
 
     void PluginBrowser::refreshTrackPlugins()
     {
+        // Preserve the current plugin selection across a refresh; default to the
+        // first plugin so the preset list has something to show.
+        const auto previousId = trackPluginBox.getSelectedId();
+
         trackPluginBox.clear (juce::dontSendNotification);
 
         const auto index = selectedTrackIndex();
+        const auto count = session.getNumPlugins (index);
 
-        for (int i = 0; i < session.getNumPlugins (index); ++i)
+        for (int i = 0; i < count; ++i)
         {
             const auto info = session.getPluginInfo (index, i);
             auto label = info.name;
@@ -222,6 +265,113 @@ namespace rrs
 
             trackPluginBox.addItem (label, i + 1);
         }
+
+        if (count > 0)
+        {
+            const auto idToSelect = juce::isPositiveAndBelow (previousId - 1, count) ? previousId : 1;
+            trackPluginBox.setSelectedId (idToSelect, juce::dontSendNotification);
+        }
+
+        refreshPresets();
+    }
+
+    int PluginBrowser::selectedPluginIndex() const
+    {
+        const auto id = trackPluginBox.getSelectedId();
+        return id > 0 ? id - 1 : -1;
+    }
+
+    void PluginBrowser::refreshPresets()
+    {
+        // Preserve the visible preset across a refresh when it still exists.
+        const auto previous = presetBox.getText();
+
+        presetBox.clear (juce::dontSendNotification);
+
+        const auto index = selectedTrackIndex();
+        const auto plugin = selectedPluginIndex();
+
+        if (index >= 0 && plugin >= 0)
+        {
+            const auto names = session.listPluginPresets (index, plugin);
+
+            for (int i = 0; i < names.size(); ++i)
+                presetBox.addItem (names[i], i + 1);
+        }
+
+        for (int i = 0; i < presetBox.getNumItems(); ++i)
+            if (presetBox.getItemText (i) == previous)
+            {
+                presetBox.setSelectedId (i + 1, juce::dontSendNotification);
+                break;
+            }
+
+        updatePresetControls();
+    }
+
+    void PluginBrowser::updatePresetControls()
+    {
+        const bool hasPlugin = selectedTrackIndex() >= 0 && selectedPluginIndex() >= 0;
+        savePresetButton.setEnabled (hasPlugin
+                                     && PluginPresets::isValidPresetName (presetName.getText()));
+        loadPresetButton.setEnabled (hasPlugin && presetBox.getSelectedId() > 0);
+    }
+
+    void PluginBrowser::savePresetClicked()
+    {
+        const auto index = selectedTrackIndex();
+        const auto plugin = selectedPluginIndex();
+        auto name = presetName.getText().trim();
+
+        if (name.isEmpty())
+            name = presetBox.getText().trim();
+
+        if (index < 0 || plugin < 0)
+        {
+            statusLabel.setText ("Select a track plugin first.", juce::dontSendNotification);
+            return;
+        }
+
+        if (session.savePluginPreset (index, plugin, name))
+        {
+            presetName.clear();
+            refreshPresets();
+
+            for (int i = 0; i < presetBox.getNumItems(); ++i)
+                if (presetBox.getItemText (i) == name)
+                {
+                    presetBox.setSelectedId (i + 1, juce::dontSendNotification);
+                    break;
+                }
+
+            statusLabel.setText ("Saved preset: " + name, juce::dontSendNotification);
+        }
+        else
+        {
+            statusLabel.setText (session.getLastError(), juce::dontSendNotification);
+        }
+
+        updatePresetControls();
+    }
+
+    void PluginBrowser::loadPresetClicked()
+    {
+        const auto index = selectedTrackIndex();
+        const auto plugin = selectedPluginIndex();
+        const auto name = presetBox.getText().trim();
+
+        if (index < 0 || plugin < 0 || name.isEmpty())
+        {
+            statusLabel.setText ("Select a preset to load.", juce::dontSendNotification);
+            return;
+        }
+
+        if (session.loadPluginPreset (index, plugin, name))
+            statusLabel.setText ("Loaded preset: " + name, juce::dontSendNotification);
+        else
+            statusLabel.setText (session.getLastError(), juce::dontSendNotification);
+
+        updatePresetControls();
     }
 
     void PluginBrowser::updateStatus()

@@ -18,6 +18,7 @@
 
 #include "AudioEngine.h"
 #include "InputMapping.h"
+#include "PluginPresets.h"
 
 namespace rrs
 {
@@ -268,6 +269,32 @@ namespace rrs
         bool showPluginEditor (int trackIndex, int pluginIndex);
 
         //==============================================================================
+        // Plugin preset management (FR-MIX-6)
+        //
+        // User presets store the hosted plugin's raw JUCE state
+        // (`getStateInformation`/`setStateInformation`) under the app preset
+        // folder, one subfolder per plugin. Message-thread only; no audio-thread
+        // work.
+
+        /** Stable key for the plugin's user-preset folder, or empty when the
+            plugin does not exist. */
+        juce::String getPluginPresetKey (int trackIndex, int pluginIndex) const;
+
+        /** Saves the plugin's current state as a named user preset. */
+        bool savePluginPreset (int trackIndex, int pluginIndex, const juce::String& name);
+
+        /** Names of the user presets stored for the plugin (sorted). */
+        juce::StringArray listPluginPresets (int trackIndex, int pluginIndex) const;
+
+        /** Loads a named user preset into the plugin: applies the JUCE state,
+            flushes it into the Edit so save/reopen keeps it, and persists. */
+        bool loadPluginPreset (int trackIndex, int pluginIndex, const juce::String& name);
+
+        /** Overrides the preset root directory (tests / future Settings UI). */
+        void setPresetDirectory (const juce::File& rootDirectory);
+        juce::File getPresetDirectory() const;
+
+        //==============================================================================
         // Routing: output assignment + submix folders + aux sends (FR-MIX-2, Epic 3)
         //
         // `trackIndex` is an engine audio-track index (as returned by
@@ -505,6 +532,9 @@ namespace rrs
         AudioEngine& audio;
         std::unique_ptr<tracktion::Edit> edit;
         juce::File editFile;
+
+        /** User plugin presets (FR-MIX-6); root overridable for tests. */
+        PluginPresets presets;
 
         InputLevels inputLevels;
         int autosaveIntervalSeconds = 30;

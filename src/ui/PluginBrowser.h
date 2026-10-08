@@ -49,13 +49,18 @@ namespace rrs
         void refreshTrackList();
         void refreshKnownList();
         void refreshTrackPlugins();
+        void refreshPresets();
+        void updatePresetControls();
         void updateStatus();
 
         void insertSelected();
         void openSelectedTrackPlugin();
         void removeSelectedTrackPlugin();
+        void savePresetClicked();
+        void loadPresetClicked();
 
         int selectedTrackIndex() const;
+        int selectedPluginIndex() const;
 
         PluginHost& host;
         Session& session;
@@ -66,11 +71,17 @@ namespace rrs
         juce::ComboBox trackPluginBox;
         juce::Label statusLabel;
 
+        // FR-MIX-6: user presets for the selected track plugin.
+        juce::ComboBox presetBox;
+        juce::TextEditor presetName;
+
         BrandButton scanButton { "Scan", BrandButton::Style::Primary };
         BrandButton refreshButton { "Refresh" };
         BrandButton insertButton { "Insert" };
         BrandButton openButton { "Open" };
         BrandButton removeButton { "Remove" };
+        BrandButton savePresetButton { "Save preset" };
+        BrandButton loadPresetButton { "Load preset" };
         BrandButton closeButton { "Close" };
 
         juce::Array<juce::PluginDescription> known;
