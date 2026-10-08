@@ -1101,6 +1101,61 @@ namespace rrs
         edit->getTransport().setPosition (te::TimePosition::fromSeconds (juce::jmax (0.0, seconds)));
     }
 
+    //==============================================================================
+    // Offline-render transport preservation.
+    //
+    // Root cause of the "audio dies after an export" bug: `EditRenderer::render`
+    // (used by WavExport and by RenderQueue/stems) constructs
+    // `Edit::ScopedRenderStatus (edit, false)`. That constructor calls
+    // `transport.freePlaybackContext()`, and because `shouldReallocateOnDestruction`
+    // is false it never rebuilds the context afterwards. The playback context owns
+    // the live `EditPlaybackContext` (output graph + input-device instances), so
+    // freeing it silences monitoring and playback and nothing reallocates it until
+    // the app is restarted. WavExport runs its render on a background thread, so it
+    // cannot safely reallocate on the render thread; the app instead captures this
+    // snapshot on the message thread before the render and restores it from the
+    // (message-thread) completion callback.
+    Session::OfflineRenderTransportState Session::captureTransportForOfflineRender() const
+    {
+        OfflineRenderTransportState state;
+
+        if (edit == nullptr)
+            return state;
+
+        const auto& transport = edit->getTransport();
+        state.edit = edit.get();
+        state.contextWasAllocated = transport.isPlayContextActive();
+        state.wasPlaying = transport.isPlaying();
+        state.wasRecording = transport.isRecording();
+        state.positionSeconds = transport.getPosition().inSeconds();
+        return state;
+    }
+
+    void Session::restoreTransportAfterOfflineRender (const OfflineRenderTransportState& state)
+    {
+        if (edit == nullptr || state.edit != edit.get())
+            return;
+
+        auto& transport = edit->getTransport();
+
+        // Restore the playhead first so the rebuilt graph starts from where the
+        // engineer left it, then rebuild the live playback context. Reallocating
+        // the context also re-creates the input-device instances, restoring input
+        // monitoring — the part that stayed dead until a restart before this fix.
+        transport.setPosition (te::TimePosition::fromSeconds (juce::jmax (0.0, state.positionSeconds)));
+        transport.ensureContextAllocated();
+
+        // Resume what was running. `ensureContextAllocated` rebuilds the graph but
+        // does not roll the transport, so the play/record flag has to be re-asserted
+        // (it was cleared by `freePlaybackContext()` -> `clearPlayingFlags()`).
+        if (state.wasRecording)
+            transport.record (false);
+        else if (state.wasPlaying)
+            transport.play (false);
+
+        edit->restartPlayback();
+    }
+
     double Session::getTimelineLengthSeconds() const
     {
         if (edit == nullptr)

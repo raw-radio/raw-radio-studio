@@ -593,6 +593,102 @@ TEST_CASE ("WavExport renders only the selected region, not the whole session (F
 }
 
 //==============================================================================
+// Regression: an offline export must not leave the live playback context torn
+// down. `EditRenderer::render` (used by WavExport and by RenderQueue/stems)
+// constructs `Edit::ScopedRenderStatus (edit, false)`, which frees the playback
+// context — and with it the input-device instances / monitoring — and never
+// reallocates it. Without an explicit restore, monitoring and playback stay dead
+// until the app is restarted. This mirrors the "audio stops after region export"
+// owner report: the export must leave the context active and the transport as it
+// was.
+TEST_CASE ("offline export restores the live playback context and transport (region export)")
+{
+    auto dir = scratchDirectory ("export-transport-restore");
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Restore.tracktionedit")));
+
+    auto wavFile = writeSineWav (dir.getChildFile ("tone.wav"), 48000.0, 1.0);
+    REQUIRE (wavFile.existsAsFile());
+    REQUIRE (session.importAudioFile (wavFile));
+
+    // Hosted (in-process) device: gives the Session real wave devices so it can
+    // allocate its live playback context, without touching physical hardware.
+    te::HostedAudioDeviceInterface::Parameters params;
+    params.sampleRate = 48000.0;
+    params.blockSize = 256;
+    params.inputChannels = 2;
+    params.outputChannels = 2;
+
+    auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+
+    for (int i = 0; i < 200; ++i)
+    {
+        audio.deviceManager().dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+        if (session.isInputConfigured())
+            break;
+
+        session.reconfigureInputs();
+    }
+
+    REQUIRE (session.isInputConfigured());
+
+    auto* edit = session.getEdit();
+    REQUIRE (edit != nullptr);
+
+    // A live session has an allocated playback context (monitoring + graph).
+    CHECK (edit->getTransport().isPlayContextActive());
+
+    edit->getTransport().setPosition (te::TimePosition {});
+    session.play();
+
+    for (int i = 0; i < 40; ++i)
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+    CHECK (session.isPlaying());
+    CHECK (edit->getTransport().isPlayContextActive());
+
+    // Exactly what MainComponent::beginWavExport captures before the render.
+    const auto snapshot = session.captureTransportForOfflineRender();
+    CHECK (snapshot.contextWasAllocated);
+    CHECK (snapshot.wasPlaying);
+
+    auto dest = dir.getChildFile ("region.wav");
+    std::atomic<bool> finished { false };
+
+    // Region export is the reported repro; the full-session path is identical.
+    auto handle = WavExport::start (*edit, dest,
+                                    [&] (bool, juce::File, juce::String) { finished.store (true); },
+                                    true, { 0.0, 0.3 });
+    REQUIRE (handle != nullptr);
+
+    for (int i = 0; i < 400 && ! finished.load(); ++i)
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (25);
+
+    REQUIRE (finished.load());
+
+    // Join the render thread before touching the Edit (mirrors MainComponent
+    // resetting its handle, which drops the renderer's ScopedRenderStatus).
+    handle.reset();
+
+    // The offline render genuinely tore the live context down: this is the bug.
+    CHECK_FALSE (edit->getTransport().isPlayContextActive());
+
+    // Restoring — what MainComponent now does in its completion callback — must
+    // bring the device graph/monitoring and the transport back.
+    session.restoreTransportAfterOfflineRender (snapshot);
+
+    CHECK (edit->getTransport().isPlayContextActive());
+    CHECK (session.isPlaying());
+
+    session.stop();
+    session.close();
+}
+
+//==============================================================================
 // FR-EXP-1 regression: a deferred metronome restore must not fire after the
 // export handle (and the component that owns it) has been torn down. Closing
 // the window during an export used to let WavExport's queued restore re-disable

@@ -188,6 +188,34 @@ namespace rrs
         double getTimelineLengthSeconds() const;
 
         //==============================================================================
+        // Offline-render transport preservation (FR-EXP-1/2/3).
+        //
+        // Tracktion's offline renderer builds an `Edit::ScopedRenderStatus` with
+        // `shouldReallocateOnDestruction = false`, so it frees the live playback
+        // context and never rebuilds it. Freeing the context also tears down the
+        // input-device instances, which silences monitoring and playback until the
+        // app is restarted. The app captures this snapshot on the message thread
+        // *before* an export and restores it from the export completion callback.
+        struct OfflineRenderTransportState
+        {
+            const tracktion::Edit* edit = nullptr; ///< Guards against a replaced Edit.
+            bool contextWasAllocated = false;
+            bool wasPlaying = false;
+            bool wasRecording = false;
+            double positionSeconds = 0.0;
+        };
+
+        /** Snapshots the live transport/playback-context state before an offline
+            render. Safe on the message thread; never touches the audio thread. */
+        OfflineRenderTransportState captureTransportForOfflineRender() const;
+
+        /** Rebuilds the live playback context (restoring monitoring + the playback
+            graph) and restores the captured transport position/play state. No-op
+            when the snapshot belongs to a different Edit than the current one.
+            Message-thread only. */
+        void restoreTransportAfterOfflineRender (const OfflineRenderTransportState&);
+
+        //==============================================================================
         // Region selection (FR-EXP-2)
         /** Sets the export region [start, end] in seconds. The bounds are
             order-independent (swapped if reversed) and clamped to >= 0; a

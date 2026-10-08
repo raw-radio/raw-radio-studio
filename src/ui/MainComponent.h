@@ -157,6 +157,14 @@ namespace rrs
             the click can never leak into the rendered WAV (FR-EXP-1). */
         bool exportMetronomeWasEnabled = false;
 
+        /** Live transport/monitoring state saved before an offline render and
+            restored when it ends. The offline renderer frees the playback context
+            and never rebuilds it, which silences monitoring/playback until restart
+            (see Session::captureTransportForOfflineRender). Separate snapshots so a
+            WAV export and a stems batch can never clobber each other's state. */
+        Session::OfflineRenderTransportState wavExportTransportState;
+        Session::OfflineRenderTransportState stemsExportTransportState;
+
         juce::String statusMessage;
         bool statusIsError = false;
 

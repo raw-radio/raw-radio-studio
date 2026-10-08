@@ -851,6 +851,11 @@ namespace rrs
         // the Edit the render thread is reading (use-after-free).
         exportInProgress = true;
 
+        // The offline renderer frees the live playback context (and with it input
+        // monitoring) and never rebuilds it. Capture the transport state now, on
+        // the message thread, and restore it in the completion callback below.
+        wavExportTransportState = session.captureTransportForOfflineRender();
+
         // FR-EXP-1: save and disable the metronome for the render, and restore
         // it once the render ends (the completion callback below runs on success,
         // failure and cancel alike). WavExport::start also enforces this at the
@@ -881,6 +886,11 @@ namespace rrs
                 self->exportMetronomeWasEnabled = false;
                 self->exportHandle.reset();
                 self->exportInProgress = false;
+
+                // Rebuild the live playback context and restore the transport that
+                // the offline render tore down, so monitoring/playback resume
+                // immediately instead of staying dead until a restart.
+                self->session.restoreTransportAfterOfflineRender (self->wavExportTransportState);
                 self->refreshTransportUi();
 
                 if (success)
@@ -916,6 +926,12 @@ namespace rrs
                                       return;
 
                                   stemsInProgress = true;
+
+                                  // Same playback-context teardown as the WAV path
+                                  // (RenderQueue also uses EditRenderer): snapshot
+                                  // before the first job frees the context.
+                                  stemsExportTransportState = session.captureTransportForOfflineRender();
+
                                   refreshTransportUi();
                                   showStatus ("Exporting stems (per-track + master, 24-bit WAV)...");
 
@@ -933,6 +949,11 @@ namespace rrs
 
                                           self->stemsHandle.reset();
                                           self->stemsInProgress = false;
+
+                                          // Restore the playback context/transport
+                                          // the stems batch tore down (see WAV path).
+                                          self->session.restoreTransportAfterOfflineRender (
+                                              self->stemsExportTransportState);
                                           self->refreshTransportUi();
 
                                           if (success)
