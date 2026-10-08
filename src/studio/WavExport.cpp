@@ -20,7 +20,7 @@ namespace rrs
 
     std::shared_ptr<WavExport::Handle>
         WavExport::start (te::Edit& edit, const juce::File& destination, CompletionCallback callback,
-                          bool suppressMetronome)
+                          bool suppressMetronome, RenderRange range)
     {
         // Liveness token shared with every deferred completion path. The returned
         // Handle owns it; cancelling the handle (explicitly or from its destructor)
@@ -104,8 +104,16 @@ namespace rrs
 
         params.sampleRateForAudio = sampleRate;
         params.blockSizeForAudio  = 512;
-        params.time               = { te::TimePosition(),
-                                      te::TimePosition::fromSeconds (edit.getLength().inSeconds()) };
+
+        // FR-EXP-2: render the requested span. The full-session default spans
+        // [0, edit length); a region export spans the caller's selection. The
+        // range is clamped so an inverted/negative range can never render past
+        // the session or produce a negative duration.
+        const auto sessionLength = edit.getLength().inSeconds();
+        const auto rangeStart = juce::jmax (0.0, range.startSeconds);
+        const auto rangeEnd   = range.isFullSession() ? sessionLength : range.endSeconds;
+        params.time = { te::TimePosition::fromSeconds (rangeStart),
+                        te::TimePosition::fromSeconds (juce::jmax (rangeStart, rangeEnd)) };
 
         auto handle = te::EditRenderer::render (
             params,

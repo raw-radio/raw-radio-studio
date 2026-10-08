@@ -1103,6 +1103,26 @@ namespace rrs
                            getPositionSeconds());
     }
 
+    //==============================================================================
+    // Region selection (FR-EXP-2)
+    void Session::setSelectionSeconds (double startSeconds, double endSeconds)
+    {
+        const auto a = juce::jmax (0.0, startSeconds);
+        const auto b = juce::jmax (0.0, endSeconds);
+
+        selectionStartSeconds = juce::jmin (a, b);
+        selectionEndSeconds   = juce::jmax (a, b);
+
+        if (selectionEndSeconds <= selectionStartSeconds)
+            clearSelection();
+    }
+
+    void Session::clearSelection()
+    {
+        selectionStartSeconds = 0.0;
+        selectionEndSeconds   = 0.0;
+    }
+
     bool Session::record()
     {
         if (edit == nullptr)

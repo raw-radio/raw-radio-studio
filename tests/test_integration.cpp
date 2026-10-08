@@ -146,6 +146,48 @@ namespace
         return file;
     }
 
+    /** Writes a valid 24-bit stereo sine whose amplitude steps from
+        `amplitudeFirst` (first half) to `amplitudeSecond` (second half) at the
+        midpoint. Used to prove a region export renders only the selected span:
+        a region inside the first half must come out loud, one inside the second
+        half quiet — regardless of uniform-peak sources. */
+    juce::File writeSteppedSineWav (const juce::File& file, double sampleRate, double seconds,
+                                    float amplitudeFirst, float amplitudeSecond,
+                                    double frequency = 440.0)
+    {
+        file.deleteFile();
+
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::OutputStream> stream = std::make_unique<juce::FileOutputStream> (file);
+
+        auto writer = wav.createWriterFor (stream,
+                                           juce::AudioFormatWriterOptions{}
+                                               .withSampleRate (sampleRate)
+                                               .withNumChannels (2)
+                                               .withBitsPerSample (24));
+
+        if (writer == nullptr)
+            return {};
+
+        const auto numSamples = (int) (sampleRate * seconds);
+        const auto midpoint = numSamples / 2;
+        juce::AudioBuffer<float> buffer (2, numSamples);
+
+        for (int ch = 0; ch < 2; ++ch)
+            for (int i = 0; i < numSamples; ++i)
+            {
+                const auto amp = i < midpoint ? amplitudeFirst : amplitudeSecond;
+                buffer.setSample (ch, i, amp * (float) std::sin (2.0 * juce::MathConstants<double>::pi
+                                                                  * frequency * (double) i / sampleRate));
+            }
+
+        if (! writer->writeFromAudioSampleBuffer (buffer, 0, numSamples))
+            return {};
+
+        writer.reset();
+        return file;
+    }
+
     /** Creates an edit with one stereo wave clip and returns it.
         The edit uses the `forRendering` role (playDisabled) because these tests
         run headless with no audio device: an edit for device playback cannot
@@ -437,6 +479,117 @@ TEST_CASE ("WavExport reflects the mixer: track fader, master gain and mute (mea
     const auto trackMutedPeak = renderPeak (dir.getChildFile ("track-muted.wav"));
     INFO ("track-muted peak " << trackMutedPeak);
     CHECK (trackMutedPeak < 0.001f);
+}
+
+//==============================================================================
+// FR-EXP-2: exporting a *selected region* must render exactly that span — the
+// same offline EditRenderer path as the full session, with the render start and
+// length set to the selection. Measured against a source whose level steps
+// midway: a region in the loud first half must come out loud and one in the
+// quiet second half quiet, proving material outside the region is excluded, and
+// the file length must match the region (24-bit at the session rate).
+TEST_CASE ("WavExport renders only the selected region, not the whole session (FR-EXP-2, measured)")
+{
+    auto dir = scratchDirectory ("export-region");
+    auto editFile = dir.getChildFile ("Region Export.tracktionedit");
+
+    // 2 s source: loud (0.5) in [0, 1), quiet (0.1) in [1, 2).
+    auto wavFile = writeSteppedSineWav (dir.getChildFile ("steps.wav"), 48000.0, 2.0, 0.5f, 0.1f);
+    REQUIRE (wavFile.existsAsFile());
+
+    auto edit = makeEditWithClip (editFile, wavFile, 2.0);
+    REQUIRE (edit != nullptr);
+
+    constexpr double sr = 48000.0;
+
+    struct RegionResult
+    {
+        bool ok = false;
+        juce::int64 samples = 0;
+        double rate = 0.0;
+        int bits = 0;
+        float peak = -1.0f;
+    };
+
+    auto renderRegion = [&] (const juce::File& dest, double startSeconds, double endSeconds)
+    {
+        RegionResult result;
+        dest.deleteFile();
+
+        std::atomic<bool> finished { false };
+        bool succeeded = false;
+        juce::String error;
+
+        auto handle = WavExport::start (*edit, dest,
+                                        [&] (bool success, juce::File, juce::String message)
+                                        {
+                                            succeeded = success;
+                                            error = message;
+                                            finished = true;
+                                        },
+                                        true, { startSeconds, endSeconds });
+
+        REQUIRE (handle != nullptr);
+
+        for (int i = 0; i < 400 && ! finished.load(); ++i)
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (25);
+
+        REQUIRE (finished.load());
+        INFO ("render error: " << error);
+        REQUIRE (succeeded);
+        REQUIRE (dest.existsAsFile());
+
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::AudioFormatReader> reader (
+            wav.createReaderFor (new juce::FileInputStream (dest), true));
+        REQUIRE (reader != nullptr);
+
+        result.ok = true;
+        result.samples = reader->lengthInSamples;
+        result.rate = reader->sampleRate;
+        result.bits = (int) reader->bitsPerSample;
+        result.peak = readWavPeak (dest);
+        return result;
+    };
+
+    // Loud region [0.0, 0.4): 0.4 s, 24-bit, 48 kHz. Its level follows the 0.5
+    // amplitude source scaled by whatever constant gain the render path uses (an
+    // equal-power centre pan gives ~0.707), so levels are compared relatively, as
+    // the other export tests do.
+    const auto loud = renderRegion (dir.getChildFile ("loud.wav"), 0.0, 0.4);
+    CHECK (loud.ok);
+    CHECK (loud.bits == WavExport::bitDepth);
+    CHECK (loud.rate == doctest::Approx (AudioEngine::defaultSampleRate));
+    CHECK (loud.samples == doctest::Approx (0.4 * sr).epsilon (0.02));
+
+    // The render path's constant gain, derived from the known 0.5 source.
+    const auto renderGain = loud.peak / 0.5f;
+    REQUIRE (renderGain > 0.4f);
+    CHECK (renderGain < 1.2f);
+
+    // Quiet region [1.1, 1.5): also 0.4 s, but its level must match the source's
+    // 0.1 amplitude — proving the render is bounded by the selection and excludes
+    // the loud first-half material.
+    const auto quiet = renderRegion (dir.getChildFile ("quiet.wav"), 1.1, 1.5);
+    CHECK (quiet.ok);
+    CHECK (quiet.samples == doctest::Approx (0.4 * sr).epsilon (0.02));
+    CHECK (quiet.peak == doctest::Approx (0.1f * renderGain).epsilon (0.06f));
+
+    INFO ("loud peak " << loud.peak << ", quiet peak " << quiet.peak
+                       << ", render gain " << renderGain
+                       << ", loud samples " << loud.samples << ", quiet samples " << quiet.samples);
+
+    // The two 0.4 s regions have the same length but distinct levels (5:1): the
+    // region export genuinely selects its span (material outside it is excluded).
+    CHECK (quiet.peak < loud.peak * 0.4f);
+
+    // Sanity: the full-session default still renders the whole 2 s and keeps the
+    // loud first-half level.
+    const auto full = renderRegion (dir.getChildFile ("full.wav"), 0.0, -1.0);
+    INFO ("full peak " << full.peak << ", full samples " << full.samples);
+    CHECK (full.peak == doctest::Approx (loud.peak).epsilon (0.03f));
+    CHECK (full.samples == doctest::Approx (2.0 * sr).epsilon (0.02));
+    CHECK (full.samples > loud.samples * 3);
 }
 
 //==============================================================================

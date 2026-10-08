@@ -17,9 +17,32 @@
 
 namespace rrs
 {
+    /** The time span to render. Defaults to the whole session.
+
+        FR-EXP-2: a positive `endSeconds` selects a region, so the same offline
+        render path serves both full-session and selected-region export. Values
+        are clamped by the renderer; an inverted or empty range never renders
+        more than the caller asked for.
+
+        Declared at namespace scope (rather than nested in WavExport) so the
+        class can use it as a defaulted parameter — a nested type's default
+        member initializers are not visible in the enclosing class's default
+        arguments. `WavExport::RenderRange` remains a usable alias. */
+    struct WavExportRange
+    {
+        double startSeconds = 0.0;
+        /** Region end in seconds; <= start means "to the session end" (the
+            full-session default). */
+        double endSeconds = -1.0;
+
+        bool isFullSession() const noexcept  { return endSeconds <= startSeconds; }
+    };
+
     class WavExport
     {
     public:
+        using RenderRange = WavExportRange;
+
         /** Export bit depth fixed by the spec (FR-EXP-1 / NFR-A-1). */
         static constexpr int bitDepth = 24;
 
@@ -83,10 +106,15 @@ namespace rrs
             `suppressMetronome` is true (the default) the click is forced off for
             the duration of the render and its previous state is restored in every
             completion path (success, failure, or render-start failure). Pass
-            false only to render the click on purpose (used by tests). */
+            false only to render the click on purpose (used by tests).
+
+            FR-EXP-2: `range` selects the span to render — the full session by
+            default, or a caller-chosen region (exclusive of material outside it).
+            The region is applied via `Renderer::Parameters::time`, so the render
+            still runs offline/faster-than-realtime and honours the full mixer. */
         static std::shared_ptr<Handle>
             start (tracktion::Edit& edit, const juce::File& destination, CompletionCallback,
-                   bool suppressMetronome = true);
+                   bool suppressMetronome = true, RenderRange range = {});
 
         /** Suggested default export path for a session file. */
         static juce::File defaultDestinationFor (const juce::File& editFile);

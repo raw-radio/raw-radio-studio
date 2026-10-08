@@ -36,6 +36,11 @@ namespace rrs
         statusLabel.setColour (juce::Label::textColourId, brand::textSecondary);
         statusLabel.setJustificationType (juce::Justification::centredLeft);
 
+        selectionLabel.setFont (brand::monoRegular (11.0f));
+        selectionLabel.setColour (juce::Label::textColourId, brand::textTertiary);
+        selectionLabel.setJustificationType (juce::Justification::centredLeft);
+        selectionLabel.setText ("No region selected", juce::dontSendNotification);
+
         addAndMakeVisible (titleLabel);
         addAndMakeVisible (devicePanel);
         addAndMakeVisible (inputMeter);
@@ -43,9 +48,11 @@ namespace rrs
         addAndMakeVisible (timeline);
         addAndMakeVisible (transportLabel);
         addAndMakeVisible (statusLabel);
+        addAndMakeVisible (selectionLabel);
 
         for (auto* button : { &newButton, &openButton, &closeButton, &saveButton, &saveAsButton,
                               &importButton, &normaliseButton, &exportButton,
+                              &exportRegionButton, &clearRegionButton,
                               &stemsButton, &pluginsButton, &routingButton,
                               &addTrackButton, &removeTrackButton,
                               &settingsButton, &aboutButton,
@@ -101,6 +108,15 @@ namespace rrs
         exportButton.setIconName ("download-simple");
         exportButton.setIconOnly (true);
         exportButton.setTooltip ("Export session to 24-bit WAV");
+
+        // FR-EXP-2: export just the selected region; Clear drops the selection.
+        exportRegionButton.setIconName ("download-simple");
+        exportRegionButton.setIconOnly (true);
+        exportRegionButton.setTooltip ("Export the selected region to 24-bit WAV "
+                                       "(Shift-drag on the ruler to select)");
+        clearRegionButton.setIconName ("x");
+        clearRegionButton.setIconOnly (true);
+        clearRegionButton.setTooltip ("Clear the region selection");
 
         // Epic 3: plugin browser, routing/cue mixes, stems export.
         pluginsButton.setIconName ("waveform");
@@ -201,6 +217,12 @@ namespace rrs
             refreshTransportUi();
         };
         exportButton.onClick    = [this] { exportSession(); };
+        exportRegionButton.onClick = [this] { exportRegion(); };
+        clearRegionButton.onClick = [this]
+        {
+            session.clearSelection();
+            refreshTransportUi();
+        };
         stemsButton.onClick     = [this] { exportStems(); };
         pluginsButton.onClick   = [this]
         {
@@ -416,10 +438,15 @@ namespace rrs
         devicePanel.setEnabled (! busy);
 
         for (auto* button : { &saveButton, &saveAsButton, &importButton, &normaliseButton, &exportButton,
+                              &exportRegionButton, &clearRegionButton,
                               &stemsButton, &pluginsButton, &routingButton,
                               &armButton, &recordButton, &playButton, &stopButton, &goToStartButton,
                               &monitorButton, &metronomeButton })
             button->setEnabled (hasEdit && ! busy);
+
+        // FR-EXP-2: region actions require a live selection.
+        exportRegionButton.setEnabled (hasEdit && ! busy && session.hasSelection());
+        clearRegionButton.setEnabled (hasEdit && ! busy && session.hasSelection());
 
         // The overlays must not linger over a session they no longer describe.
         if (! hasEdit)
@@ -441,6 +468,23 @@ namespace rrs
                               (hasEdit && countInActive) ? brand::accent : brand::border);
 
         metronomeButton.setToggleState (session.isMetronomeEnabled(), juce::dontSendNotification);
+
+        // FR-EXP-2: reflect the region selection (start/end + duration).
+        if (session.hasSelection())
+        {
+            const auto start = session.getSelectionStartSeconds();
+            const auto end = session.getSelectionEndSeconds();
+            selectionLabel.setColour (juce::Label::textColourId, brand::accent);
+            selectionLabel.setText ("Region  " + formatTime (start) + "  -  " + formatTime (end)
+                                        + "   (" + juce::String (end - start, 3) + " s)",
+                                    juce::dontSendNotification);
+        }
+        else
+        {
+            selectionLabel.setColour (juce::Label::textColourId, brand::textTertiary);
+            selectionLabel.setText ("No region selected   (Shift-drag the ruler to select)",
+                                    juce::dontSendNotification);
+        }
 
         addTrackButton.setEnabled (hasEdit && ! busy);
         removeTrackButton.setEnabled (hasEdit && ! busy && session.getNumAudioTracks() > 1);
@@ -739,50 +783,112 @@ namespace rrs
                                   if (! file.hasFileExtension ("wav"))
                                       file = file.withFileExtension ("wav");
 
-                                  // Lock the session for the duration of the render:
-                                  // New/Open would reset the Edit the render thread
-                                  // is reading (use-after-free).
-                                  exportInProgress = true;
-
-                                  // FR-EXP-1: save and disable the metronome for the
-                                  // render, and restore it once the render ends (the
-                                  // completion callback below runs on success, failure
-                                  // and cancel alike). WavExport::start also enforces
-                                  // this at the render choke point; doing it here keeps
-                                  // the Session/UI state honest while the click is off.
-                                  exportMetronomeWasEnabled = session.isMetronomeEnabled();
-
-                                  if (exportMetronomeWasEnabled)
-                                      session.setMetronomeEnabled (false);
-
-                                  refreshTransportUi();
-                                  showStatus ("Exporting 24-bit WAV...");
-
-                                  juce::Component::SafePointer<MainComponent> safe (this);
-
-                                  exportHandle = WavExport::start (
-                                      *session.getEdit(), file,
-                                      [safe] (bool success, juce::File result, juce::String error)
-                                      {
-                                          auto* self = safe.getComponent();
-
-                                          if (self == nullptr)
-                                              return;
-
-                                          if (self->exportMetronomeWasEnabled)
-                                              self->session.setMetronomeEnabled (true);
-
-                                          self->exportMetronomeWasEnabled = false;
-                                          self->exportHandle.reset();
-                                          self->exportInProgress = false;
-                                          self->refreshTransportUi();
-
-                                          if (success)
-                                              self->showStatus ("Exported 24-bit WAV: " + result.getFullPathName());
-                                          else
-                                              self->showStatus ("Export failed: " + error, true);
-                                      });
+                                  beginWavExport (file, {}, "Exporting 24-bit WAV...");
                               });
+    }
+
+    void MainComponent::exportRegion()
+    {
+        // DD: never start a WAV render while a stems batch (or another render)
+        // is already consuming the Edit.
+        if (exportInProgress || stemsInProgress)
+            return;
+
+        if (session.getEdit() == nullptr)
+        {
+            showStatus ("Open a session before exporting.", true);
+            return;
+        }
+
+        if (! session.hasSelection())
+        {
+            showStatus ("Select a region first: Shift-drag on the timeline ruler.", true);
+            return;
+        }
+
+        // FR-EXP-2: clamp the region to the arrangement so the file length
+        // matches what the engineer sees, and reject an empty result.
+        const auto start = session.getSelectionStartSeconds();
+        const auto end = juce::jmin (session.getSelectionEndSeconds(), session.getTimelineLengthSeconds());
+
+        if (end <= start)
+        {
+            showStatus ("The selected region is empty.", true);
+            return;
+        }
+
+        auto destination = WavExport::defaultDestinationFor (session.getEditFile());
+        destination = destination.getSiblingFile (destination.getFileNameWithoutExtension()
+                                                  + " region" + destination.getFileExtension());
+
+        auto chooser = std::make_shared<juce::FileChooser> ("Export region WAV", destination, "*.wav");
+
+        chooser->launchAsync (juce::FileBrowserComponent::saveMode
+                                  | juce::FileBrowserComponent::canSelectFiles
+                                  | juce::FileBrowserComponent::warnAboutOverwriting,
+                              [this, chooser, start, end] (const juce::FileChooser& fc)
+                              {
+                                  auto file = fc.getResult();
+
+                                  if (file == juce::File())
+                                      return;
+
+                                  if (! file.hasFileExtension ("wav"))
+                                      file = file.withFileExtension ("wav");
+
+                                  beginWavExport (file, { start, end },
+                                                  "Exporting selected region (24-bit WAV)...");
+                              });
+    }
+
+    void MainComponent::beginWavExport (const juce::File& file, WavExport::RenderRange range,
+                                        const juce::String& statusText)
+    {
+        if (exportInProgress || stemsInProgress || session.getEdit() == nullptr)
+            return;
+
+        // Lock the session for the duration of the render: New/Open would reset
+        // the Edit the render thread is reading (use-after-free).
+        exportInProgress = true;
+
+        // FR-EXP-1: save and disable the metronome for the render, and restore
+        // it once the render ends (the completion callback below runs on success,
+        // failure and cancel alike). WavExport::start also enforces this at the
+        // render choke point; doing it here keeps the Session/UI state honest
+        // while the click is off.
+        exportMetronomeWasEnabled = session.isMetronomeEnabled();
+
+        if (exportMetronomeWasEnabled)
+            session.setMetronomeEnabled (false);
+
+        refreshTransportUi();
+        showStatus (statusText);
+
+        juce::Component::SafePointer<MainComponent> safe (this);
+
+        exportHandle = WavExport::start (
+            *session.getEdit(), file,
+            [safe] (bool success, juce::File result, juce::String error)
+            {
+                auto* self = safe.getComponent();
+
+                if (self == nullptr)
+                    return;
+
+                if (self->exportMetronomeWasEnabled)
+                    self->session.setMetronomeEnabled (true);
+
+                self->exportMetronomeWasEnabled = false;
+                self->exportHandle.reset();
+                self->exportInProgress = false;
+                self->refreshTransportUi();
+
+                if (success)
+                    self->showStatus ("Exported 24-bit WAV: " + result.getFullPathName());
+                else
+                    self->showStatus ("Export failed: " + error, true);
+            },
+            true, range);
     }
 
     void MainComponent::exportStems()
@@ -1156,6 +1262,21 @@ namespace rrs
                 g.drawText ("No session loaded", lanes, juce::Justification::centred);
             }
 
+            // FR-EXP-2: shade the selected region across the arrangement so the
+            // export span is unmistakable (drawn under the playhead).
+            if (session.getEdit() != nullptr && session.hasSelection())
+            {
+                const auto length = session.getTimelineLengthSeconds();
+                const auto sx = (float) Timeline::xForSeconds (session.getSelectionStartSeconds(),
+                                                               length, trackLaneArea);
+                const auto ex = (float) Timeline::xForSeconds (session.getSelectionEndSeconds(),
+                                                               length, trackLaneArea);
+                g.setColour (brand::accent.withAlpha (0.14f));
+                g.fillRect (juce::Rectangle<float> (sx, (float) trackLaneArea.getY() + 2.0f,
+                                                    juce::jmax (1.0f, ex - sx),
+                                                    (float) trackLaneArea.getHeight() - 4.0f));
+            }
+
             // Playhead running down the arrangement, using the same x<->time map
             // as the ruler so the two lines up exactly.
             if (session.getEdit() != nullptr)
@@ -1260,7 +1381,12 @@ namespace rrs
         // Ruler directly above the arrangement lanes, same width as the lanes so
         // a click on the ruler and the lane playhead line share one x<->time map.
         timeline.setBounds (middle.removeFromTop (Timeline::preferredHeight));
-        middle.removeFromTop (4);
+        middle.removeFromTop (2);
+
+        // FR-EXP-2: selection start/end readout just under the ruler.
+        selectionLabel.setBounds (middle.removeFromTop (16));
+
+        middle.removeFromTop (2);
         trackLaneArea = middle;
 
         rebuildTrackLaneRects();
@@ -1334,10 +1460,11 @@ namespace rrs
         // [Add track][Remove track] · [Settings][About] — all icon-only now.
         BrandButton* const buttons[] = { &newButton, &openButton, &saveButton, &saveAsButton,
                                          &closeButton, &importButton, &normaliseButton, &exportButton,
+                                         &exportRegionButton, &clearRegionButton,
                                          &stemsButton, &pluginsButton, &routingButton,
                                          &addTrackButton, &removeTrackButton,
                                          &settingsButton, &aboutButton };
-        const int groups[] = { 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2 };
+        const int groups[] = { 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2 };
         constexpr int numButtons = (int) std::size (buttons);
 
         std::vector<Item> items;

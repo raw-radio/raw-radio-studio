@@ -185,6 +185,19 @@ namespace rrs
             small minimum so the strip is always clickable and never divided by
             zero. */
         double getTimelineLengthSeconds() const;
+
+        //==============================================================================
+        // Region selection (FR-EXP-2)
+        /** Sets the export region [start, end] in seconds. The bounds are
+            order-independent (swapped if reversed) and clamped to >= 0; a
+            zero- or negative-length span clears the selection. This is
+            transient UI state and is not serialised with the project. */
+        void setSelectionSeconds (double startSeconds, double endSeconds);
+        void clearSelection();
+        bool hasSelection() const noexcept          { return selectionEndSeconds > selectionStartSeconds; }
+        double getSelectionStartSeconds() const noexcept { return selectionStartSeconds; }
+        double getSelectionEndSeconds() const noexcept   { return selectionEndSeconds; }
+
         bool record();
         bool isAnyTrackArmed() const;
 
@@ -501,6 +514,11 @@ namespace rrs
             `record()`; mirrored onto the engine at apply time (see
             `setCountInMode`). */
         tracktion::Edit::CountIn countInMode = tracktion::Edit::CountIn::none;
+
+        /** Region-selection bounds (FR-EXP-2), in seconds. Empty when
+            `selectionEndSeconds <= selectionStartSeconds`. Transient UI state. */
+        double selectionStartSeconds = 0.0;
+        double selectionEndSeconds = 0.0;
 
         /** Master fader value (dB) and app-level mute. Tracktion has no dedicated
             master mute, so muting is applied by overriding the master volume

@@ -58,9 +58,17 @@ namespace rrs
         void saveSessionAs();
         void importAudioFile();
         void exportSession();
+        void exportRegion();
         void exportStems();
         void showAbout();
         void showSettings();
+
+        /** Starts an offline WAV render of `range` to `file` and manages the
+            busy/metronome state shared by full-session and region export
+            (FR-EXP-1/2). Caller must have checked the edit exists and is not
+            already rendering. */
+        void beginWavExport (const juce::File& file, WavExport::RenderRange range,
+                             const juce::String& statusText);
 
         /** Shows `panel` centred (hiding the other overlay first) or hides it
             when already visible. */
@@ -114,6 +122,8 @@ namespace rrs
         BrandButton importButton { "Import" };
         BrandButton normaliseButton { "Normalize" };
         BrandButton exportButton { "Export WAV", BrandButton::Style::Primary };
+        BrandButton exportRegionButton { "Export region" };
+        BrandButton clearRegionButton { "Clear region" };
         BrandButton stemsButton { "Export stems" };
         BrandButton pluginsButton { "Plugins" };
         BrandButton routingButton { "Routing" };
@@ -131,6 +141,9 @@ namespace rrs
         juce::ComboBox countInBox;
 
         juce::Label titleLabel, transportLabel, statusLabel;
+
+        /** Shows the current region-selection start/end (FR-EXP-2). */
+        juce::Label selectionLabel;
         juce::TooltipWindow tooltipWindow { this, 700 };
 
         std::vector<juce::Rectangle<int>> actionDividers;

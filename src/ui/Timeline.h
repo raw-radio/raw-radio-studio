@@ -22,6 +22,7 @@
 namespace rrs
 {
     class Timeline final : public juce::Component,
+                           public juce::SettableTooltipClient,
                            private juce::Timer
     {
     public:
@@ -60,6 +61,11 @@ namespace rrs
 
         Session& session;
         bool scrubbing = false;
+
+        /** Shift-drag region selection (FR-EXP-2): the anchor is the time under
+            the initial mouse-down; the drag moves the free edge. */
+        bool selecting = false;
+        double selectAnchorSeconds = 0.0;
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (Timeline)
     };

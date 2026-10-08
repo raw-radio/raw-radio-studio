@@ -12,6 +12,8 @@ namespace rrs
     Timeline::Timeline (Session& sessionRef)
         : session (sessionRef)
     {
+        setTooltip ("Click or drag to move the playhead. Shift-drag to select a "
+                    "region, then use Export region.");
         startTimerHz (30);
     }
 
@@ -58,12 +60,39 @@ namespace rrs
 
     void Timeline::mouseDown (const juce::MouseEvent& e)
     {
-        scrubbing = true;
-        seekFromX (e.getPosition().x);
+        const auto length = session.getTimelineLengthSeconds();
+
+        // Shift-drag creates an export region (FR-EXP-2); a plain click keeps
+        // the existing scrub/seek behaviour and clears any stale selection.
+        if (e.mods.isShiftDown())
+        {
+            selecting = true;
+            selectAnchorSeconds = secondsForX (e.getPosition().x, length, getLocalBounds());
+            session.setSelectionSeconds (selectAnchorSeconds, selectAnchorSeconds);
+        }
+        else
+        {
+            selecting = false;
+            session.clearSelection();
+            scrubbing = true;
+            seekFromX (e.getPosition().x);
+        }
+
+        repaint();
     }
 
     void Timeline::mouseDrag (const juce::MouseEvent& e)
     {
+        if (selecting)
+        {
+            session.setSelectionSeconds (selectAnchorSeconds,
+                                         secondsForX (e.getPosition().x,
+                                                      session.getTimelineLengthSeconds(),
+                                                      getLocalBounds()));
+            repaint();
+            return;
+        }
+
         if (scrubbing)
             seekFromX (e.getPosition().x);
     }
@@ -71,6 +100,7 @@ namespace rrs
     void Timeline::mouseUp (const juce::MouseEvent&)
     {
         scrubbing = false;
+        selecting = false;
     }
 
     //==============================================================================
@@ -113,6 +143,37 @@ namespace rrs
 
         const auto length   = juce::jmax (1.0e-6, session.getTimelineLengthSeconds());
         const auto position = session.getPositionSeconds();
+
+        // Region selection (FR-EXP-2): a translucent accent band with solid
+        // edge lines, drawn under the ticks so the ruler stays legible.
+        if (session.hasSelection())
+        {
+            const auto sx = (float) xForSeconds (session.getSelectionStartSeconds(), length, bounds);
+            const auto ex = (float) xForSeconds (session.getSelectionEndSeconds(), length, bounds);
+            const auto selRect = juce::Rectangle<float> (sx, (float) bounds.getY(),
+                                                         juce::jmax (1.0f, ex - sx),
+                                                         (float) bounds.getHeight());
+
+            g.setColour (brand::accent.withAlpha (0.22f));
+            g.fillRect (selRect);
+
+            g.setColour (brand::accent.withAlpha (0.9f));
+            g.fillRect (juce::Rectangle<float> (sx, (float) bounds.getY(), 1.5f,
+                                                (float) bounds.getHeight()));
+            g.fillRect (juce::Rectangle<float> (ex - 1.5f, (float) bounds.getY(), 1.5f,
+                                                (float) bounds.getHeight()));
+
+            // Show the region duration when the band is wide enough to read.
+            if (selRect.getWidth() > 64.0f)
+            {
+                g.setColour (brand::textPrimary);
+                g.setFont (brand::monoRegular (9.0f));
+                g.drawText (formatRulerTime (session.getSelectionEndSeconds()
+                                             - session.getSelectionStartSeconds()),
+                            selRect.toNearestInt().reduced (4, 0),
+                            juce::Justification::centred);
+            }
+        }
 
         // Ticks + labels.
         const auto step = chooseTickStep (length, bounds.getWidth());
