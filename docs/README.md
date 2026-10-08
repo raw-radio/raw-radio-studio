@@ -17,6 +17,8 @@ licensing/corresponding-source section).
 ## Other documentation
 
 - [`../README.md`](../README.md) — project overview, build, run, and license.
+- [`USAGE.md`](USAGE.md) — step-by-step usage guide (plugins, presets, routing,
+  cue mixes, stems export, region export) using the actual UI names.
 - [`../DEPENDENCIES.md`](../DEPENDENCIES.md) — pinned submodules, exact SHAs, and
   the JUCE 9 ↔ Tracktion Engine compatibility verdict.
 - [`../CONTRIBUTING.md`](../CONTRIBUTING.md) — DCO sign-off and PR flow.

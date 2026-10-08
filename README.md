@@ -119,6 +119,9 @@ ended unexpectedly.
 - **[`docs/STUDIO_SPEC.md`](docs/STUDIO_SPEC.md)** — the canonical
   specification: vision, requirements, architecture, licensing, build/CI/release
   plan, and the Epic 0–7 roadmap.
+- **[`docs/USAGE.md`](docs/USAGE.md)** — step-by-step usage guide (plugins,
+  presets, routing, cue mixes, stems export, region export) using the actual UI
+  names.
 - [`DEPENDENCIES.md`](DEPENDENCIES.md) — pinned submodules and the JUCE ↔
   Tracktion compatibility verdict.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — how to contribute.
