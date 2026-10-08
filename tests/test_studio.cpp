@@ -18,6 +18,7 @@
 #include "studio/InputMapping.h"
 #include "studio/LastDirectoryStore.h"
 #include "studio/PluginPresets.h"
+#include "studio/TimeStretch.h"
 #include "ui/BrandFonts.h"
 #include "ui/DevicePanelLayout.h"
 #include "ui/FaderTaper.h"
@@ -699,6 +700,129 @@ TEST_CASE ("fader taper: linear level law and a non-linear S-curve trim")
         CHECK (level.dbToPos (-1000.0f) == doctest::Approx (0.0f));
         CHECK (level.dbToPos (1000.0f) == doctest::Approx (1.0f));
     }
+}
+
+//==============================================================================
+// FR-ED-5: offline time-stretch / pitch-shift through the pinned MIT library.
+// These tests prove the acceptance measurement directly on the DSP: the length
+// changes to the requested target, the audio is still there (not silence), the
+// pitch is preserved by a pure time-stretch, and an independent pitch-shift
+// moves it.
+namespace
+{
+    juce::AudioBuffer<float> makeSine (int numChannels, int numSamples,
+                                       double sampleRate, double frequency,
+                                       float amplitude = 0.5f)
+    {
+        juce::AudioBuffer<float> buffer (numChannels, numSamples);
+
+        for (int ch = 0; ch < numChannels; ++ch)
+            for (int i = 0; i < numSamples; ++i)
+                buffer.setSample (ch, i,
+                                  amplitude * (float) std::sin (2.0 * juce::MathConstants<double>::pi
+                                                                * frequency * (double) i / sampleRate));
+
+        return buffer;
+    }
+
+    float bufferRms (const juce::AudioBuffer<float>& buffer)
+    {
+        return buffer.getRMSLevel (0, 0, buffer.getNumSamples());
+    }
+
+    /** Rough dominant frequency from zero crossings on channel 0, measured over
+        the middle 80% (edges carry transform ramps). */
+    double estimateFrequency (const juce::AudioBuffer<float>& buffer, double sampleRate)
+    {
+        const auto n = buffer.getNumSamples();
+        const auto start = n / 10;
+        const auto end = n - n / 10;
+
+        if (end <= start + 1)
+            return 0.0;
+
+        int crossings = 0;
+
+        for (int i = start + 1; i < end; ++i)
+        {
+            const auto a = buffer.getSample (0, i - 1);
+            const auto b = buffer.getSample (0, i);
+
+            if ((a <= 0.0f && b > 0.0f) || (a >= 0.0f && b < 0.0f))
+                ++crossings;
+        }
+
+        const auto seconds = (double) (end - start) / sampleRate;
+        return (double) crossings / 2.0 / seconds;
+    }
+}
+
+TEST_CASE ("time-stretch changes duration while preserving the signal (FR-ED-5)")
+{
+    constexpr double sampleRate = 48000.0;
+    constexpr double frequency = 440.0;
+    constexpr int inputLength = 48000; // 1.0 s
+
+    const auto input = makeSine (2, inputLength, sampleRate, frequency, 0.5f);
+
+    SUBCASE ("2x stretch to an exact target duration")
+    {
+        const auto result = TimeStretch::stretchToDuration (input, sampleRate, 2.0);
+
+        REQUIRE (result.ok);
+        CHECK (result.error.isEmpty());
+        CHECK (result.sampleRate == doctest::Approx (sampleRate));
+        CHECK (result.audio.getNumSamples() == 96000);
+        CHECK (result.getDurationSeconds() == doctest::Approx (2.0).epsilon (1.0e-6));
+
+        // The audio survived: RMS is in the right ballpark and the tone is not
+        // doubled/halved in frequency (a pure time-stretch keeps pitch).
+        const auto rms = bufferRms (result.audio);
+        INFO ("stretched RMS = " << rms);
+        CHECK (rms > 0.25f);
+        CHECK (rms < 0.7f);
+
+        const auto measured = estimateFrequency (result.audio, sampleRate);
+        INFO ("measured frequency = " << measured);
+        CHECK (measured == doctest::Approx (frequency).epsilon (0.05));
+    }
+
+    SUBCASE ("0.5x compress to an exact target duration")
+    {
+        const auto result = TimeStretch::stretchToDuration (input, sampleRate, 0.5);
+
+        REQUIRE (result.ok);
+        CHECK (result.audio.getNumSamples() == 24000);
+        CHECK (result.getDurationSeconds() == doctest::Approx (0.5).epsilon (1.0e-6));
+        CHECK (bufferRms (result.audio) > 0.25f);
+    }
+
+    SUBCASE ("pitch-shift is independent of duration")
+    {
+        // +12 semitones with a 1.0x time factor: same length, double the pitch.
+        const auto result = TimeStretch::process (input, sampleRate, 1.0, 12.0);
+
+        REQUIRE (result.ok);
+        CHECK (result.audio.getNumSamples() == inputLength);
+
+        const auto measured = estimateFrequency (result.audio, sampleRate);
+        INFO ("pitch-shifted frequency = " << measured);
+        CHECK (measured == doctest::Approx (2.0 * frequency).epsilon (0.05));
+    }
+}
+
+TEST_CASE ("time-stretch rejects invalid requests instead of producing garbage")
+{
+    const auto input = makeSine (2, 4800, 48000.0, 440.0);
+
+    CHECK_FALSE (TimeStretch::process (input, 48000.0, 0.0).ok);
+    CHECK_FALSE (TimeStretch::process (input, 48000.0, -1.0).ok);
+    CHECK_FALSE (TimeStretch::process (input, 48000.0, 100.0).ok); // far outside bounds
+    CHECK_FALSE (TimeStretch::stretchToDuration (input, 48000.0, 0.0).ok);
+    CHECK_FALSE (TimeStretch::stretchToDuration ({}, 48000.0, 1.0).ok);
+
+    // A valid request still succeeds.
+    CHECK (TimeStretch::process (input, 48000.0, 1.0).ok);
 }
 
 //==============================================================================

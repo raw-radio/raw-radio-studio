@@ -59,6 +59,8 @@ option(RAW_RADIO_STUDIO_ENABLE_LV2
 # -----------------------------------------------------------------------------
 set(RAW_RADIO_STUDIO_JUCE_DIR     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/JUCE")
 set(RAW_RADIO_STUDIO_TRACKTION_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/tracktion_engine")
+set(RAW_RADIO_STUDIO_SIGNALSMITH_STRETCH_DIR
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/signalsmith-stretch")
 
 foreach(_raw_radio_dep IN ITEMS
         "${RAW_RADIO_STUDIO_JUCE_DIR}"
@@ -69,6 +71,22 @@ foreach(_raw_radio_dep IN ITEMS
             "Run:  git submodule update --init")
     endif()
 endforeach()
+
+# Signalsmith Stretch is header-only and ships no CMake usage requirement we can
+# use as-is: its own CMakeLists delegates FFTs to the separate signalsmith-linear
+# repo via FetchContent (configure-time network). We therefore do NOT add its
+# subdirectory; we expose the headers through a plain INTERFACE target and rely
+# on the self-contained `dsp/` copy bundled at the pinned tag 1.1.0.
+if(NOT EXISTS "${RAW_RADIO_STUDIO_SIGNALSMITH_STRETCH_DIR}/signalsmith-stretch.h")
+    message(FATAL_ERROR
+        "Dependency submodule is not initialised: "
+        "${RAW_RADIO_STUDIO_SIGNALSMITH_STRETCH_DIR}\n"
+        "Run:  git submodule update --init")
+endif()
+
+add_library(rrs_signalsmith_stretch INTERFACE)
+target_include_directories(rrs_signalsmith_stretch INTERFACE
+    "${RAW_RADIO_STUDIO_SIGNALSMITH_STRETCH_DIR}")
 
 # Tracktion Engine: skip its examples/tests; we only need the module targets.
 set(TE_ADD_EXAMPLES OFF CACHE BOOL "Add the Tracktion Engine example targets" FORCE)
@@ -145,6 +163,7 @@ target_sources(raw_radio_studio PRIVATE
     src/studio/PluginPresets.cpp
     src/studio/Session.cpp
     src/studio/StemsExport.cpp
+    src/studio/TimeStretch.cpp
     src/studio/WavExport.cpp
     src/ui/DevicePanel.cpp
     src/ui/InputMeter.cpp
@@ -212,6 +231,7 @@ endif()
 
 target_link_libraries(raw_radio_studio PRIVATE
     RawRadioStudioAssets
+    rrs_signalsmith_stretch
     tracktion::tracktion_engine
     tracktion::tracktion_graph
     juce::juce_audio_devices
@@ -254,6 +274,7 @@ target_sources(raw_radio_studio_tests PRIVATE
     tests/test_studio.cpp
     src/studio/LastDirectoryStore.cpp
     src/studio/PluginPresets.cpp
+    src/studio/TimeStretch.cpp
     src/ui/BrandFonts.cpp
     src/ui/IconCache.cpp)
 
@@ -270,6 +291,7 @@ target_compile_definitions(raw_radio_studio_tests PRIVATE
 target_link_libraries(raw_radio_studio_tests PRIVATE
     raw_radio_studio_doctest
     RawRadioStudioAssets
+    rrs_signalsmith_stretch
     juce::juce_audio_formats
     juce::juce_graphics
     juce::juce_core
@@ -301,6 +323,7 @@ target_sources(raw_radio_studio_integration_tests PRIVATE
     src/studio/PluginPresets.cpp
     src/studio/Session.cpp
     src/studio/StemsExport.cpp
+    src/studio/TimeStretch.cpp
     src/studio/WavExport.cpp
     # UI sources needed by the plugin-browser layout regression test (BUG 2): the
     # browser is a real component laid out at the minimum window size.
@@ -332,6 +355,7 @@ endif()
 target_link_libraries(raw_radio_studio_integration_tests PRIVATE
     raw_radio_studio_doctest
     RawRadioStudioAssets
+    rrs_signalsmith_stretch
     tracktion::tracktion_engine
     tracktion::tracktion_graph
     juce::juce_audio_utils

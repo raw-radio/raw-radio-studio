@@ -15,6 +15,7 @@
 
 #include "studio/AudioEngine.h"
 #include "studio/PluginHost.h"
+#include "studio/TimeStretch.h"
 #include "ui/BrandFonts.h"
 #include "ui/BrandLookAndFeel.h"
 #include "ui/MainComponent.h"
@@ -53,7 +54,9 @@ namespace
     //                                         selected input and write a WAV;
     //   * `--selftest-multitrack <s> <out>`   same, plus one mono WAV per input
     //                                         channel + per-channel stats (the
-    //                                         4-in Epic 2 hardware acceptance).
+    //                                         4-in Epic 2 hardware acceptance);
+    //   * `--selftest-time-stretch <s>`       synthesise a sine and time-stretch
+    //                                         it to <s> seconds (Epic 4 FR-ED-5).
     //
     // They deliberately reuse `rrs::AudioEngine` (the same Tracktion
     // Engine + DeviceManager path the GUI uses), so a green self-test means the
@@ -506,6 +509,51 @@ namespace
 
         return 0;
     }
+
+    // `--selftest-time-stretch <seconds>`: synthesise a 1 s / 440 Hz stereo sine,
+    // stretch it to the requested duration with the pinned MIT library and print
+    // the measured result. Headless, no device, no window — the FR-ED-5 smoke path.
+    int runSelfTestTimeStretch (const juce::String& targetText)
+    {
+        const auto targetSeconds = targetText.getDoubleValue();
+
+        if (targetSeconds <= 0.0)
+        {
+            std::cerr << "error: usage: --selftest-time-stretch <seconds>\n";
+            return 2;
+        }
+
+        constexpr double sampleRate = 48000.0;
+        constexpr double frequency = 440.0;
+        const auto inputLength = (int) sampleRate; // 1 s source
+
+        juce::AudioBuffer<float> input (2, inputLength);
+
+        for (int ch = 0; ch < 2; ++ch)
+            for (int i = 0; i < inputLength; ++i)
+                input.setSample (ch, i,
+                                 0.5f * (float) std::sin (2.0 * juce::MathConstants<double>::pi
+                                                          * frequency * (double) i / sampleRate));
+
+        const auto result = rrs::TimeStretch::stretchToDuration (input, sampleRate, targetSeconds);
+
+        if (! result.ok)
+        {
+            std::cerr << "error: time-stretch failed: " << result.error << std::endl;
+            return 1;
+        }
+
+        std::cout << "raw-radio-studio time-stretch self-test\n"
+                  << "  source:           1.000 s @ " << sampleRate << " Hz, 440 Hz sine\n"
+                  << "  requested:        " << juce::String (targetSeconds, 3) << " s\n"
+                  << "  rendered samples: " << result.audio.getNumSamples() << "\n"
+                  << "  rendered:         " << juce::String (result.getDurationSeconds(), 3) << " s\n"
+                  << "  RMS:              "
+                  << juce::String (result.audio.getRMSLevel (0, 0, result.audio.getNumSamples()), 4)
+                  << std::endl;
+
+        return 0;
+    }
 }
 
 class RawRadioStudioApplication final : public juce::JUCEApplication
@@ -659,6 +707,19 @@ int main (int argc, char* argv[])
 
     if (args.contains ("--selftest-plugin-scan"))
         return runSelfTestPluginScan (args.contains ("--rescan"));
+
+    if (args.contains ("--selftest-time-stretch"))
+    {
+        const auto index = args.indexOf ("--selftest-time-stretch");
+
+        if (index + 1 >= args.size())
+        {
+            std::cerr << "error: usage: --selftest-time-stretch <seconds>\n";
+            return 2;
+        }
+
+        return runSelfTestTimeStretch (args[index + 1]);
+    }
 
     const bool multitrack = args.contains ("--selftest-multitrack");
     const auto selfTestFlag = multitrack ? juce::String ("--selftest-multitrack")
