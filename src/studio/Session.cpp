@@ -5,6 +5,7 @@
 #include "AppPaths.h"
 #include "AudioImport.h"
 #include "InputRouting.h"
+#include "TimeStretch.h"
 
 #include <algorithm>
 #include <cmath>
@@ -1735,6 +1736,151 @@ namespace rrs
             return wave->getTakeDescriptions();
 
         return {};
+    }
+
+    //==============================================================================
+    // Time-stretch (FR-ED-5): render the clip's visible region to a new file.
+    bool Session::stretchClipToDuration (int trackIndex, int clipIndex, double targetSeconds,
+                                         double semitones)
+    {
+        auto* track = getTrack (trackIndex);
+        te::Clip::Ptr clip (clipAt (trackIndex, clipIndex));
+
+        if (edit == nullptr || track == nullptr || clip == nullptr)
+            return false;
+
+        auto* wave = dynamic_cast<te::WaveAudioClip*> (clip.get());
+
+        if (wave == nullptr)
+        {
+            lastError = "Only wave clips can be time-stretched.";
+            return false;
+        }
+
+        if (! std::isfinite (targetSeconds) || targetSeconds <= minClipSeconds)
+        {
+            lastError = "The target duration must be positive.";
+            return false;
+        }
+
+        const auto originalFile = wave->getOriginalFile();
+
+        if (! originalFile.existsAsFile())
+        {
+            lastError = "The clip's source file is missing: " + originalFile.getFullPathName();
+            return false;
+        }
+
+        const auto clipInfo = [&]
+        {
+            ClipInfo i;
+            getClipInfo (trackIndex, clipIndex, i);
+            return i;
+        }();
+
+        // Read the visible region of the source file.
+        auto& readManager = edit->engine.getAudioFileFormatManager().readFormatManager;
+        std::unique_ptr<juce::AudioFormatReader> reader (readManager.createReaderFor (originalFile));
+
+        if (reader == nullptr || reader->lengthInSamples <= 0)
+        {
+            lastError = "Could not read the clip's source file.";
+            return false;
+        }
+
+        const auto fileSampleRate = reader->sampleRate;
+        const auto numChannels = (int) reader->numChannels;
+        const auto startSample = (juce::int64) std::llround (clipInfo.offsetSeconds * fileSampleRate);
+        const auto available = reader->lengthInSamples - startSample;
+
+        if (startSample < 0 || available <= 0 || numChannels <= 0)
+        {
+            lastError = "The clip region is empty.";
+            return false;
+        }
+
+        auto regionSamples = (juce::int64) std::llround (clipInfo.lengthSeconds * fileSampleRate);
+        regionSamples = juce::jlimit ((juce::int64) 1, available, regionSamples);
+
+        juce::AudioBuffer<float> region (numChannels, (int) regionSamples);
+        region.clear();
+
+        if (! reader->read (&region, 0, (int) regionSamples, startSample, true, true))
+        {
+            lastError = "Could not read the clip region.";
+            return false;
+        }
+
+        const auto stretched = TimeStretch::stretchToDuration (region, fileSampleRate,
+                                                               targetSeconds, semitones);
+
+        if (! stretched.ok)
+        {
+            lastError = stretched.error;
+            return false;
+        }
+
+        // Write the result next to the session, under Processed/.
+        auto outputDir = editFile != juce::File()
+                             ? editFile.getParentDirectory().getChildFile ("Processed")
+                             : juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                   .getChildFile ("raw-radio-studio-processed");
+
+        if (! outputDir.createDirectory())
+        {
+            lastError = "Could not create the processed-audio directory.";
+            return false;
+        }
+
+        const auto baseName = originalFile.getFileNameWithoutExtension() + "-stretch";
+        auto outputFile = outputDir.getChildFile (baseName + ".wav");
+
+        for (int suffix = 2; outputFile.existsAsFile(); ++suffix)
+            outputFile = outputDir.getChildFile (baseName + "-" + juce::String (suffix) + ".wav");
+
+        {
+            juce::WavAudioFormat wav;
+            std::unique_ptr<juce::OutputStream> stream = std::make_unique<juce::FileOutputStream> (outputFile);
+
+            auto writer = wav.createWriterFor (stream,
+                                               juce::AudioFormatWriterOptions{}
+                                                   .withSampleRate (stretched.sampleRate)
+                                                   .withNumChannels (stretched.audio.getNumChannels())
+                                                   .withBitsPerSample (24));
+
+            if (writer == nullptr
+                || ! writer->writeFromAudioSampleBuffer (stretched.audio, 0, stretched.audio.getNumSamples()))
+            {
+                lastError = "Could not write the stretched audio file.";
+                return false;
+            }
+        }
+
+        // Replace the clip with one referencing the new file (the original file
+        // stays on disk untouched).
+        edit->getUndoManager().beginNewTransaction ("Time-stretch clip");
+
+        const auto startSeconds = clipInfo.startSeconds;
+        const auto clipName = clip->getName();
+
+        clip->removeFromParent();
+
+        auto newClip = track->insertWaveClip (clipName, outputFile,
+                                              { { te::TimePosition::fromSeconds (startSeconds),
+                                                  te::TimeDuration::fromSeconds (targetSeconds) },
+                                                {} },
+                                              false);
+
+        if (newClip == nullptr)
+        {
+            lastError = "Could not insert the stretched clip.";
+            return false;
+        }
+
+        newClip->setName (clipName);
+
+        afterClipEdit();
+        return true;
     }
 
     //==============================================================================

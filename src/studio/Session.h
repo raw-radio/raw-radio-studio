@@ -322,6 +322,17 @@ namespace rrs
         /** Human-readable take descriptions, or empty when the clip has none. */
         juce::StringArray getClipTakeDescriptions (int trackIndex, int clipIndex) const;
 
+        // --- Time-stretch (FR-ED-5) ---
+        /** Offline time-stretches the clip's visible region to `targetSeconds`
+            using the pinned free library, writes the result as a new 24-bit WAV
+            next to the session and replaces the clip with one referencing it (the
+            original source file is preserved). `semitones` adds an independent
+            pitch shift (0 = none). Message-thread only; the render blocks the
+            caller (like `normaliseTake`). Returns false with getLastError() set
+            on failure. */
+        bool stretchClipToDuration (int trackIndex, int clipIndex, double targetSeconds,
+                                    double semitones = 0.0);
+
         // --- Undo / redo (FR-ED-6) ---
         bool undo();
         bool redo();

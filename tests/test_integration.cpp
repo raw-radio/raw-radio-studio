@@ -1381,6 +1381,61 @@ TEST_CASE ("Epic 4 comping: master take from 3 takes is non-destructive (FR-ED-4
 }
 
 //==============================================================================
+// Epic 4 (FR-ED-5): time-stretch a clip to a target duration through the pinned
+// free library. The clip is replaced by one referencing a new rendered WAV; the
+// original source file stays on disk. Undo restores the original clip.
+TEST_CASE ("Epic 4 time-stretch: a clip renders to a target duration (FR-ED-5)")
+{
+    auto dir = scratchDirectory ("clip-stretch");
+    constexpr double sampleRate = 48000.0;
+
+    auto wavFile = writeSineWav (dir.getChildFile ("tone.wav"), sampleRate, 1.0, 0.5f, 440.0);
+    REQUIRE (wavFile.existsAsFile());
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Stretch.tracktionedit")));
+    REQUIRE (session.importAudioFile (wavFile));
+
+    const int track = 1;
+    auto clips = session.getClips (track);
+    REQUIRE (clips.size() == 1);
+    const int ci = clips[0].clipIndex;
+    CHECK (clips[0].lengthSeconds == doctest::Approx (1.0).epsilon (0.02));
+
+    // Stretch to 0.5 s.
+    REQUIRE (session.stretchClipToDuration (track, ci, 0.5));
+
+    auto after = session.getClips (track);
+    REQUIRE (after.size() == 1);
+    CHECK (after[0].lengthSeconds == doctest::Approx (0.5).epsilon (0.02));
+    CHECK (after[0].startSeconds == doctest::Approx (0.0).epsilon (0.01));
+
+    auto* stretchedClip = dynamic_cast<te::WaveAudioClip*> (session.getTrack (track)->getClips()[0]);
+    REQUIRE (stretchedClip != nullptr);
+
+    const auto stretchedFile = stretchedClip->getOriginalFile();
+    CHECK (stretchedFile.existsAsFile());
+    CHECK (stretchedFile.getFullPathName().contains ("Processed"));
+    CHECK (stretchedFile != wavFile);
+
+    // The original source is preserved.
+    CHECK (wavFile.existsAsFile());
+
+    // Undo restores the original clip and file.
+    REQUIRE (session.undo());
+    auto restored = session.getClips (track);
+    REQUIRE (restored.size() == 1);
+    CHECK (restored[0].lengthSeconds == doctest::Approx (1.0).epsilon (0.02));
+
+    auto* restoredClip = dynamic_cast<te::WaveAudioClip*> (session.getTrack (track)->getClips()[0]);
+    REQUIRE (restoredClip != nullptr);
+    CHECK (restoredClip->getOriginalFile() == wavFile);
+
+    session.close();
+}
+
+//==============================================================================
 TEST_CASE ("autosave writes the .tmp_ sibling and detectRecovery finds it")
 {
     auto dir = scratchDirectory ("recovery");
