@@ -10,6 +10,9 @@ is the app's `Projects/` folder (see [Where things live](#where-things-live)).
 > **Status: pre-alpha.** Menus and labels can shift. This guide tracks the
 > current build.
 
+Russian translation: [`USAGE_RU.md`](USAGE_RU.md) (the English guide above is
+authoritative if they diverge).
+
 ---
 
 ## 1. Open, save, and recall a project

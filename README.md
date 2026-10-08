@@ -122,6 +122,8 @@ ended unexpectedly.
 - **[`docs/USAGE.md`](docs/USAGE.md)** — step-by-step usage guide (plugins,
   presets, routing, cue mixes, stems export, region export) using the actual UI
   names.
+- **[`docs/USAGE_RU.md`](docs/USAGE_RU.md)** — Russian translation of the usage
+  guide (the English `USAGE.md` is authoritative if they diverge).
 - [`DEPENDENCIES.md`](DEPENDENCIES.md) — pinned submodules and the JUCE ↔
   Tracktion compatibility verdict.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — how to contribute.
