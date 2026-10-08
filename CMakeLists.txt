@@ -20,7 +20,7 @@ cmake_minimum_required(VERSION 3.22)
 # -----------------------------------------------------------------------------
 
 project(raw_radio_studio
-    VERSION 0.1.0
+    VERSION 0.1.1
     DESCRIPTION "raw-radio-studio — open-source (AGPLv3) tracking-first DAW"
     HOMEPAGE_URL "https://github.com/raw-radio/raw-radio-studio"
     LANGUAGES C CXX)

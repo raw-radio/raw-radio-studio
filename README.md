@@ -105,7 +105,7 @@ Headless smoke check (no window is created):
 
 ```bash
 raw-radio-studio --version
-# raw-radio-studio 0.1.0  (JUCE 9.0.3, Tracktion Engine 3.5.0)
+# raw-radio-studio 0.1.1  (JUCE 9.0.3, Tracktion Engine 3.5.0)
 ```
 
 Launched without arguments, the app opens the Epic 1 session window: select the
