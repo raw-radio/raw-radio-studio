@@ -120,6 +120,10 @@ namespace rrs
         static constexpr int snapThresholdPx = 6;
 
         void selectClip (int trackIndex, int clipIndex);
+        /** Selects a track via its lane header, clearing any clip selection, so
+            Remove track can target a track that currently has no clips (owner
+            bug fix). `trackIndex` out of range clears the selection. */
+        void selectTrack (int trackIndex);
         Session::ClipInfo clipInfoFor (int trackIndex, int clipIndex) const;
         juce::Rectangle<int> clipRectFor (int trackIndex, const Session::ClipInfo&) const;
         /** Returns the topmost clip at `position` in `lane`, or -1. */

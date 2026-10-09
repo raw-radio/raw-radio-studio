@@ -3875,3 +3875,43 @@ TEST_CASE ("toggle chips resolve to one state-coloured outline, never stacked (B
     CHECK (disabled.textColour == brand::textDisabled);
     CHECK_FALSE (disabled.useGradient);
 }
+
+
+//==============================================================================
+// Owner bug: deleting an imported "minus" clip left a track behind that could
+// not be removed and blocked adding a new minus. The Session side of the fix is
+// that an empty track is a first-class removable track and importing again
+// afterwards works; the UI now lets the empty lane be clicked to select the
+// track so Remove track targets it (see MainComponent).
+TEST_CASE ("deleting a track's last clip keeps the track removable and import works again")
+{
+    auto dir = scratchDirectory ("remove-empty-track");
+    auto wav = writeSineWav (dir.getChildFile ("minus.wav"), 48000.0, 0.25);
+    REQUIRE (wav.existsAsFile());
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("RemoveEmpty.tracktionedit")));
+    REQUIRE (session.getNumAudioTracks() == 1); // the input track
+
+    REQUIRE (session.importAudioFile (wav));
+    REQUIRE (session.getNumAudioTracks() == 2);
+    const int minusTrack = session.getNumAudioTracks() - 1;
+    REQUIRE (session.getClips (minusTrack).size() == 1);
+
+    // Delete the only clip: the track remains (empty), and is still removable.
+    const auto clipIndex = session.getClips (minusTrack)[0].clipIndex;
+    REQUIRE (session.deleteClip (minusTrack, clipIndex));
+    CHECK (session.getClips (minusTrack).empty());
+    REQUIRE (session.getNumAudioTracks() == 2);
+
+    REQUIRE (session.removeAudioTrack (minusTrack));
+    CHECK (session.getNumAudioTracks() == 1);
+
+    // Importing a fresh backing track after the cleanup still succeeds.
+    REQUIRE (session.importAudioFile (wav));
+    CHECK (session.getNumAudioTracks() == 2);
+    CHECK (session.getClips (session.getNumAudioTracks() - 1).size() == 1);
+
+    session.close();
+}

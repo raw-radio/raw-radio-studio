@@ -154,10 +154,10 @@ namespace rrs
         removeTrackButton.setIconName ("trash");
         removeTrackButton.setIconOnly (true);
         removeTrackButton.setTooltip ("Remove track (deletes the whole track and all its "
-                                      "clips). Removes the selected clip's track, or the last "
-                                      "track when no clip is selected — use it to remove an "
-                                      "imported backing track. To delete only a clip, use "
-                                      "Delete.");
+                                      "clips). Removes the selected track — click a lane header "
+                                      "to select one, even a track with no clips — or the last "
+                                      "track when none is selected. Use it to remove an imported "
+                                      "backing track. To delete only a clip, use Delete.");
 
         settingsButton.setIconName ("gear-six");
         settingsButton.setIconOnly (true);
@@ -281,15 +281,19 @@ namespace rrs
             if (exportInProgress)
                 return;
 
-            // Remove the track the user is pointing at: the selected clip's
-            // track when a clip is selected, otherwise the last track (the
-            // original behaviour). This is how the owner deletes an imported
-            // backing track ("minus") without it having to be the last one.
-            const int target = selectedClipExists() ? selectedTrackIndex
-                                                    : session.getNumAudioTracks() - 1;
+            // Remove the *selected* track. A track is selected by clicking its
+            // lane header (even when it has no clips — owner bug: after deleting
+            // an imported clip the empty track could not be targeted). When no
+            // track is selected, fall back to the last track (original
+            // behaviour). This is how the owner deletes an imported backing
+            // track ("minus") without it having to be the last one.
+            const auto numTracks = session.getNumAudioTracks();
+            const int target = (selectedTrackIndex >= 0 && selectedTrackIndex < numTracks)
+                                   ? selectedTrackIndex
+                                   : numTracks - 1;
             const auto name = session.getTrackName (target);
 
-            if (! session.removeAudioTrack (target))
+            if (target < 0 || ! session.removeAudioTrack (target))
             {
                 showStatus (session.getLastError(), true);
             }
@@ -1308,6 +1312,10 @@ namespace rrs
 
     void MainComponent::onSessionOpened()
     {
+        // A new/opened session has different tracks: drop any stale selection so
+        // Remove track can never target a track index from the previous edit.
+        selectClip (-1, -1);
+
         titleLabel.setText ("raw-radio-studio   -   " + session.getSessionName(),
                             juce::dontSendNotification);
 
@@ -1822,6 +1830,16 @@ namespace rrs
         repaint();
     }
 
+    void MainComponent::selectTrack (int trackIndex)
+    {
+        selectedTrackIndex = (trackIndex >= 0 && trackIndex < session.getNumAudioTracks())
+                                 ? trackIndex
+                                 : -1;
+        selectedClipIndex = -1;
+        refreshEditButtons();
+        repaint();
+    }
+
     void MainComponent::commitClipDrag()
     {
         if (! clipDragActive)
@@ -1969,10 +1987,16 @@ namespace rrs
                 return;
             }
 
-            // Empty lane area keeps the Epic 1/2 arm/disarm behaviour.
+            // Empty lane click selects the track (owner bug fix: a track with no
+            // clips — e.g. after its imported clip was deleted — must still be
+            // targetable by Remove track). Input tracks keep their Epic 1/2
+            // click-to-arm behaviour as well.
+            selectTrack (index);
+
             if (! session.getInputTrackIndices().contains (index))
             {
-                showStatus (session.getTrackName (index) + " is a backing track (playback only).");
+                showStatus (session.getTrackName (index)
+                            + " selected (backing track, playback only). Remove track (trash) removes it.");
                 return;
             }
 
@@ -2171,12 +2195,24 @@ namespace rrs
         if (! selectedClipExists())
             return;
 
-        if (session.deleteClip (selectedTrackIndex, selectedClipIndex))
-            showStatus ("Deleted clip.");
-        else
-            showStatus (session.getLastError(), true);
+        const auto track = selectedTrackIndex;
 
-        selectClip (-1, -1);
+        if (session.deleteClip (selectedTrackIndex, selectedClipIndex))
+        {
+            // Keep the track selected so a now-empty imported track can be
+            // removed with one click of Remove track (owner bug fix). The track
+            // is intentionally NOT auto-deleted: it may be an input track, and
+            // its mixer/routing state should not vanish as a side effect of a
+            // clip delete. The user removes it explicitly when ready.
+            selectedClipIndex = -1;
+            selectedTrackIndex = track;
+            showStatus ("Deleted clip. Remove track (trash) removes the now-empty track.");
+        }
+        else
+        {
+            showStatus (session.getLastError(), true);
+        }
+
         refreshTransportUi();
     }
 
