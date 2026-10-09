@@ -35,6 +35,9 @@ licensing/corresponding-source section).
 - [`EPIC4_GAPS.md`](EPIC4_GAPS.md) — Epic 4 items still open (snap/grid/markers/
   tempo, automation, engine-CompManager comping, limited time-stretch UI, fade
   curve choice), and the OQ-2 time-stretch licence resolution.
+- [`EPIC5_GAPS.md`](EPIC5_GAPS.md) — Epic 5 items still open (real MIDI
+  controller / real VST3 instrument manual verification, basic piano-roll UX,
+  asynchronous MIDI device list).
 
 Build runbook, compatibility notes, and CI/release notes will be expanded as
 later epics land.
