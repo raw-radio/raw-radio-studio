@@ -83,6 +83,23 @@ namespace rrs
         bool removeAudioTrack (int index);
 
         //==============================================================================
+        // MIDI / instrument tracks (Epic 5 — FR-MIDI-3/FR-MIDI-4)
+        //
+        // A MIDI track is an ordinary engine audio track that carries the
+        // `rrsMidiTrack` marker: it has no hardware-input mapping, it may host an
+        // instrument plugin (the instrument slot), and it records MIDI from a
+        // selected MIDI input device. MIDI and audio tracks coexist in one Edit
+        // and both render through the normal export path.
+        /** True when `trackIndex` is a MIDI/instrument track. */
+        bool isMidiTrack (int trackIndex) const;
+        int getNumMidiTracks() const;
+
+        /** Adds a new MIDI/instrument track at the end of the track list. Returns
+            the new track index, or -1 on failure. The track starts empty; insert
+            an instrument into its instrument slot to make it audible. */
+        int addMidiTrack (const juce::String& name = {});
+
+        //==============================================================================
         // Per-track device-agnostic input mapping (FR-REC-3, Epic 2)
         bool setTrackInputMapping (int trackIndex, const InputMapping&);
         InputMapping getTrackInputMapping (int trackIndex) const;
@@ -411,6 +428,100 @@ namespace rrs
         bool showPluginEditor (int trackIndex, int pluginIndex);
 
         //==============================================================================
+        // Instrument hosting + MIDI input + MIDI clips (Epic 5 — FR-MIDI-1..4)
+        //
+        // Virtual instruments live in a dedicated *instrument slot* on a MIDI
+        // track, separate from the effect insert chain (see studio/PluginSelection.h).
+        // MIDI input devices are the engine's `MidiInputDevice`s; the selected
+        // device is routed to an armed MIDI track. MIDI recording uses the
+        // engine transport exactly like audio: arm a MIDI track, select a MIDI
+        // input, and record; Tracktion captures the incoming messages into a MIDI
+        // clip. Note edits are addressed by `clipIndex` in `track->getClips()`
+        // and note positions in *clip beats* (the piano-roll coordinate space).
+
+        /** Inserts an instrument plugin into a track's instrument slot and marks
+            the track as a MIDI/instrument track. Instruments belong on MIDI
+            tracks, never in the effect insert chain. Persists. Returns false with
+            getLastError() set when the plugin is not an instrument or cannot be
+            created. */
+        bool insertInstrumentPlugin (int trackIndex, const juce::PluginDescription&);
+
+        /** Inserts one of Tracktion's built-in instruments by xml type name
+            (e.g. "4osc", "sampler"). Used by the headless self-test/tests as a
+            deterministic stand-in when no VST3 instrument is installed. Marks the
+            track as a MIDI track. Persists. */
+        bool insertBuiltInInstrument (int trackIndex, const juce::String& xmlTypeName);
+
+        /** True when the track already hosts an instrument in its slot. */
+        bool trackHasInstrument (int trackIndex) const;
+
+        /** Names of the MIDI input devices the engine currently knows about
+            (empty when none). Message thread only. */
+        juce::StringArray getMidiInputDeviceNames() const;
+        int getNumMidiInputDevices() const;
+
+        /** Enables/disables the MIDI input device at `index`. Enabling makes its
+            messages available to targeted tracks. Persists the selection. */
+        bool setMidiInputDeviceEnabled (int index, bool enabled);
+
+        /** The MIDI input device name currently selected for routing, or empty.
+            Persisted on the Edit state tree. */
+        juce::String getSelectedMidiInputName() const;
+
+        /** Selects the MIDI input device by name (also enables it). An empty name
+            clears the selection. */
+        bool setSelectedMidiInput (const juce::String& name);
+
+        /** Arms/disarms a MIDI track: routes the selected MIDI input to the track
+            and toggles its record-enable. Returns false with getLastError() set
+            when the track is not a MIDI track or no MIDI input is selected. */
+        bool armMidiTrack (int trackIndex, bool shouldArm);
+        bool isMidiTrackArmed (int trackIndex) const;
+
+        // --- MIDI clips + piano-roll note editing (FR-MIDI-2) ---
+        struct MidiClipInfo
+        {
+            int trackIndex = -1;
+            int clipIndex = -1;
+            juce::String name;
+            double startSeconds = 0.0;
+            double lengthSeconds = 0.0;
+            bool isMuted = false;
+            int numNotes = 0;
+        };
+
+        struct MidiNoteInfo
+        {
+            int noteNumber = 60;        ///< MIDI pitch (0..127).
+            int velocity = 100;         ///< 1..127.
+            double startBeats = 0.0;    ///< Start, in beats, from the clip start.
+            double lengthBeats = 0.25;  ///< Duration, in beats.
+        };
+
+        /** All MIDI clips on a track, sorted by timeline start. */
+        std::vector<MidiClipInfo> getMidiClips (int trackIndex) const;
+        bool getMidiClipInfo (int trackIndex, int clipIndex, MidiClipInfo&) const;
+
+        /** The notes in a MIDI clip, in clip-beat order (the piano-roll view). */
+        std::vector<MidiNoteInfo> getMidiNotes (int trackIndex, int clipIndex) const;
+
+        /** Inserts an empty MIDI clip of `lengthSeconds` at `startSeconds`.
+            Returns the new clip's index in `track->getClips()`, or -1. */
+        int createMidiClip (int trackIndex, double startSeconds, double lengthSeconds);
+
+        /** Piano-roll edits, each one undoable transaction. Positions are in clip
+            beats. `addMidiNote` returns the new note's index, or -1. */
+        int addMidiNote (int trackIndex, int clipIndex, int noteNumber,
+                         double startBeats, double lengthBeats, int velocity = 100);
+        bool moveMidiNote (int trackIndex, int clipIndex, int noteIndex,
+                           int newNoteNumber, double newStartBeats);
+        bool resizeMidiNote (int trackIndex, int clipIndex, int noteIndex, double newLengthBeats);
+        bool removeMidiNote (int trackIndex, int clipIndex, int noteIndex);
+
+        /** Sets a MIDI clip's timeline length (seconds). Persists. */
+        bool setMidiClipLength (int trackIndex, int clipIndex, double lengthSeconds);
+
+        //==============================================================================
         // Plugin preset management (FR-MIX-6)
         //
         // User presets store the hosted plugin's raw JUCE state
@@ -608,6 +719,16 @@ namespace rrs
 
         /** True when the track is a record/input track (marked at creation). */
         bool isInputTrack (const tracktion::AudioTrack&) const;
+
+        /** True when the track is a MIDI/instrument track (Epic 5 marker). */
+        bool isMidiTrack (const tracktion::AudioTrack&) const;
+
+        /** The clip at `clipIndex` in `track->getClips()`, cast to MidiClip, or
+            nullptr when it is not a MIDI clip. */
+        tracktion::MidiClip* midiClipAt (int trackIndex, int clipIndex) const;
+
+        /** The enabled/known MIDI input device with the given name, or nullptr. */
+        tracktion::MidiInputDevice* findMidiInputByName (const juce::String& name) const;
 
         /** Engine-order indices of the record/input tracks (Epic 1 back-compat:
             a session with no markers treats track 0 as the input track). */

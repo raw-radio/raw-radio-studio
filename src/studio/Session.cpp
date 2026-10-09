@@ -28,6 +28,15 @@ namespace rrs
         const juce::Identifier idLayout       { "rrsInputLayout" };
         const juce::Identifier idInputGainDb  { "rrsInputGainDb" };
 
+        // Epic 5: marks an engine audio track as a MIDI/instrument track (no
+        // hardware-input mapping; may host an instrument; records MIDI). Stored
+        // on the Track's ValueTree so it survives save/open.
+        const juce::Identifier idMidiTrack    { "rrsMidiTrack" };
+
+        // Epic 5: the MIDI input device name selected for routing, stored on the
+        // Edit state tree so the selection survives save/open.
+        const juce::Identifier idMidiInput     { "rrsMidiInput" };
+
         // Per-session count-in. Tracktion stores the count-in in the user-global
         // Settings.xml, so the app keeps its own copy on the Edit state tree to
         // make it survive save/open and to re-apply it at record start.
@@ -415,11 +424,65 @@ namespace rrs
                 indices.add (i);
 
         // Back-compat: an Epic 1 session (or one opened before this version)
-        // has no markers; the first track is the record track.
-        if (indices.isEmpty() && ! tracks.isEmpty())
+        // has no markers; the first track is the record track. Epic 5: a MIDI
+        // track is never an input track, so it is not chosen here.
+        if (indices.isEmpty() && ! tracks.isEmpty() && ! isMidiTrack (*tracks[0]))
             indices.add (0);
 
         return indices;
+    }
+
+    //==============================================================================
+    // MIDI / instrument tracks (Epic 5)
+    bool Session::isMidiTrack (const te::AudioTrack& track) const
+    {
+        return (bool) track.state.getProperty (idMidiTrack, false);
+    }
+
+    bool Session::isMidiTrack (int trackIndex) const
+    {
+        auto* track = getTrack (trackIndex);
+        return track != nullptr && isMidiTrack (*track);
+    }
+
+    int Session::getNumMidiTracks() const
+    {
+        int count = 0;
+
+        if (edit != nullptr)
+            for (auto* track : te::getAudioTracks (*edit))
+                if (isMidiTrack (*track))
+                    ++count;
+
+        return count;
+    }
+
+    int Session::addMidiTrack (const juce::String& name)
+    {
+        if (edit == nullptr)
+        {
+            lastError = "Open a session before adding tracks.";
+            return -1;
+        }
+
+        auto track = edit->insertNewAudioTrack (te::TrackInsertPoint::getEndOfTracks (*edit), nullptr, true);
+
+        if (track == nullptr)
+        {
+            lastError = "Could not create the MIDI track.";
+            return -1;
+        }
+
+        track->state.setProperty (idMidiTrack, true, nullptr);
+        track->setName (name.isNotEmpty()
+                            ? name
+                            : ("MIDI " + juce::String (getNumMidiTracks())));
+
+        edit->restartPlayback();
+        save();
+        sendChangeMessage();
+        clearLastError();
+        return getNumAudioTracks() - 1;
     }
 
     tracktion::WaveInputDevice* Session::resolveInputDeviceFor (const InputMapping& mapping) const
@@ -745,11 +808,27 @@ namespace rrs
                         anyMarked = true;
 
                 // An opened Epic 1 session (or a default edit) has no markers:
-                // track 0 is the record track.
+                // track 0 is the record track. Epic 5: when track 0 is a MIDI
+                // track (no audio-input track exists), add a fresh input track
+                // rather than mutating the MIDI track into one.
                 if (! anyMarked)
                 {
-                    tracks[0]->setName ("Input 1");
-                    writeTrackMapping (*tracks[0], InputMapping { 0, 1, InputLayout::Auto });
+                    if (isMidiTrack (*tracks[0]))
+                    {
+                        auto track = edit->insertNewAudioTrack (te::TrackInsertPoint::getEndOfTracks (*edit),
+                                                                nullptr, true);
+
+                        if (track != nullptr)
+                        {
+                            track->setName ("Input 1");
+                            writeTrackMapping (*track, InputMapping { 0, 1, InputLayout::Auto });
+                        }
+                    }
+                    else
+                    {
+                        tracks[0]->setName ("Input 1");
+                        writeTrackMapping (*tracks[0], InputMapping { 0, 1, InputLayout::Auto });
+                    }
                 }
             }
         }
@@ -966,6 +1045,11 @@ namespace rrs
             return false;
         }
 
+        // Epic 5: a MIDI/instrument track arms its MIDI input instead of a wave
+        // input.
+        if (isMidiTrack (*track))
+            return armMidiTrack (trackIndex, shouldBeArmed);
+
         // Imported/backing tracks are playback-only: arming them would try to
         // bind them to a hardware input (and used to mutate them into input
         // tracks). Reject clearly instead.
@@ -1003,6 +1087,9 @@ namespace rrs
         if (edit == nullptr || track == nullptr)
             return false;
 
+        if (isMidiTrack (*track))
+            return isMidiTrackArmed (trackIndex);
+
         for (auto* instance : edit->getAllInputDevices())
             if (te::isOnTargetTrack (*instance, *track, 0))
                 if (instance->isRecordingEnabled (track->itemID))
@@ -1013,7 +1100,7 @@ namespace rrs
 
     bool Session::isAnyTrackArmed() const
     {
-        for (auto index : inputTrackIndices())
+        for (int index = 0; index < getNumAudioTracks(); ++index)
             if (isTrackArmed (index))
                 return true;
 
@@ -2049,7 +2136,10 @@ namespace rrs
 
         recordPassActive = true;
 
-        for (auto index : inputTrackIndices())
+        // Every armed track — wave input or MIDI/instrument — has its existing
+        // clips muted for the pass so a new take is not played back to the
+        // performer (Epic 5: this includes MIDI takes).
+        for (int index = 0; index < getNumAudioTracks(); ++index)
         {
             if (! isTrackArmed (index))
                 continue;
@@ -2426,6 +2516,514 @@ namespace rrs
 
         external->showWindowExplicitly();
         return true;
+    }
+
+    //==============================================================================
+    // Instrument hosting (Epic 5 — FR-MIDI-3)
+    bool Session::trackHasInstrument (int trackIndex) const
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (track == nullptr)
+            return false;
+
+        for (auto* plugin : track->pluginList)
+            if (plugin != nullptr && plugin->isSynth())
+                return true;
+
+        return false;
+    }
+
+    bool Session::insertInstrumentPlugin (int trackIndex, const juce::PluginDescription& description)
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (edit == nullptr || track == nullptr)
+        {
+            lastError = "No such track.";
+            return false;
+        }
+
+        // Instrument slot only: audio effects belong in the effect insert chain
+        // on the track's Plugins panel (see studio/PluginSelection.h).
+        if (auto reason = plugin_selection::instrumentRejectionReason (description.isInstrument,
+                                                                       description.category);
+            reason.isNotEmpty())
+        {
+            lastError = reason;
+            return false;
+        }
+
+        auto plugin = edit->getPluginCache().createNewPlugin (te::ExternalPlugin::xmlTypeName, description);
+
+        if (plugin == nullptr)
+        {
+            lastError = "Could not create instrument: " + description.name;
+            return false;
+        }
+
+        // Insert the instrument at the head of the chain (it must generate before
+        // any effect), unless the slot is already taken — then append so the
+        // second instrument/effect order is stable.
+        const int index = trackHasInstrument (trackIndex) ? -1 : 0;
+        track->pluginList.insertPlugin (plugin, index, nullptr);
+        track->state.setProperty (idMidiTrack, true, nullptr);
+
+        edit->restartPlayback();
+        save();
+        sendChangeMessage();
+        clearLastError();
+        return true;
+    }
+
+    bool Session::insertBuiltInInstrument (int trackIndex, const juce::String& xmlTypeName)
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (edit == nullptr || track == nullptr)
+        {
+            lastError = "No such track.";
+            return false;
+        }
+
+        if (xmlTypeName.isEmpty())
+        {
+            lastError = "No instrument type was given.";
+            return false;
+        }
+
+        auto plugin = edit->getPluginCache().createNewPlugin (xmlTypeName, {});
+
+        if (plugin == nullptr)
+        {
+            lastError = "Could not create built-in instrument: " + xmlTypeName;
+            return false;
+        }
+
+        const int index = trackHasInstrument (trackIndex) ? -1 : 0;
+        track->pluginList.insertPlugin (plugin, index, nullptr);
+        track->state.setProperty (idMidiTrack, true, nullptr);
+
+        edit->restartPlayback();
+        save();
+        sendChangeMessage();
+        clearLastError();
+        return true;
+    }
+
+    //==============================================================================
+    // MIDI input (Epic 5 — FR-MIDI-1/FR-MIDI-4)
+    juce::StringArray Session::getMidiInputDeviceNames() const
+    {
+        juce::StringArray names;
+
+        if (edit == nullptr)
+            return names;
+
+        for (auto& device : audio.deviceManager().getMidiInDevices())
+            if (device != nullptr)
+                names.add (device->getName());
+
+        return names;
+    }
+
+    int Session::getNumMidiInputDevices() const
+    {
+        return edit != nullptr ? (int) audio.deviceManager().getMidiInDevices().size() : 0;
+    }
+
+    te::MidiInputDevice* Session::findMidiInputByName (const juce::String& name) const
+    {
+        if (edit == nullptr || name.isEmpty())
+            return nullptr;
+
+        for (auto& device : audio.deviceManager().getMidiInDevices())
+            if (device != nullptr && device->getName() == name)
+                return device.get();
+
+        return nullptr;
+    }
+
+    bool Session::setMidiInputDeviceEnabled (int index, bool enabled)
+    {
+        auto devices = audio.deviceManager().getMidiInDevices();
+
+        if (! juce::isPositiveAndBelow (index, (int) devices.size()))
+        {
+            lastError = "No such MIDI input device.";
+            return false;
+        }
+
+        auto& device = devices[(size_t) index];
+
+        if (device == nullptr)
+            return false;
+
+        device->setEnabled (enabled);
+        audio.deviceManager().dispatchPendingUpdates();
+        clearLastError();
+        sendChangeMessage();
+        return true;
+    }
+
+    juce::String Session::getSelectedMidiInputName() const
+    {
+        return edit != nullptr ? edit->state.getProperty (idMidiInput).toString() : juce::String();
+    }
+
+    bool Session::setSelectedMidiInput (const juce::String& name)
+    {
+        if (edit == nullptr)
+            return false;
+
+        edit->state.setProperty (idMidiInput, name, nullptr);
+
+        if (name.isNotEmpty())
+            if (auto* device = findMidiInputByName (name))
+                device->setEnabled (true);
+
+        audio.deviceManager().dispatchPendingUpdates();
+        save();
+        sendChangeMessage();
+        clearLastError();
+        return true;
+    }
+
+    bool Session::armMidiTrack (int trackIndex, bool shouldArm)
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (edit == nullptr || track == nullptr)
+        {
+            lastError = "No track to arm.";
+            return false;
+        }
+
+        if (! isMidiTrack (*track))
+        {
+            lastError = "Only MIDI tracks can be armed with a MIDI input.";
+            return false;
+        }
+
+        // Resolve the selected MIDI input, falling back to the first device so a
+        // fresh session can arm without an explicit selection.
+        auto* device = findMidiInputByName (getSelectedMidiInputName());
+
+        if (device == nullptr)
+        {
+            auto devices = audio.deviceManager().getMidiInDevices();
+
+            if (! devices.empty())
+                device = devices.front().get();
+
+            if (device != nullptr)
+                edit->state.setProperty (idMidiInput, device->getName(), nullptr);
+        }
+
+        if (device == nullptr)
+        {
+            lastError = "No MIDI input device is available.";
+            return false;
+        }
+
+        device->setEnabled (true);
+        audio.deviceManager().dispatchPendingUpdates();
+
+        bool found = false;
+
+        for (auto* instance : edit->getAllInputDevices())
+        {
+            if (dynamic_cast<te::MidiInputDevice*> (&instance->getInputDevice()) == nullptr)
+                continue;
+
+            if (&instance->getInputDevice() != device)
+                continue;
+
+            if (auto result = instance->setTarget (track->itemID, true, &edit->getUndoManager(), 0); ! result)
+            {
+                lastError = result.error();
+                continue;
+            }
+
+            instance->setRecordingEnabled (track->itemID, shouldArm);
+            found = true;
+        }
+
+        if (! found)
+        {
+            lastError = "Could not route the MIDI input to the track.";
+            return false;
+        }
+
+        edit->restartPlayback();
+        clearLastError();
+        sendChangeMessage();
+        return true;
+    }
+
+    bool Session::isMidiTrackArmed (int trackIndex) const
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (edit == nullptr || track == nullptr)
+            return false;
+
+        for (auto* instance : edit->getAllInputDevices())
+        {
+            if (dynamic_cast<te::MidiInputDevice*> (&instance->getInputDevice()) == nullptr)
+                continue;
+
+            if (te::isOnTargetTrack (*instance, *track, 0)
+                && instance->isRecordingEnabled (track->itemID))
+                return true;
+        }
+
+        return false;
+    }
+
+    //==============================================================================
+    // MIDI clips + piano-roll note editing (Epic 5 — FR-MIDI-2)
+    te::MidiClip* Session::midiClipAt (int trackIndex, int clipIndex) const
+    {
+        return dynamic_cast<te::MidiClip*> (clipAt (trackIndex, clipIndex));
+    }
+
+    int Session::createMidiClip (int trackIndex, double startSeconds, double lengthSeconds)
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (edit == nullptr || track == nullptr)
+        {
+            lastError = "No such track.";
+            return -1;
+        }
+
+        if (lengthSeconds <= 0.0)
+        {
+            lastError = "A MIDI clip must have a positive length.";
+            return -1;
+        }
+
+        const auto start = juce::jmax (0.0, startSeconds);
+        const auto range = te::TimeRange { te::TimePosition::fromSeconds (start),
+                                           te::TimePosition::fromSeconds (start + lengthSeconds) };
+
+        edit->getUndoManager().beginNewTransaction ("Create MIDI clip");
+
+        auto clip = track->insertMIDIClip (range, nullptr);
+
+        if (clip == nullptr)
+        {
+            lastError = "Could not create the MIDI clip.";
+            return -1;
+        }
+
+        track->state.setProperty (idMidiTrack, true, nullptr);
+        afterClipEdit();
+        clearLastError();
+        return track->getClips().indexOf (clip.get());
+    }
+
+    std::vector<Session::MidiClipInfo> Session::getMidiClips (int trackIndex) const
+    {
+        std::vector<MidiClipInfo> infos;
+        auto* track = getTrack (trackIndex);
+
+        if (track == nullptr)
+            return infos;
+
+        const auto clips = track->getClips();
+
+        for (int i = 0; i < clips.size(); ++i)
+        {
+            auto* midi = dynamic_cast<te::MidiClip*> (clips[i]);
+
+            if (midi == nullptr)
+                continue;
+
+            MidiClipInfo info;
+            info.trackIndex = trackIndex;
+            info.clipIndex = i;
+            info.name = midi->getName();
+            info.startSeconds = midi->getPosition().time.getStart().inSeconds();
+            info.lengthSeconds = midi->getPosition().time.getLength().inSeconds();
+            info.isMuted = midi->isMuted();
+            info.numNotes = midi->getSequence().getNumNotes();
+            infos.push_back (std::move (info));
+        }
+
+        std::sort (infos.begin(), infos.end(),
+                   [] (const MidiClipInfo& a, const MidiClipInfo& b)
+                   {
+                       if (a.startSeconds < b.startSeconds)
+                           return true;
+
+                       if (b.startSeconds < a.startSeconds)
+                           return false;
+
+                       return a.clipIndex < b.clipIndex;
+                   });
+
+        return infos;
+    }
+
+    bool Session::getMidiClipInfo (int trackIndex, int clipIndex, MidiClipInfo& info) const
+    {
+        auto* midi = midiClipAt (trackIndex, clipIndex);
+
+        if (midi == nullptr)
+            return false;
+
+        info = MidiClipInfo();
+        info.trackIndex = trackIndex;
+        info.clipIndex = clipIndex;
+        info.name = midi->getName();
+        info.startSeconds = midi->getPosition().time.getStart().inSeconds();
+        info.lengthSeconds = midi->getPosition().time.getLength().inSeconds();
+        info.isMuted = midi->isMuted();
+        info.numNotes = midi->getSequence().getNumNotes();
+        return true;
+    }
+
+    std::vector<Session::MidiNoteInfo> Session::getMidiNotes (int trackIndex, int clipIndex) const
+    {
+        std::vector<MidiNoteInfo> notes;
+        auto* midi = midiClipAt (trackIndex, clipIndex);
+
+        if (midi == nullptr)
+            return notes;
+
+        const auto& sequence = midi->getSequence().getNotes();
+        notes.reserve ((size_t) sequence.size());
+
+        for (auto* note : sequence)
+        {
+            if (note == nullptr)
+                continue;
+
+            MidiNoteInfo info;
+            info.noteNumber = note->getNoteNumber();
+            info.velocity = note->getVelocity();
+            info.startBeats = note->getStartBeat().inBeats();
+            info.lengthBeats = note->getLengthBeats().inBeats();
+            notes.push_back (info);
+        }
+
+        return notes;
+    }
+
+    int Session::addMidiNote (int trackIndex, int clipIndex, int noteNumber,
+                              double startBeats, double lengthBeats, int velocity)
+    {
+        auto* midi = midiClipAt (trackIndex, clipIndex);
+
+        if (edit == nullptr || midi == nullptr)
+        {
+            lastError = "No such MIDI clip.";
+            return -1;
+        }
+
+        edit->getUndoManager().beginNewTransaction ("Add MIDI note");
+
+        auto* note = midi->getSequence().addNote (juce::jlimit (0, 127, noteNumber),
+                                                  te::BeatPosition::fromBeats (juce::jmax (0.0, startBeats)),
+                                                  te::BeatDuration::fromBeats (juce::jmax (0.01, lengthBeats)),
+                                                  juce::jlimit (1, 127, velocity),
+                                                  0, &edit->getUndoManager());
+
+        if (note == nullptr)
+        {
+            lastError = "Could not add the MIDI note.";
+            return -1;
+        }
+
+        afterClipEdit();
+        clearLastError();
+        return midi->getSequence().getNotes().indexOf (note);
+    }
+
+    bool Session::moveMidiNote (int trackIndex, int clipIndex, int noteIndex,
+                                int newNoteNumber, double newStartBeats)
+    {
+        auto* midi = midiClipAt (trackIndex, clipIndex);
+
+        if (edit == nullptr || midi == nullptr)
+            return false;
+
+        auto& notes = midi->getSequence().getNotes();
+
+        if (! juce::isPositiveAndBelow (noteIndex, notes.size()))
+        {
+            lastError = "No such MIDI note.";
+            return false;
+        }
+
+        edit->getUndoManager().beginNewTransaction ("Move MIDI note");
+        auto* note = notes[noteIndex];
+        note->setNoteNumber (juce::jlimit (0, 127, newNoteNumber), &edit->getUndoManager());
+        note->setStartAndLength (te::BeatPosition::fromBeats (juce::jmax (0.0, newStartBeats)),
+                                 note->getLengthBeats(), &edit->getUndoManager());
+        afterClipEdit();
+        clearLastError();
+        return true;
+    }
+
+    bool Session::resizeMidiNote (int trackIndex, int clipIndex, int noteIndex, double newLengthBeats)
+    {
+        auto* midi = midiClipAt (trackIndex, clipIndex);
+
+        if (edit == nullptr || midi == nullptr)
+            return false;
+
+        auto& notes = midi->getSequence().getNotes();
+
+        if (! juce::isPositiveAndBelow (noteIndex, notes.size()))
+        {
+            lastError = "No such MIDI note.";
+            return false;
+        }
+
+        edit->getUndoManager().beginNewTransaction ("Resize MIDI note");
+        auto* note = notes[noteIndex];
+        note->setStartAndLength (note->getStartBeat(),
+                                 te::BeatDuration::fromBeats (juce::jmax (0.01, newLengthBeats)),
+                                 &edit->getUndoManager());
+        afterClipEdit();
+        clearLastError();
+        return true;
+    }
+
+    bool Session::removeMidiNote (int trackIndex, int clipIndex, int noteIndex)
+    {
+        auto* midi = midiClipAt (trackIndex, clipIndex);
+
+        if (edit == nullptr || midi == nullptr)
+            return false;
+
+        auto& notes = midi->getSequence().getNotes();
+
+        if (! juce::isPositiveAndBelow (noteIndex, notes.size()))
+        {
+            lastError = "No such MIDI note.";
+            return false;
+        }
+
+        edit->getUndoManager().beginNewTransaction ("Delete MIDI note");
+        midi->getSequence().removeNote (*notes[noteIndex], &edit->getUndoManager());
+        afterClipEdit();
+        clearLastError();
+        return true;
+    }
+
+    bool Session::setMidiClipLength (int trackIndex, int clipIndex, double lengthSeconds)
+    {
+        auto* midi = midiClipAt (trackIndex, clipIndex);
+
+        if (edit == nullptr || midi == nullptr || lengthSeconds <= 0.0)
+            return false;
+
+        const auto start = midi->getPosition().time.getStart().inSeconds();
+        return trimClipEnd (trackIndex, clipIndex, start + lengthSeconds);
     }
 
     //==============================================================================

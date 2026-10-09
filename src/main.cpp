@@ -16,6 +16,8 @@
 #include "studio/AudioEngine.h"
 #include "studio/PluginHost.h"
 #include "studio/TimeStretch.h"
+#include "studio/Session.h"
+#include "studio/WavExport.h"
 #include "ui/BrandFonts.h"
 #include "ui/BrandLookAndFeel.h"
 #include "ui/MainComponent.h"
@@ -57,6 +59,10 @@ namespace
     //                                         4-in Epic 2 hardware acceptance);
     //   * `--selftest-time-stretch <s>`       synthesise a sine and time-stretch
     //                                         it to <s> seconds (Epic 4 FR-ED-5).
+    //   * `--selftest-midi [<out.wav>]`        inject MIDI notes into a clip,
+    //                                         render it through a built-in
+    //                                         stand-in instrument and report the
+    //                                         measured level (Epic 5 FR-MIDI-3).
     //
     // They deliberately reuse `rrs::AudioEngine` (the same Tracktion
     // Engine + DeviceManager path the GUI uses), so a green self-test means the
@@ -554,6 +560,121 @@ namespace
 
         return 0;
     }
+
+    // `--selftest-midi [<out.wav>]`: Epic 5 headless smoke path. Builds a MIDI
+    // clip (notes injected through the piano-roll/Session API), hosts Tracktion's
+    // built-in `4osc` synth as the deterministic stand-in instrument (no VST3
+    // required), renders the session offline and reports the measured peak/RMS.
+    // A silent render fails. Enumerates MIDI inputs too. No window, no device.
+    int runSelfTestMidi (const juce::String& outputPath)
+    {
+        const auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                             .getChildFile ("raw-radio-studio-selftest-midi");
+        dir.createDirectory();
+
+        const auto dest = outputPath.isEmpty()
+                              ? dir.getChildFile ("selftest-midi.wav")
+                              : juce::File::getCurrentWorkingDirectory().getChildFile (outputPath);
+
+        const juce::ScopedJuceInitialiser_GUI juceInit;
+        rrs::AudioEngine audio (false);
+        rrs::Session session (audio);
+
+        if (! session.createNew (dir.getChildFile ("selftest-midi.tracktionedit")))
+        {
+            std::cerr << "error: could not create a session: " << session.getLastError() << std::endl;
+            return 1;
+        }
+
+        const auto midiTrack = session.addMidiTrack ("Self-test Synth");
+
+        if (midiTrack < 0 || ! session.insertBuiltInInstrument (midiTrack, "4osc"))
+        {
+            std::cerr << "error: could not host the stand-in instrument: "
+                      << session.getLastError() << std::endl;
+            return 1;
+        }
+
+        const auto clipIndex = session.createMidiClip (midiTrack, 0.0, 1.5);
+        session.addMidiNote (midiTrack, clipIndex, 60, 0.0, 0.5, 127);  // C4
+        session.addMidiNote (midiTrack, clipIndex, 64, 0.5, 0.5, 127);  // E4
+        session.addMidiNote (midiTrack, clipIndex, 67, 1.0, 0.5, 127);  // G4
+
+        const auto notes = session.getMidiNotes (midiTrack, clipIndex);
+
+        std::cout << "raw-radio-studio MIDI self-test\n"
+                  << "  MIDI track index:   " << midiTrack << "\n"
+                  << "  instrument:         4osc (built-in stand-in)\n"
+                  << "  MIDI clip notes:    " << (int) notes.size() << "\n"
+                  << "  MIDI inputs:        " << session.getNumMidiInputDevices()
+                  << " [" << session.getMidiInputDeviceNames().joinIntoString (", ") << "]\n";
+
+        std::atomic<bool> finished { false };
+        bool succeeded = false;
+        juce::String error;
+
+        auto handle = rrs::WavExport::start (*session.getEdit(), dest,
+                                             [&] (bool success, juce::File, juce::String message)
+                                             {
+                                                 succeeded = success;
+                                                 error = message;
+                                                 finished.store (true);
+                                             });
+
+        if (handle == nullptr)
+        {
+            std::cerr << "error: could not start the offline render." << std::endl;
+            return 1;
+        }
+
+        const auto deadline = juce::Time::getMillisecondCounterHiRes() + 60000.0;
+
+        while (! finished.load() && juce::Time::getMillisecondCounterHiRes() < deadline)
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (20);
+
+        handle.reset();
+
+        if (! finished.load() || ! succeeded)
+        {
+            std::cerr << "error: render failed: " << error << std::endl;
+            return 1;
+        }
+
+        // Measure the rendered WAV (peak + RMS across channels).
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::AudioFormatReader> reader (
+            wav.createReaderFor (new juce::FileInputStream (dest), true));
+
+        if (reader == nullptr || reader->lengthInSamples <= 0)
+        {
+            std::cerr << "error: could not read the rendered file: "
+                      << dest.getFullPathName() << std::endl;
+            return 1;
+        }
+
+        juce::AudioBuffer<float> buffer ((int) reader->numChannels, (int) reader->lengthInSamples);
+        reader->read (&buffer, 0, (int) reader->lengthInSamples, 0, true, true);
+
+        const auto peak = buffer.getMagnitude (0, buffer.getNumSamples());
+        const auto rms = buffer.getRMSLevel (0, 0, buffer.getNumSamples());
+
+        std::cout << "  rendered:           " << buffer.getNumSamples() << " samples, "
+                  << (int) reader->numChannels << " ch @ " << (int) reader->sampleRate << " Hz\n"
+                  << "  peak:               " << juce::String (juce::Decibels::gainToDecibels (peak, -100.0f), 2)
+                  << " dBFS (linear " << juce::String (peak, 5) << ")\n"
+                  << "  RMS:                " << juce::String (juce::Decibels::gainToDecibels (rms, -100.0f), 2)
+                  << " dBFS\n"
+                  << "  output file:        " << dest.getFullPathName() << std::endl;
+
+        if (peak <= 0.001f)
+        {
+            std::cerr << "error: the MIDI render is silent (the instrument did not sound)." << std::endl;
+            return 1;
+        }
+
+        std::cout << "  MIDI self-test:     PASS (instrument rendered non-silent)" << std::endl;
+        return 0;
+    }
 }
 
 class RawRadioStudioApplication final : public juce::JUCEApplication
@@ -719,6 +840,17 @@ int main (int argc, char* argv[])
         }
 
         return runSelfTestTimeStretch (args[index + 1]);
+    }
+
+    if (args.contains ("--selftest-midi"))
+    {
+        const auto index = args.indexOf ("--selftest-midi");
+        juce::String outputPath;
+
+        if (index + 1 < args.size() && ! args[index + 1].startsWith ("--"))
+            outputPath = args[index + 1];
+
+        return runSelfTestMidi (outputPath);
     }
 
     const bool multitrack = args.contains ("--selftest-multitrack");

@@ -1270,3 +1270,34 @@ TEST_CASE ("insert-plugin filter rejects instruments and non-effects")
     CHECK_FALSE (hasIncompatibleInsertLayout (0, 0));
     CHECK_FALSE (hasIncompatibleInsertLayout (1, 1));
 }
+
+// Epic 5 (FR-MIDI-3): the MIDI track's *instrument slot* is the mirror of the
+// effect insert. Instruments (synths/samplers) pass; audio effects are rejected
+// so an instrument track can never host an effect in the instrument slot and the
+// two slots stay mutually exclusive.
+TEST_CASE ("instrument-slot filter accepts instruments and rejects effects")
+{
+    using namespace rrs::plugin_selection;
+
+    // A VST3 synth: isInstrument set, category "Synth".
+    CHECK (isInstrumentPlugin (true, "Synth"));
+    CHECK (instrumentRejectionReason (true, "Synth").isEmpty());
+
+    // A sampler reported by category only.
+    CHECK (isInstrumentPlugin (false, "Instrument"));
+    CHECK (instrumentRejectionReason (false, "Instrument").isEmpty());
+
+    // Generators are instrument-like (they create sound).
+    CHECK (isInstrumentPlugin (false, "Generator"));
+
+    // Audio effects must not land in the instrument slot.
+    CHECK_FALSE (isInstrumentPlugin (false, "Fx"));
+    CHECK_FALSE (isInstrumentPlugin (false, "Effect"));
+    CHECK_FALSE (isInstrumentPlugin (false, ""));
+    CHECK_FALSE (instrumentRejectionReason (false, "Effect").isEmpty());
+
+    // Panners/mixers are neither instruments nor valid effects.
+    CHECK_FALSE (isInstrumentPlugin (false, "Panner"));
+    CHECK_FALSE (isInstrumentPlugin (false, "Mixer"));
+}
+

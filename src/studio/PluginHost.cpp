@@ -123,18 +123,28 @@ namespace rrs
     }
 
     juce::Array<juce::PluginDescription> PluginHost::getKnownPlugins (const juce::String& searchText,
-                                                                      bool effectsOnly) const
+                                                                      PluginFilter filter) const
     {
         auto plugins = engine.getPluginManager().knownPluginList.getTypes();
 
         // The insert browser must offer effects only (owner bug: instruments/
-        // panners inserted as effects killed the track). Filter them out here so
-        // the same rule cannot be bypassed by the search box.
-        if (effectsOnly)
+        // panners inserted as effects killed the track); the MIDI instrument slot
+        // must offer instruments only (Epic 5). Filter here so the same rule
+        // cannot be bypassed by the search box.
+        if (filter == PluginFilter::effectsOnly)
+        {
             for (int i = plugins.size(); --i >= 0;)
                 if (plugin_selection::isInstrumentOrNonEffect (plugins.getReference (i).isInstrument,
                                                                plugins.getReference (i).category))
                     plugins.remove (i);
+        }
+        else if (filter == PluginFilter::instrumentsOnly)
+        {
+            for (int i = plugins.size(); --i >= 0;)
+                if (! plugin_selection::isInstrumentPlugin (plugins.getReference (i).isInstrument,
+                                                            plugins.getReference (i).category))
+                    plugins.remove (i);
+        }
 
         if (searchText.isNotEmpty())
         {

@@ -56,15 +56,24 @@ namespace rrs
         void cancelScan();
 
         //==============================================================================
+        /** Which plugin kinds a browser list is for (Epic 3 effects + Epic 5
+            instruments). */
+        enum class PluginFilter
+        {
+            effectsOnly,        ///< Audio effects only (the effect insert chain).
+            instrumentsOnly,    ///< Synths/samplers only (a MIDI track's instrument slot).
+            all                 ///< Raw inventory.
+        };
+
         /** The known plugins, optionally filtered by a case-insensitive search
             across name / manufacturer / format, sorted by name.
 
-            When `effectsOnly` is true (the default) instruments, generators,
-            panners and other non-effect plugins are excluded: the browser feeds
-            a track's insert chain, which accepts audio effects only (see
-            studio/PluginSelection.h). Pass false for a raw inventory. */
+            The `filter` defaults to effects-only: the effect insert chain accepts
+            audio effects only (see studio/PluginSelection.h). Pass
+            `instrumentsOnly` for the MIDI instrument slot or `all` for a raw
+            inventory. */
         juce::Array<juce::PluginDescription> getKnownPlugins (const juce::String& searchText = {},
-                                                              bool effectsOnly = true) const;
+                                                              PluginFilter filter = PluginFilter::effectsOnly) const;
 
         int getNumKnownPlugins() const;
 

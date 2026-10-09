@@ -251,6 +251,26 @@ namespace
         return buffer.getMagnitude (0, buffer.getNumSamples());
     }
 
+    /** RMS level of a rendered WAV (across all channels), or -1 on failure. A
+        clipped peak hides level differences, so mixes are compared by RMS rather
+        than peak. */
+    double readWavRms (const juce::File& file)
+    {
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::AudioFormatReader> reader (
+            wav.createReaderFor (new juce::FileInputStream (file), true));
+
+        if (reader == nullptr || reader->lengthInSamples <= 0)
+            return -1.0;
+
+        juce::AudioBuffer<float> buffer ((int) reader->numChannels, (int) reader->lengthInSamples);
+
+        if (! reader->read (&buffer, 0, (int) reader->lengthInSamples, 0, true, true))
+            return -1.0;
+
+        return buffer.getRMSLevel (0, 0, buffer.getNumSamples());
+    }
+
     /** Largest absolute sample-to-sample step in a rendered WAV. A click (a
         discontinuity at a clip junction) shows up as a step far larger than the
         source waveform's own slope. Returns -1 on failure. */
@@ -4090,3 +4110,298 @@ TEST_CASE ("insert-plugin rejects instruments/non-effects and leaves the track a
 
     session.close();
 }
+
+//==============================================================================
+// Epic 5 — MIDI + virtual instruments (FR-MIDI-1..4).
+//
+// No MIDI hardware is opened: MIDI capture is exercised with the *hosted* audio
+// device's synthetic "MIDI Input", which the engine routes exactly like a
+// physical controller. Verification is otherwise headless and offline.
+namespace
+{
+    /** Renders `session`'s edit to `dest` and waits for completion. Returns the
+        render's success flag; `error` receives the engine message. */
+    bool renderSession (Session& session, const juce::File& dest, juce::String& error)
+    {
+        std::atomic<bool> finished { false };
+        bool succeeded = false;
+
+        auto handle = WavExport::start (*session.getEdit(), dest,
+                                        [&] (bool success, juce::File, juce::String message)
+                                        {
+                                            succeeded = success;
+                                            error = message;
+                                            finished.store (true);
+                                        });
+
+        if (handle == nullptr)
+            return false;
+
+        for (int i = 0; i < 800 && ! finished.load(); ++i)
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (20);
+
+        handle.reset();
+        return finished.load() && succeeded;
+    }
+}
+
+// FR-MIDI-3: an instrument can be hosted on a MIDI track's instrument slot, and
+// the effect insert still rejects instruments (the two slots stay distinct).
+TEST_CASE ("Epic 5: instrument slot hosts a built-in instrument on a MIDI track")
+{
+    auto dir = scratchDirectory ("epic5-instrument");
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Instr.tracktionedit")));
+
+    const auto midiTrack = session.addMidiTrack ("Synth");
+    REQUIRE (midiTrack >= 0);
+    CHECK (session.isMidiTrack (midiTrack));
+    CHECK (session.getNumMidiTracks() == 1);
+    CHECK_FALSE (session.trackHasInstrument (midiTrack));
+
+    REQUIRE (session.insertBuiltInInstrument (midiTrack, "4osc"));
+    CHECK (session.trackHasInstrument (midiTrack));
+
+    // A MIDI track is not a wave-input track: impossible to assign it a
+    // hardware input (it records MIDI, not audio).
+    CHECK_FALSE (session.setTrackInputMapping (midiTrack, InputMapping {}));
+
+    // The effect insert chain still rejects an instrument description.
+    juce::PluginDescription instrument;
+    instrument.name = "Some Synth";
+    instrument.pluginFormatName = "VST3";
+    instrument.fileOrIdentifier = "rrs_synth";
+    instrument.isInstrument = true;
+    instrument.category = "Synth";
+    instrument.numInputChannels = 0;
+    instrument.numOutputChannels = 2;
+
+    session.clearLastError();
+    CHECK_FALSE (session.insertPlugin (midiTrack, instrument, -1));
+    CHECK (session.getLastError().isNotEmpty());
+
+    // And the instrument slot rejects an audio effect.
+    juce::PluginDescription effect;
+    effect.name = "Some Reverb";
+    effect.pluginFormatName = "VST3";
+    effect.fileOrIdentifier = "rrs_reverb";
+    effect.isInstrument = false;
+    effect.category = "Fx";
+    effect.numInputChannels = 2;
+    effect.numOutputChannels = 2;
+
+    session.clearLastError();
+    CHECK_FALSE (session.insertInstrumentPlugin (midiTrack, effect));
+    CHECK (session.getLastError().isNotEmpty());
+
+    session.close();
+}
+
+// FR-MIDI-2: piano-roll edits change the clip's note data (add / move / resize /
+// delete) and are undoable, measured through the Session API the piano roll uses.
+TEST_CASE ("Epic 5: piano-roll note edits change MIDI note data (undoable)")
+{
+    auto dir = scratchDirectory ("epic5-pianoroll");
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Roll.tracktionedit")));
+
+    const auto midiTrack = session.addMidiTrack ("Roll");
+    REQUIRE (midiTrack >= 0);
+
+    const auto clipIndex = session.createMidiClip (midiTrack, 0.0, 2.0);
+    REQUIRE (clipIndex >= 0);
+
+    Session::MidiClipInfo clipInfo;
+    REQUIRE (session.getMidiClipInfo (midiTrack, clipIndex, clipInfo));
+    CHECK (clipInfo.lengthSeconds == doctest::Approx (2.0).epsilon (0.01));
+    CHECK (clipInfo.numNotes == 0);
+
+    // Add: C4 (60) at beat 0, length 1 beat.
+    const auto noteIndex = session.addMidiNote (midiTrack, clipIndex, 60, 0.0, 1.0, 100);
+    REQUIRE (noteIndex >= 0);
+
+    auto notes = session.getMidiNotes (midiTrack, clipIndex);
+    REQUIRE (notes.size() == 1);
+    CHECK (notes[0].noteNumber == 60);
+    CHECK (notes[0].startBeats == doctest::Approx (0.0).epsilon (0.001));
+    CHECK (notes[0].lengthBeats == doctest::Approx (1.0).epsilon (0.001));
+    CHECK (notes[0].velocity == 100);
+
+    // Move: pitch up to E4 (64) and start at beat 0.5.
+    REQUIRE (session.moveMidiNote (midiTrack, clipIndex, 0, 64, 0.5));
+    notes = session.getMidiNotes (midiTrack, clipIndex);
+    REQUIRE (notes.size() == 1);
+    CHECK (notes[0].noteNumber == 64);
+    CHECK (notes[0].startBeats == doctest::Approx (0.5).epsilon (0.001));
+
+    // Resize: 1.5 beats long.
+    REQUIRE (session.resizeMidiNote (midiTrack, clipIndex, 0, 1.5));
+    notes = session.getMidiNotes (midiTrack, clipIndex);
+    REQUIRE (notes.size() == 1);
+    CHECK (notes[0].lengthBeats == doctest::Approx (1.5).epsilon (0.001));
+
+    // Undo the resize restores the previous length.
+    REQUIRE (session.undo());
+    notes = session.getMidiNotes (midiTrack, clipIndex);
+    REQUIRE (notes.size() == 1);
+    CHECK (notes[0].lengthBeats == doctest::Approx (1.0).epsilon (0.001));
+
+    // Delete removes it.
+    REQUIRE (session.removeMidiNote (midiTrack, clipIndex, 0));
+    CHECK (session.getMidiNotes (midiTrack, clipIndex).empty());
+
+    session.close();
+}
+
+// FR-MIDI-1 / FR-MIDI-4: record MIDI from a (synthetic) controller into a clip
+// on the armed MIDI track. The hosted audio device's "MIDI Input" behaves
+// exactly like a hardware controller; messages are injected block by block.
+TEST_CASE ("Epic 5: MIDI input records into a clip on the armed track")
+{
+    auto dir = scratchDirectory ("epic5-midi-record");
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Rec.tracktionedit")));
+
+    te::HostedAudioDeviceInterface::Parameters params;
+    params.sampleRate = 48000.0;
+    params.blockSize = 256;
+    params.inputChannels = 2;
+    params.outputChannels = 2;
+
+    auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+
+    // The engine populates its MIDI device list asynchronously (DeviceManager
+    // timer). Create a virtual source (which also exercises the virtual-MIDI
+    // path) and pump until the list settles; the hosted audio device's synthetic
+    // "MIDI Input" is then available and behaves exactly like a controller.
+    REQUIRE (audio.deviceManager().createVirtualMidiDevice ("RRS Test MIDI").wasOk());
+
+    for (int i = 0; i < 400; ++i)
+    {
+        audio.deviceManager().dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+        if (session.getMidiInputDeviceNames().contains ("MIDI Input"))
+            break;
+    }
+
+    const auto midiTrack = session.addMidiTrack ("Rec");
+    REQUIRE (midiTrack >= 0);
+    REQUIRE (session.insertBuiltInInstrument (midiTrack, "4osc"));
+
+    // The hosted audio device exposes a synthetic MIDI input.
+    const auto midiNames = session.getMidiInputDeviceNames();
+    INFO ("MIDI inputs: [" << midiNames.joinIntoString (", ") << "]");
+    REQUIRE (midiNames.contains ("MIDI Input"));
+
+    REQUIRE (session.setSelectedMidiInput ("MIDI Input"));
+    REQUIRE (session.armMidiTrack (midiTrack, true));
+    CHECK (session.isTrackArmed (midiTrack));
+
+    session.setPositionSeconds (0.0);
+    REQUIRE (session.record());
+    CHECK (session.isRecording());
+
+    // Inject a held note across half a second of audio blocks.
+    const int totalFrames = 24000; // 0.5 s @ 48 kHz
+    int played = 0;
+
+    while (played < totalFrames)
+    {
+        const int n = juce::jmin (params.blockSize, totalFrames - played);
+
+        juce::AudioBuffer<float> input (params.inputChannels, n);
+        input.clear();
+
+        juce::MidiBuffer midi;
+
+        if (played == 0)
+            midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 0);
+
+        if (played + n >= totalFrames)
+            midi.addEvent (juce::MidiMessage::noteOff (1, 60), n - 1);
+
+        player->process (input, midi);
+
+        if ((played % 4096) == 0)
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (1);
+
+        played += n;
+    }
+
+    session.stop();
+
+    for (int i = 0; i < 60; ++i)
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (5);
+
+    int totalNotes = 0;
+
+    for (const auto& clip : session.getMidiClips (midiTrack))
+        totalNotes += (int) session.getMidiNotes (midiTrack, clip.clipIndex).size();
+
+    INFO ("MIDI clips: " << (int) session.getMidiClips (midiTrack).size()
+                         << ", notes: " << totalNotes);
+    CHECK_FALSE (session.getMidiClips (midiTrack).empty());
+    CHECK (totalNotes >= 1);
+
+    session.close();
+}
+
+// FR-MIDI-3 + FR-EXP-1: a MIDI track rendered through the hosted instrument is
+// non-silent, and MIDI + audio coexist and export correctly in one session.
+TEST_CASE ("Epic 5: MIDI + audio coexist and export correctly through an instrument")
+{
+    auto dir = scratchDirectory ("epic5-export");
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Mix.tracktionedit")));
+
+    // Audio track: a 440 Hz sine.
+    auto wavFile = writeSineWav (dir.getChildFile ("tone.wav"), 48000.0, 1.0, 0.5f, 440.0);
+    REQUIRE (wavFile.existsAsFile());
+    REQUIRE (session.importAudioFile (wavFile));
+
+    // MIDI track: the built-in synth playing two notes.
+    const auto midiTrack = session.addMidiTrack ("Synth");
+    REQUIRE (midiTrack >= 0);
+    REQUIRE (session.insertBuiltInInstrument (midiTrack, "4osc"));
+
+    const auto clipIndex = session.createMidiClip (midiTrack, 0.0, 1.0);
+    REQUIRE (clipIndex >= 0);
+    REQUIRE (session.addMidiNote (midiTrack, clipIndex, 60, 0.0, 0.5, 127) >= 0);
+    REQUIRE (session.addMidiNote (midiTrack, clipIndex, 67, 0.5, 0.5, 127) >= 0);
+
+    // Render the combined session.
+    auto mixed = dir.getChildFile ("mixed.wav");
+    juce::String error;
+    REQUIRE (renderSession (session, mixed, error));
+    INFO ("render error: " << error);
+
+    const auto mixedPeak = readWavPeak (mixed);
+    CHECK (mixedPeak > 0.05f);
+
+    // Mute every audio track: the render must still be non-silent (the MIDI
+    // track through its instrument) but measurably quieter than the combined mix
+    // (compared by RMS: the mix peaks/clips, so peak hides the difference), so
+    // both sources are genuinely in the export.
+    for (int i = 0; i < session.getNumAudioTracks(); ++i)
+        if (i != midiTrack)
+            REQUIRE (session.setTrackMute (i, true));
+
+    auto midiOnly = dir.getChildFile ("midi_only.wav");
+    REQUIRE (renderSession (session, midiOnly, error));
+
+    const auto mixedRms = readWavRms (mixed);
+    const auto midiOnlyRms = readWavRms (midiOnly);
+    INFO ("mixed peak: " << mixedPeak << ", RMS: " << mixedRms
+                         << ", MIDI-only RMS: " << midiOnlyRms);
+    CHECK (midiOnlyRms > 0.001);        // the MIDI track renders through the instrument
+    CHECK (midiOnlyRms < mixedRms);     // removing the audio source reduced the level
+
+    session.close();
+}
+

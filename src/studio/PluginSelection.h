@@ -1,20 +1,24 @@
-// raw-radio-studio — insert-plugin eligibility (Epic 3 / owner bug fix).
+// raw-radio-studio — insert-plugin eligibility (Epic 3 / owner bug fix; Epic 5
+// adds the instrument slot).
 //
-// The track insert chain hosts AUDIO EFFECTS only. Instruments, generators,
-// panners and MIDI utilities are not effects and must not be inserted on an
-// audio track:
+// The *effect* insert chain hosts AUDIO EFFECTS only. Instruments, generators,
+// panners and MIDI utilities are not effects and must not be inserted as an
+// effect on an audio track:
 //
 //   * AU `kAudioUnitType_MusicDevice` (e.g. DLSMusicDevice) — JUCE reports
 //     `PluginDescription::isInstrument == true` and category "Synth". As an
-//     insert it has no audio input, so the track goes silent.
+//     effect insert it has no audio input, so the track goes silent.
 //   * AU `kAudioUnitType_Panner` (e.g. HRTFPanner) — JUCE reports category
 //     "Panner". Measured here at 2-in/2-out it still mangles the insert to
 //     roughly -28 dB (effectively silent), so it must not be offered either.
 //   * Generators / mixers / MIDI effects — same reasoning.
 //
-// Instruments belong to Epic 5 (virtual instruments); they are filtered out of
-// the insert browser and rejected by `Session::insertPlugin` before the track is
-// touched, so a bad plugin can never silence the session.
+// Epic 5 (**instrument hosting**, FR-MIDI-3): a dedicated *instrument* slot on
+// a MIDI/instrument track accepts instruments (synths/samplers). The two slots
+// are mutually exclusive — `Session::insertPlugin` still rejects instruments
+// (they belong on a MIDI track) and `Session::insertInstrumentPlugin` rejects
+// audio effects. An instrument rendered through an audio-effect insert (or a
+// panner as an instrument) can therefore never silence a track.
 //
 // The predicates are pure (juce::String only) so they unit-test without an
 // engine or a real plugin.
@@ -72,13 +76,49 @@ namespace rrs::plugin_selection
                                                int numOutputChannels)
     {
         if (isInstrumentOrNonEffect (isInstrument, category))
-            return "This is an instrument or other non-effect plugin. The insert chain "
-                   "accepts audio effects only; instruments are coming in a later version.";
+            return "This is an instrument or other non-effect plugin. The effect insert "
+                   "chain accepts audio effects only; add a MIDI track and use the "
+                   "instrument slot for synths/samplers.";
 
         if (hasIncompatibleInsertLayout (numInputChannels, numOutputChannels))
             return "This plugin's channel layout (" + juce::String (numInputChannels) + " in / "
                  + juce::String (numOutputChannels) + " out) is not compatible with a stereo "
                    "insert and could silence the track, so it was not inserted.";
+
+        return {};
+    }
+
+    //==============================================================================
+    // Epic 5 — instrument slot (FR-MIDI-3).
+
+    /** True when a plugin description names a virtual instrument: an instrument
+        (synth/sampler) that produces audio from MIDI. JUCE sets
+        `isInstrument` for VST3/AU synths; category text is the fallback for
+        formats that do not. */
+    inline bool isInstrumentPlugin (bool isInstrument, const juce::String& category)
+    {
+        if (isInstrument)
+            return true;
+
+        if (category.isEmpty())
+            return false;
+
+        return category.containsIgnoreCase ("instrument")
+            || category.containsIgnoreCase ("synth")
+            || category.containsIgnoreCase ("generator");
+    }
+
+    /** Empty when the plugin may be hosted in a track's instrument slot,
+        otherwise a clear, user-facing rejection reason. The instrument slot
+        accepts instruments only — not audio effects (which belong in the effect
+        insert chain) — so a mismatch cannot silence or misroute the track. */
+    inline juce::String instrumentRejectionReason (bool isInstrument,
+                                                   const juce::String& category)
+    {
+        if (! isInstrumentPlugin (isInstrument, category))
+            return "This is not an instrument. The instrument slot on a MIDI track accepts "
+                   "synths and samplers (VST3/LV2/AU); audio effects go in the effect insert "
+                   "chain on the track's Plugins panel.";
 
         return {};
     }
