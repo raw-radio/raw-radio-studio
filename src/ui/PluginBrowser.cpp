@@ -97,7 +97,15 @@ namespace rrs
         loadPresetButton.setTooltip ("Load the preset selected on the left into the plugin");
         closeButton.setTooltip ("Close the plugin browser");
 
-        trackBox.onChange = [this] { refreshTrackPlugins(); updateStatus(); };
+        // A manual track change becomes the remembered target too: otherwise a
+        // later refresh whose selectedTrackProvider returns -1 would fall back to
+        // the stale pendingTargetTrack and silently move the insert elsewhere.
+        trackBox.onChange = [this]
+        {
+            pendingTargetTrack = selectedTrackIndex();
+            refreshTrackPlugins();
+            updateStatus();
+        };
 
         // When a different plugin on the track is selected, its preset list is
         // the one shown.
@@ -626,14 +634,34 @@ namespace rrs
     void PluginBrowser::removeSelectedTrackPlugin()
     {
         const auto index = selectedTrackIndex();
-        const auto plugin = trackPluginBox.getSelectedId() - 1;
 
-        if (index >= 0 && plugin >= 0)
+        if (index < 0)
         {
-            session.removePlugin (index, plugin);
-            refreshTrackPlugins();
+            updateStatus();
+            return;
         }
 
+        const auto plugin = selectedPluginIndex();
+
+        // An external effect/synth lives in the external-plugin list and is
+        // removed by index. The instrument slot, however, may hold a *built-in*
+        // instrument, which is not an `ExternalPlugin` and therefore never shows
+        // in that list (selectedPluginIndex() == -1). Route that case through
+        // `removeInstrument`, which also restores a converted input track's
+        // marker/monitoring — so removing the instrument from the UI brings the
+        // mic back (review follow-up).
+        if (plugin >= 0)
+        {
+            if (! session.removePlugin (index, plugin))
+                statusLabel.setText (session.getLastError(), juce::dontSendNotification);
+        }
+        else if (session.trackHasInstrument (index))
+        {
+            if (! session.removeInstrument (index))
+                statusLabel.setText (session.getLastError(), juce::dontSendNotification);
+        }
+
+        refreshTrackPlugins();
         updateStatus();
     }
 }

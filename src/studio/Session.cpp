@@ -608,6 +608,11 @@ namespace rrs
         track->state.removeProperty (idNumChannels, nullptr);
         track->state.removeProperty (idLayout, nullptr);
         track->state.removeProperty (idInputGainDb, nullptr);
+
+        // The live input assignment no longer matches the Edit: force the next
+        // configureTracks() to rebuild it (otherwise the flag could stay true
+        // after the conversion until some unrelated reconfiguration).
+        inputsConfigured = false;
     }
 
     bool Session::convertTrackToMidi (int trackIndex)
@@ -666,10 +671,10 @@ namespace rrs
         track->state.removeProperty (idRestoreInputGainDb, nullptr);
 
         // Re-enable the wave device, re-target the track and re-apply monitoring.
+        // Persisting is left to the caller, which already saves/sends once after
+        // the instrument removal; save()ing here too duplicated the round-trip.
         inputsConfigured = false;
         configureTracks();
-        save();
-        sendChangeMessage();
         return true;
     }
 
@@ -2757,13 +2762,21 @@ namespace rrs
             return fresh;
         }
 
-        // Could not append a track (e.g. no edit): fall back to converting the
-        // input track in place. The conversion records a restore marker, so
-        // removing the instrument brings the input (and monitoring) back.
-        if (convertTrackToMidi (trackIndex))
-            return trackIndex;
-
+        // Could not append a MIDI track: fail the insert instead of converting
+        // the input track in place. An in-place conversion would detach the
+        // hardware input (a momentary mic dropout) and leave a MIDI track with no
+        // instrument if the plugin then failed to load — contradicting "an insert
+        // must never kill the mic".
         return -1;
+    }
+
+    void Session::discardNewInstrumentTrack (int trackIndex, bool createdNew)
+    {
+        if (! createdNew || edit == nullptr)
+            return;
+
+        if (auto* track = getTrack (trackIndex))
+            edit->deleteTrack (track);
     }
 
     bool Session::insertInstrumentPlugin (int trackIndex, const juce::PluginDescription& description)
@@ -2802,6 +2815,7 @@ namespace rrs
 
         if (targetTrack == nullptr)
         {
+            discardNewInstrumentTrack (target, createdNew);
             lastError = "No such track.";
             return false;
         }
@@ -2811,6 +2825,7 @@ namespace rrs
         // audio path ambiguous). Remove the first to swap.
         if (trackHasInstrument (target))
         {
+            discardNewInstrumentTrack (target, createdNew);
             lastError = "This track already hosts an instrument. "
                         "Remove it first to insert a different one.";
             return false;
@@ -2820,6 +2835,9 @@ namespace rrs
 
         if (plugin == nullptr)
         {
+            // A failed create must not leave the auto-created MIDI track behind:
+            // the insert failed, so the destination must not survive either.
+            discardNewInstrumentTrack (target, createdNew);
             lastError = "Could not create instrument: " + description.name;
             return false;
         }
@@ -2869,6 +2887,7 @@ namespace rrs
 
         if (targetTrack == nullptr)
         {
+            discardNewInstrumentTrack (target, createdNew);
             lastError = "No such track.";
             return false;
         }
@@ -2877,6 +2896,7 @@ namespace rrs
         // insertInstrumentPlugin).
         if (trackHasInstrument (target))
         {
+            discardNewInstrumentTrack (target, createdNew);
             lastError = "This track already hosts an instrument. "
                         "Remove it first to insert a different one.";
             return false;
@@ -2886,6 +2906,7 @@ namespace rrs
 
         if (plugin == nullptr)
         {
+            discardNewInstrumentTrack (target, createdNew);
             lastError = "Could not create built-in instrument: " + xmlTypeName;
             return false;
         }

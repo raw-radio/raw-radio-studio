@@ -4490,6 +4490,32 @@ TEST_CASE ("Epic 5: instrument insert on an input track spawns a MIDI track and 
     session.close();
 }
 
+// Epic 5 instrument-insert review follow-up: when plugin creation fails there
+// must be no empty auto-created MIDI track left behind. An unknown built-in type
+// makes `createNewPlugin` return null *after* the target track was resolved.
+TEST_CASE ("Epic 5: a failed instrument create leaves no empty MIDI track")
+{
+    auto dir = scratchDirectory ("epic5-insert-failure");
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("InsertFail.tracktionedit")));
+
+    REQUIRE (session.getInputTrackIndices().contains (0));
+    const auto tracksBefore = session.getNumAudioTracks();
+
+    session.clearLastError();
+    CHECK_FALSE (session.insertBuiltInInstrument (0, "not-a-real-instrument"));
+    CHECK (session.getLastError().isNotEmpty());
+
+    // The auto-created MIDI track is gone again and the input track is intact.
+    CHECK (session.getNumAudioTracks() == tracksBefore);
+    CHECK (session.getInputTrackIndices().contains (0));
+    CHECK_FALSE (session.lastInstrumentInsertCreatedTrack());
+    CHECK (session.getLastInstrumentInsertTrack() < 0);
+
+    session.close();
+}
+
 // The plugin browser's Track combo follows the timeline selection instead of
 // defaulting to track 0 (the mic input) — the root cause that made an instrument
 // insert naturally hit the input track. `selectedTrackProvider` is what
@@ -4590,6 +4616,77 @@ TEST_CASE ("Epic 5: removing an instrument from a converted track restores the i
     CHECK (session.isMonitoringEnabled());
 
     session.close();
+}
+
+// Epic 5 requirement 6 / session recovery: a session whose first track is a MIDI
+// track and that carries no input track (no input marker) must not open with a
+// dead mic. `configureTracks` appends a fresh input track ("Input 1") and keeps
+// monitoring enabled.
+TEST_CASE ("Epic 5: opening a session with no input track recovers a fresh Input 1")
+{
+    auto dir = scratchDirectory ("epic5-input-recovery");
+    auto editFile = dir.getChildFile ("NoInput.tracktionedit");
+
+    AudioEngine audio (false);
+
+    // Build the at-risk state: track 0 is a MIDI track and no input track/marker
+    // exists (what a legacy or hand-edited project can carry).
+    {
+        Session session (audio);
+        REQUIRE (session.createNew (editFile));
+        REQUIRE (session.getInputTrackIndices().contains (0));
+
+        REQUIRE (session.convertTrackToMidi (0));
+        CHECK (session.isMidiTrack (0));
+        CHECK_FALSE (session.getInputTrackIndices().contains (0));
+        session.close();
+    }
+
+    Session reopened (audio);
+    REQUIRE (reopened.open (editFile));
+
+    // The MIDI track is preserved; the missing input path is recovered.
+    REQUIRE (reopened.isMidiTrack (0));
+    CHECK (reopened.getNumAudioTracks() == 2);
+
+    const auto inputs = reopened.getInputTrackIndices();
+    REQUIRE (inputs.size() == 1);
+    const auto recoveryInput = inputs[0];
+    CHECK (recoveryInput == reopened.getNumAudioTracks() - 1);
+    CHECK (reopened.getTrackName (recoveryInput) == "Input 1");
+    CHECK_FALSE (reopened.isMidiTrack (recoveryInput));
+
+    // Monitoring is re-established on the recovered input once a device exists.
+    te::HostedAudioDeviceInterface::Parameters params;
+    params.sampleRate = 48000.0;
+    params.blockSize = 256;
+    params.inputChannels = 2;
+    params.outputChannels = 2;
+
+    auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+    auto& dm = audio.deviceManager();
+
+    for (int i = 0; i < 300; ++i)
+    {
+        dm.dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+        if (reopened.isInputConfigured())
+            break;
+
+        reopened.reconfigureInputs();
+    }
+
+    REQUIRE (reopened.isInputConfigured());
+    CHECK (reopened.isMonitoringEnabled());
+
+    dm.dispatchPendingUpdates();
+    auto* waveIn = dm.getDefaultWaveInDevice();
+    REQUIRE (waveIn != nullptr);
+    CHECK (waveIn->isEnabled());
+    CHECK (waveIn->getMonitorMode() != te::InputDevice::MonitorMode::off);
+
+    reopened.close();
 }
 
 // Epic 5 QA BUG 6: piano-roll note edits are clamped to the clip bounds — a note

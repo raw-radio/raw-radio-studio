@@ -786,11 +786,17 @@ namespace rrs
 
         /** Resolves where an instrument insert should land: `trackIndex` itself,
             or a freshly-created MIDI track when it is an input track (so the
-            input/monitoring path is preserved). Falls back to an in-place
-            conversion only if the new track cannot be created. `createdNew` is
-            set when a new MIDI track was created. Returns the destination index,
-            or -1 on failure. */
+            input/monitoring path is preserved). It never converts the input
+            track in place — if the new MIDI track cannot be created the insert
+            fails (-1) rather than killing the mic. `createdNew` is set when a
+            new MIDI track was created. Returns the destination index, or -1. */
         int resolveInstrumentInsertTarget (int trackIndex, bool& createdNew);
+
+        /** Deletes the MIDI track `resolveInstrumentInsertTarget` just created
+            (when `createdNew`), used when a later step of the insert fails so a
+            failed insert never leaves an empty auto-created track behind. No-op
+            when `createdNew` is false. */
+        void discardNewInstrumentTrack (int trackIndex, bool createdNew);
 
         /** Creates a MIDI track at the end of the track list, marked as a MIDI
             track, without persisting (callers add the instrument first and save
