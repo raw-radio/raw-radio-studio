@@ -13,6 +13,7 @@ namespace rrs
         : host (hostRef), session (sessionRef)
     {
         addAndMakeVisible (trackBox);
+        addAndMakeVisible (kindBox);
         addAndMakeVisible (search);
         addAndMakeVisible (knownLabel);
         addAndMakeVisible (knownList);
@@ -60,6 +61,12 @@ namespace rrs
         presetNameLabel.setTooltip ("Type a name for a new preset, then press Save preset");
 
         trackBox.setTooltip ("Track to insert the plugin onto");
+        kindBox.addItem ("Effects", 1);
+        kindBox.addItem ("Instruments", 2);
+        kindBox.setSelectedId (1, juce::dontSendNotification);
+        kindBox.setTooltip ("Effects: the track insert chain. Instruments: the MIDI track's "
+                            "instrument slot (synths/samplers).");
+        kindBox.onChange = [this] { refreshKnownList(); updateStatus(); };
         search.setTextToShowWhenEmpty ("Search plugins (name, maker, format)", brand::textTertiary);
         search.setFont (brand::uiRegular (14.0f));
         search.onTextChange = [this] { refreshKnownList(); };
@@ -192,9 +199,11 @@ namespace rrs
         auto area = getLocalBounds().reduced (margin);
         area.removeFromTop (34); // title (painted)
 
-        // Track selector + search.
+        // Track selector + kind + search.
         auto top = area.removeFromTop (30);
-        trackBox.setBounds (top.removeFromLeft (juce::jmin (260, top.getWidth() / 2)));
+        trackBox.setBounds (top.removeFromLeft (juce::jmin (220, top.getWidth() / 2)));
+        top.removeFromLeft (gap);
+        kindBox.setBounds (top.removeFromLeft (120));
         top.removeFromLeft (gap);
         search.setBounds (top);
 
@@ -297,7 +306,12 @@ namespace rrs
 
     void PluginBrowser::refreshKnownList()
     {
-        known = host.getKnownPlugins (search.getText());
+        const bool instruments = kindBox.getSelectedId() == 2;
+        known = host.getKnownPlugins (search.getText(),
+                                      instruments ? PluginHost::PluginFilter::instrumentsOnly
+                                                  : PluginHost::PluginFilter::effectsOnly);
+        knownLabel.setText (instruments ? "Available instruments" : "Available effects",
+                            juce::dontSendNotification);
         knownList.updateContent();
         knownList.deselectAllRows();
     }
@@ -505,8 +519,17 @@ namespace rrs
             return;
         }
 
-        if (session.insertPlugin (index, known.getReference (row), -1))
+        const bool instrumentMode = kindBox.getSelectedId() == 2;
+        const auto& desc = known.getReference (row);
+
+        const bool ok = instrumentMode ? session.insertInstrumentPlugin (index, desc)
+                                       : session.insertPlugin (index, desc, -1);
+
+        if (ok)
         {
+            if (instrumentMode && ! session.isMidiTrack (index))
+                refreshTrackList();
+
             refreshTrackPlugins();
             trackPluginBox.setSelectedId (session.getNumPlugins (index), juce::dontSendNotification);
         }

@@ -24,6 +24,7 @@
 #include "ui/DevicePanel.h"
 #include "ui/InputMeter.h"
 #include "ui/MixerPanel.h"
+#include "ui/PianoRollPanel.h"
 #include "ui/PluginBrowser.h"
 #include "ui/RoutingPanel.h"
 #include "ui/Timeline.h"
@@ -71,6 +72,14 @@ namespace rrs
         void exportStems();
         void showAbout();
         void showSettings();
+
+        // --- Epic 5 (MIDI) ---
+        /** Opens the piano roll on the selected MIDI clip, or the first MIDI clip
+            of the selected/first MIDI track; creates a clip (and a MIDI track if
+            needed) when there is none. */
+        void openPianoRoll();
+        /** Re-populates the MIDI input device combo from the Session. */
+        void refreshMidiInputs();
 
         /** Starts an offline WAV render of `range` to `file` and manages the
             busy/metronome state shared by full-session and region export
@@ -171,6 +180,9 @@ namespace rrs
         PluginBrowser pluginBrowser { pluginHost, session };
         RoutingPanel routingPanel { session };
 
+        /** Epic 5: piano-roll MIDI editor overlay. */
+        PianoRollPanel pianoRoll { session };
+
         /** Clickable ruler + playhead above the arrangement lanes (owner request:
             position anywhere in the track). */
         Timeline timeline { session };
@@ -187,6 +199,8 @@ namespace rrs
         BrandButton pluginsButton { "Plugins" };
         BrandButton routingButton { "Routing" };
         BrandButton addTrackButton { "Add track" }, removeTrackButton { "Remove track" };
+        BrandButton midiTrackButton { "MIDI track" };
+        BrandButton pianoRollButton { "Piano roll" };
         BrandButton settingsButton { "Settings" }, aboutButton { "About" };
 
         /** Epic 4 arrangement edit actions (second action row). */
@@ -204,6 +218,10 @@ namespace rrs
         BrandButton metronomeButton { "Click", BrandButton::Style::Chip };
         juce::Label countInLabel;
         juce::ComboBox countInBox;
+
+        /** Epic 5: MIDI input device selection routed to the armed MIDI track. */
+        juce::Label midiInputLabel;
+        juce::ComboBox midiInputBox;
 
         juce::Label titleLabel, transportLabel, statusLabel;
 

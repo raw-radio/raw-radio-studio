@@ -57,6 +57,7 @@ namespace rrs
                               &exportRegionButton, &clearRegionButton,
                               &stemsButton, &pluginsButton, &routingButton,
                               &addTrackButton, &removeTrackButton,
+                              &midiTrackButton, &pianoRollButton,
                               &settingsButton, &aboutButton,
                               &armButton, &recordButton, &playButton, &stopButton, &goToStartButton,
                               &monitorButton, &metronomeButton,
@@ -74,7 +75,25 @@ namespace rrs
         pluginBrowser.onClose = [this] { pluginBrowser.setVisible (false); };
         routingPanel.onClose = [this] { routingPanel.setVisible (false); };
 
+        // Epic 5 piano-roll editor overlay.
+        addChildComponent (pianoRoll);
+        pianoRoll.onClose = [this] { pianoRoll.setVisible (false); };
+
         addAndMakeVisible (countInBox);
+        addAndMakeVisible (midiInputLabel);
+        addAndMakeVisible (midiInputBox);
+
+        midiInputLabel.setText ("MIDI in", juce::dontSendNotification);
+        midiInputLabel.setFont (brand::uiRegular (12.0f));
+        midiInputLabel.setColour (juce::Label::textColourId, brand::textSecondary);
+        midiInputLabel.setJustificationType (juce::Justification::centredRight);
+        midiInputBox.setTooltip ("MIDI input device routed to the armed MIDI track. "
+                                 "Arm a MIDI track, select a device and Record to capture notes.");
+        midiInputBox.onChange = [this]
+        {
+            session.setSelectedMidiInput (midiInputBox.getText());
+            refreshTransportUi();
+        };
 
         // Transport-left "Count-in" caption so the combo next to the Click
         // button is unambiguous (the owner found the bare combo unclear). The
@@ -158,6 +177,15 @@ namespace rrs
                                       "to select one, even a track with no clips — or the last "
                                       "track when none is selected. Use it to remove an imported "
                                       "backing track. To delete only a clip, use Delete.");
+
+        // Epic 5: add an instrument (MIDI) track and open the piano-roll editor.
+        midiTrackButton.setIconName ("waveform");
+        midiTrackButton.setIconOnly (true);
+        midiTrackButton.setTooltip ("Add a MIDI/instrument track (no audio input; hosts a "
+                                    "virtual instrument and records MIDI)");
+        pianoRollButton.setIconName ("metronome");
+        pianoRollButton.setIconOnly (true);
+        pianoRollButton.setTooltip ("Piano roll: edit the MIDI notes of the selected clip");
 
         settingsButton.setIconName ("gear-six");
         settingsButton.setIconOnly (true);
@@ -308,6 +336,31 @@ namespace rrs
         settingsButton.onClick  = [this] { showSettings(); };
         aboutButton.onClick     = [this] { showAbout(); };
 
+        // Epic 5: add a MIDI/instrument track.
+        midiTrackButton.onClick = [this]
+        {
+            if (exportInProgress || session.getEdit() == nullptr)
+                return;
+
+            const auto index = session.addMidiTrack();
+
+            if (index < 0)
+            {
+                showStatus (session.getLastError(), true);
+            }
+            else
+            {
+                selectTrack (index);
+                showStatus ("Added MIDI track: " + session.getTrackName (index)
+                            + " (open Plugins > Instrument to host a synth, then arm + record)");
+            }
+
+            refreshMidiInputs();
+            refreshTransportUi();
+        };
+
+        pianoRollButton.onClick = [this] { openPianoRoll(); };
+
         devicePanel.onDeviceChanged = [this]
         {
             // The panel is disabled during export; guard the callback too so an
@@ -372,7 +425,11 @@ namespace rrs
             if (exportInProgress)
                 return;
 
-            if (! session.setTrackArmed (armButton.getToggleState()))
+            // Arm the selected lane when one is selected (input or MIDI); fall
+            // back to track 0 for the Epic 1 single-track flow.
+            const int target = selectedTrackIndex >= 0 ? selectedTrackIndex : 0;
+
+            if (! session.setTrackArmed (target, armButton.getToggleState()))
                 showStatus (session.getLastError(), true);
 
             // Re-derive the chip from the session immediately: if the session
@@ -536,7 +593,15 @@ namespace rrs
         {
             pluginBrowser.setVisible (false);
             routingPanel.setVisible (false);
+            pianoRoll.setVisible (false);
         }
+
+        // Epic 5: MIDI track + piano-roll actions and the MIDI input selector.
+        midiTrackButton.setEnabled (hasEdit && ! busy);
+        pianoRollButton.setEnabled (hasEdit && ! busy && session.getNumMidiTracks() > 0);
+        refreshMidiInputs();
+        midiInputLabel.setEnabled (hasEdit && ! busy);
+        midiInputBox.setEnabled (hasEdit && ! busy);
 
         countInBox.setEnabled (hasEdit && ! busy);
         countInLabel.setEnabled (hasEdit && ! busy);
@@ -587,7 +652,8 @@ namespace rrs
         playButton.setIconName (session.isPlaying() ? "pause" : "play");
         recordButton.setToggleState (session.isRecording(), juce::dontSendNotification);
         playButton.setToggleState (session.isPlaying(), juce::dontSendNotification);
-        armButton.setToggleState (session.isTrackArmed(), juce::dontSendNotification);
+        armButton.setToggleState (session.isTrackArmed (selectedTrackIndex >= 0 ? selectedTrackIndex : 0),
+                                  juce::dontSendNotification);
         monitorButton.setToggleState (session.isMonitoringEnabled(), juce::dontSendNotification);
 
         double position = 0.0;
@@ -606,6 +672,114 @@ namespace rrs
                                 juce::dontSendNotification);
 
         repaint();
+    }
+
+    void MainComponent::refreshMidiInputs()
+    {
+        const auto names = session.getMidiInputDeviceNames();
+        const auto selected = session.getSelectedMidiInputName();
+
+        // Rebuild only when the device set changed, so an open combo popup is not
+        // disturbed by the 10 Hz refresh.
+        bool changed = names.size() != midiInputBox.getNumItems();
+
+        if (! changed)
+            for (int i = 0; i < names.size(); ++i)
+                if (midiInputBox.getItemText (i) != names[i])
+                {
+                    changed = true;
+                    break;
+                }
+
+        if (changed)
+        {
+            midiInputBox.clear (juce::dontSendNotification);
+
+            for (int i = 0; i < names.size(); ++i)
+                midiInputBox.addItem (names[i], i + 1);
+        }
+
+        if (names.isEmpty())
+            midiInputBox.setText ("No MIDI inputs", juce::dontSendNotification);
+        else if (selected.isNotEmpty() && names.contains (selected))
+            midiInputBox.setText (selected, juce::dontSendNotification);
+        else
+            midiInputBox.setText (names[0], juce::dontSendNotification);
+    }
+
+    void MainComponent::openPianoRoll()
+    {
+        if (exportInProgress || session.getEdit() == nullptr)
+            return;
+
+        int track = -1;
+        int clip = -1;
+
+        // Prefer the selected clip when it is on a MIDI track.
+        if (selectedTrackIndex >= 0 && session.isMidiTrack (selectedTrackIndex)
+            && selectedClipIndex >= 0)
+        {
+            Session::MidiClipInfo info;
+
+            if (session.getMidiClipInfo (selectedTrackIndex, selectedClipIndex, info))
+            {
+                track = selectedTrackIndex;
+                clip = selectedClipIndex;
+            }
+        }
+
+        if (clip < 0)
+        {
+            int midiTrack = -1;
+
+            if (selectedTrackIndex >= 0 && session.isMidiTrack (selectedTrackIndex))
+            {
+                midiTrack = selectedTrackIndex;
+            }
+            else
+            {
+                for (int i = 0; i < session.getNumAudioTracks(); ++i)
+                    if (session.isMidiTrack (i))
+                    {
+                        midiTrack = i;
+                        break;
+                    }
+            }
+
+            if (midiTrack < 0)
+            {
+                showStatus ("Add a MIDI track first, then host an instrument and record MIDI.", true);
+                return;
+            }
+
+            const auto clips = session.getMidiClips (midiTrack);
+
+            if (clips.empty())
+            {
+                const auto created = session.createMidiClip (midiTrack, 0.0, 4.0);
+
+                if (created < 0)
+                {
+                    showStatus (session.getLastError(), true);
+                    return;
+                }
+
+                track = midiTrack;
+                clip = created;
+            }
+            else
+            {
+                track = midiTrack;
+                clip = clips.front().clipIndex;
+            }
+        }
+
+        pianoRoll.open (track, clip);
+        pluginBrowser.setVisible (false);
+        routingPanel.setVisible (false);
+        pianoRoll.toFront (false);
+        resized();
+        showStatus ("Piano roll open. Click to add notes; add a synth via Plugins > Instrument to hear them.");
     }
 
     void MainComponent::showStatus (const juce::String& message, bool isError)
@@ -1127,6 +1301,7 @@ namespace rrs
 
         pluginBrowser.setVisible (false);
         routingPanel.setVisible (false);
+        pianoRoll.setVisible (false);
 
         panel.setVisible (true);
         panel.toFront (false);
@@ -1636,6 +1811,12 @@ namespace rrs
         countInBox.setBounds (transportRow.removeFromLeft (110).withSizeKeepingCentre (110, 28));
         transportRow.removeFromLeft (8);
 
+        // Epic 5: MIDI input selector, then the transport readout takes the rest.
+        midiInputLabel.setBounds (transportRow.removeFromLeft (48).withSizeKeepingCentre (48, 20));
+        transportRow.removeFromLeft (6);
+        midiInputBox.setBounds (transportRow.removeFromLeft (140).withSizeKeepingCentre (140, 28));
+        transportRow.removeFromLeft (8);
+
         // Clamp so a very narrow row can never hand a label a negative width
         // (the fixed controls above already fit at the 1100 px minimum window).
         transportLabel.setBounds (transportRow.withWidth (juce::jmax (0, transportRow.getWidth())));
@@ -1690,6 +1871,15 @@ namespace rrs
             auto r = juce::Rectangle<int> (w, h).withCentre (overlay.getCentre());
             pluginBrowser.setBounds (r);
             routingPanel.setBounds (r);
+        }
+
+        // Epic 5: the piano roll uses almost the whole window (it needs room for
+        // four octaves of pitch rows and the beat grid).
+        if (pianoRoll.isVisible())
+        {
+            auto r = getLocalBounds().reduced (24);
+            r.removeFromTop (36);
+            pianoRoll.setBounds (r);
         }
 
         auto middle = bottom;
@@ -2013,7 +2203,9 @@ namespace rrs
             // click-to-arm behaviour as well.
             selectTrack (index);
 
-            if (! session.getInputTrackIndices().contains (index))
+            // MIDI tracks arm exactly like input tracks (via their MIDI input);
+            // only imported/backing tracks are playback-only.
+            if (! session.getInputTrackIndices().contains (index) && ! session.isMidiTrack (index))
             {
                 showStatus (session.getTrackName (index)
                             + " selected (backing track, playback only). Remove track (trash) removes it.");
@@ -2361,14 +2553,16 @@ namespace rrs
         };
 
         // Groups: [New][Open][Save][Save As] · [Close][Import][Normalize][Export]
-        // [Add track][Remove track] · [Settings][About] — all icon-only now.
+        // [Add track][Remove track][MIDI track][Piano roll] · [Settings][About]
+        // — all icon-only now.
         BrandButton* const buttons[] = { &newButton, &openButton, &saveButton, &saveAsButton,
                                          &closeButton, &importButton, &normaliseButton, &exportButton,
                                          &exportRegionButton, &clearRegionButton,
                                          &stemsButton, &pluginsButton, &routingButton,
                                          &addTrackButton, &removeTrackButton,
+                                         &midiTrackButton, &pianoRollButton,
                                          &settingsButton, &aboutButton };
-        const int groups[] = { 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2 };
+        const int groups[] = { 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2 };
         constexpr int numButtons = (int) std::size (buttons);
 
         std::vector<Item> items;

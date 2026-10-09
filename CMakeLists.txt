@@ -169,6 +169,7 @@ target_sources(raw_radio_studio PRIVATE
     src/ui/DevicePanel.cpp
     src/ui/InputMeter.cpp
     src/ui/MixerPanel.cpp
+    src/ui/PianoRollPanel.cpp
     src/ui/PluginBrowser.cpp
     src/ui/RoutingPanel.cpp
     src/ui/Timeline.cpp

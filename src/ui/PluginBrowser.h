@@ -66,6 +66,8 @@ namespace rrs
         Session& session;
 
         juce::ComboBox trackBox;
+        /** Epic 5: Effects (insert chain) vs Instruments (MIDI track slot). */
+        juce::ComboBox kindBox;
         juce::TextEditor search;
         juce::Label knownLabel;
         juce::ListBox knownList { "known", this };

@@ -344,6 +344,12 @@ namespace rrs
 
         edit->setCountInMode (countInMode);
 
+        // Epic 5: re-enable the persisted MIDI input device so a reopened
+        // session is ready to record MIDI without re-selecting the device.
+        if (auto selectedMidi = edit->state.getProperty (idMidiInput).toString(); selectedMidi.isNotEmpty())
+            if (auto* device = findMidiInputByName (selectedMidi))
+                device->setEnabled (true);
+
         // Direct recorded takes into <sessionDir>/Recordings/.
         audio.behaviour().setRecordingsDirectory (paths::recordingsDirectoryFor (file));
 
