@@ -73,6 +73,19 @@ namespace rrs
         addChildComponent (pluginBrowser);
         addChildComponent (routingPanel);
         pluginBrowser.onClose = [this] { pluginBrowser.setVisible (false); };
+
+        // The plugin browser's Track combo follows the timeline selection (never
+        // silently defaults to track 0 / the mic input), and an instrument insert
+        // onto an input track spawns a separate MIDI track — select it and report
+        // clearly, so the engineer knows the input path is untouched.
+        pluginBrowser.selectedTrackProvider = [this] { return selectedTrackIndex; };
+        pluginBrowser.onInstrumentTrackCreated = [this] (int trackIndex)
+        {
+            selectTrack (trackIndex);
+            pluginBrowser.setTargetTrack (trackIndex);
+            showStatus ("Created a new MIDI track \"" + session.getTrackName (trackIndex)
+                        + "\" for the instrument — your input track and its monitoring are untouched.");
+        };
         routingPanel.onClose = [this] { routingPanel.setVisible (false); };
 
         // Epic 5 piano-roll editor overlay.
@@ -2060,6 +2073,7 @@ namespace rrs
     {
         selectedTrackIndex = clipIndex >= 0 ? trackIndex : -1;
         selectedClipIndex = clipIndex >= 0 ? clipIndex : -1;
+        pluginBrowser.setTargetTrack (selectedTrackIndex);
         refreshEditButtons();
         repaint();
     }
@@ -2070,6 +2084,7 @@ namespace rrs
                                  ? trackIndex
                                  : -1;
         selectedClipIndex = -1;
+        pluginBrowser.setTargetTrack (selectedTrackIndex);
         refreshEditButtons();
         repaint();
     }

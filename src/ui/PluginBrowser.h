@@ -31,6 +31,23 @@ namespace rrs
         /** Called when the panel's Close button is pressed. */
         std::function<void()> onClose;
 
+        /** Supplies the timeline's currently-selected track index (or -1). When
+            set, the Track combo follows the timeline selection on refresh()
+            instead of defaulting to track 0. Set by MainComponent. */
+        std::function<int()> selectedTrackProvider;
+
+        /** Called when an instrument insert auto-created a new MIDI track, so the
+            host can select it and show a clear status message (requirement: a
+            notification when a new MIDI track is created). */
+        std::function<void (int trackIndex)> onInstrumentTrackCreated;
+
+        /** Points the Track combo at `trackIndex` (timeline selection sync).
+            Out-of-range indices are ignored. */
+        void setTargetTrack (int trackIndex);
+
+        /** Engine track index the Track combo currently targets, or -1. */
+        int getTargetTrackIndex() const;
+
         /** Re-reads the session (tracks/plugins) — call when the panel is shown. */
         void refresh();
 
@@ -93,6 +110,9 @@ namespace rrs
 
         juce::Array<juce::PluginDescription> known;
         bool scanning = false;
+
+        /** Timeline-selection sync target (see setTargetTrack). -1 = none. */
+        int pendingTargetTrack = -1;
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PluginBrowser)
     };

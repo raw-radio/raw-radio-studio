@@ -274,8 +274,41 @@ namespace rrs
         return id > 0 ? id - 1 : -1;
     }
 
+    void PluginBrowser::setTargetTrack (int trackIndex)
+    {
+        if (trackIndex < 0 || trackIndex >= session.getNumAudioTracks())
+            return;
+
+        pendingTargetTrack = trackIndex;
+
+        if (juce::isPositiveAndBelow (trackIndex, trackBox.getNumItems()))
+        {
+            trackBox.setSelectedId (trackIndex + 1, juce::dontSendNotification);
+            refreshTrackPlugins();
+            updateStatus();
+        }
+    }
+
+    int PluginBrowser::getTargetTrackIndex() const
+    {
+        return selectedTrackIndex();
+    }
+
     void PluginBrowser::refreshTrackList()
     {
+        // The timeline selection is authoritative on refresh: the browser must
+        // follow it rather than defaulting to track 0 (the mic input), which is
+        // what made an instrument insert hit the input track.
+        int requested = pendingTargetTrack;
+
+        if (selectedTrackProvider != nullptr)
+        {
+            const auto selected = selectedTrackProvider();
+
+            if (selected >= 0)
+                requested = selected;
+        }
+
         // Preserve the user's current track selection across a refresh (e.g. a
         // timer/`refresh()` or a session change): only fall back to the first
         // track when the previous selection no longer exists.
@@ -297,11 +330,18 @@ namespace rrs
 
         if (numTracks > 0)
         {
-            const auto idToSelect = juce::isPositiveAndBelow (previousId - 1, numTracks)
-                                        ? previousId
-                                        : 1;
+            int idToSelect = previousId;
+
+            if (juce::isPositiveAndBelow (requested, numTracks))
+                idToSelect = requested + 1;
+            else if (! juce::isPositiveAndBelow (previousId - 1, numTracks))
+                idToSelect = 1;
+
             trackBox.setSelectedId (idToSelect, juce::dontSendNotification);
         }
+
+        // The chosen track drives the plugin/preset views.
+        refreshTrackPlugins();
     }
 
     void PluginBrowser::refreshKnownList()
@@ -522,14 +562,47 @@ namespace rrs
         const bool instrumentMode = kindBox.getSelectedId() == 2;
         const auto& desc = known.getReference (row);
 
-        const bool ok = instrumentMode ? session.insertInstrumentPlugin (index, desc)
-                                       : session.insertPlugin (index, desc, -1);
+        if (instrumentMode)
+        {
+            const bool ok = session.insertInstrumentPlugin (index, desc);
+
+            if (ok)
+            {
+                const auto instrumentTrack = session.getLastInstrumentInsertTrack();
+                const bool createdTrack = session.lastInstrumentInsertCreatedTrack();
+
+                // Rebuild the list so the auto-created MIDI track appears, then
+                // point at where the instrument actually landed.
+                refreshTrackList();
+
+                if (juce::isPositiveAndBelow (instrumentTrack, session.getNumAudioTracks()))
+                {
+                    pendingTargetTrack = instrumentTrack;
+                    trackBox.setSelectedId (instrumentTrack + 1, juce::dontSendNotification);
+                }
+
+                refreshTrackPlugins();
+                trackPluginBox.setSelectedId (session.getNumPlugins (instrumentTrack),
+                                              juce::dontSendNotification);
+
+                // Requirement: notify clearly when an input-track insert spawned a
+                // new MIDI track, so the engineer knows the mic path is intact.
+                if (createdTrack && onInstrumentTrackCreated != nullptr)
+                    onInstrumentTrackCreated (instrumentTrack);
+            }
+            else
+            {
+                statusLabel.setText (session.getLastError(), juce::dontSendNotification);
+            }
+
+            updateStatus();
+            return;
+        }
+
+        const bool ok = session.insertPlugin (index, desc, -1);
 
         if (ok)
         {
-            if (instrumentMode && ! session.isMidiTrack (index))
-                refreshTrackList();
-
             refreshTrackPlugins();
             trackPluginBox.setSelectedId (session.getNumPlugins (index), juce::dontSendNotification);
         }

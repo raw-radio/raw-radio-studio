@@ -4405,39 +4405,189 @@ TEST_CASE ("Epic 5: MIDI + audio coexist and export correctly through an instrum
     session.close();
 }
 
-// Epic 5 QA BUG 1 / BUG 7: inserting an instrument on an input track converts it
-// to a MIDI track (the input marker is cleared — no input+MIDI dual state), and a
-// second instrument on the same track is rejected (instrument-first chain).
-TEST_CASE ("Epic 5: instrument insert converts an input track and rejects a second")
+// Epic 5 instrument-insert defect: hosting an instrument on an INPUT track must
+// NOT convert it to MIDI (the old behaviour detached the hardware input, turned
+// MonitorMode::off and disabled the wave device, so the mic went dead and the
+// Monitor button could not revive it). A separate MIDI track is auto-created for
+// the instrument; the input track's marker, mapping, device and monitoring stay
+// completely intact (measured through the live hosted device).
+TEST_CASE ("Epic 5: instrument insert on an input track spawns a MIDI track and preserves monitoring")
 {
-    auto dir = scratchDirectory ("epic5-convert");
+    auto dir = scratchDirectory ("epic5-input-instrument");
     AudioEngine audio (false);
     Session session (audio);
-    REQUIRE (session.createNew (dir.getChildFile ("Convert.tracktionedit")));
+    REQUIRE (session.createNew (dir.getChildFile ("InputInstr.tracktionedit")));
 
-    // A brand-new session has one input track at index 0.
+    te::HostedAudioDeviceInterface::Parameters params;
+    params.sampleRate = 48000.0;
+    params.blockSize = 256;
+    params.inputChannels = 2;
+    params.outputChannels = 2;
+
+    auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+    REQUIRE (player != nullptr);
+
+    auto& dm = audio.deviceManager();
+
+    for (int i = 0; i < 300; ++i)
+    {
+        dm.dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+        if (session.isInputConfigured())
+            break;
+
+        session.reconfigureInputs();
+    }
+
+    REQUIRE (session.isInputConfigured());
     REQUIRE (session.getInputTrackIndices().contains (0));
-    CHECK_FALSE (session.isMidiTrack (0));
+    REQUIRE (session.isMonitoringEnabled());
+
+    auto* waveInBefore = dm.getDefaultWaveInDevice();
+    REQUIRE (waveInBefore != nullptr);
+    REQUIRE (waveInBefore->isEnabled());
+
+    const auto mappingBefore = session.getTrackInputMapping (0);
+    const int tracksBefore = session.getNumAudioTracks();
 
     REQUIRE (session.insertBuiltInInstrument (0, "4osc"));
 
-    const auto inputTrackId = juce::Identifier ("rrsInputTrack");
+    // The instrument landed on a new MIDI track, not on the input track.
+    CHECK (session.lastInstrumentInsertCreatedTrack());
+    const auto midiTrack = session.getLastInstrumentInsertTrack();
+    REQUIRE (midiTrack == tracksBefore);
+    CHECK (session.getNumAudioTracks() == tracksBefore + 1);
+    CHECK (session.isMidiTrack (midiTrack));
+    CHECK (session.trackHasInstrument (midiTrack));
 
-    CHECK (session.isMidiTrack (0));
-    CHECK (session.trackHasInstrument (0));
-    // The input-track marker is gone: `inputTrackIndices()` must not return it,
-    // so a later reconfigure cannot bind a wave input to a MIDI track.
-    CHECK_FALSE (session.getInputTrackIndices().contains (0));
+    // The input track is untouched: still an input track with the same mapping,
+    // never converted to MIDI and with no restore marker.
+    CHECK (session.getInputTrackIndices().contains (0));
+    CHECK_FALSE (session.isMidiTrack (0));
+    CHECK_FALSE (session.trackWasConvertedFromInput (0));
     REQUIRE (session.getTrack (0) != nullptr);
-    CHECK_FALSE (session.getTrack (0)->state.hasProperty (inputTrackId));
-    // It can no longer carry a hardware input mapping.
-    session.clearLastError();
-    CHECK_FALSE (session.setTrackInputMapping (0, InputMapping {}));
+    CHECK (session.getTrack (0)->state.hasProperty (juce::Identifier ("rrsInputTrack")));
 
-    // A second instrument on the same track is rejected, not stacked.
+    const auto mappingAfter = session.getTrackInputMapping (0);
+    CHECK (mappingAfter.firstChannel == mappingBefore.firstChannel);
+    CHECK (mappingAfter.numChannels == mappingBefore.numChannels);
+
+    // Monitoring and the wave device are still live — the measured regression.
+    CHECK (session.isInputConfigured());
+    CHECK (session.isMonitoringEnabled());
+    dm.dispatchPendingUpdates();
+    auto* waveInAfter = dm.getDefaultWaveInDevice();
+    REQUIRE (waveInAfter != nullptr);
+    CHECK (waveInAfter->isEnabled());
+    CHECK (waveInAfter->getMonitorMode() != te::InputDevice::MonitorMode::off);
+
+    // A second instrument on the same MIDI track is still rejected (one per track).
     session.clearLastError();
-    CHECK_FALSE (session.insertBuiltInInstrument (0, "4osc"));
+    CHECK_FALSE (session.insertBuiltInInstrument (midiTrack, "4osc"));
     CHECK (session.getLastError().isNotEmpty());
+
+    session.close();
+}
+
+// The plugin browser's Track combo follows the timeline selection instead of
+// defaulting to track 0 (the mic input) — the root cause that made an instrument
+// insert naturally hit the input track. `selectedTrackProvider` is what
+// MainComponent wires to the timeline's selected track.
+TEST_CASE ("Epic 5: plugin browser target track follows the timeline selection")
+{
+    auto dir = scratchDirectory ("epic5-browser-target");
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("BrowserTarget.tracktionedit")));
+
+    // Track 0 = input, track 1 = a MIDI track.
+    REQUIRE (session.getInputTrackIndices().contains (0));
+    const auto midiTrack = session.addMidiTrack ("Browser Sync");
+    REQUIRE (midiTrack == 1);
+
+    PluginHost host (audio.engine());
+    PluginBrowser browser (host, session);
+    browser.setSize (780, 520);
+    CHECK (browser.getTargetTrackIndex() >= 0);
+
+    // Timeline selection is authoritative on refresh (not track 0 by default).
+    int selected = midiTrack;
+    browser.selectedTrackProvider = [&selected] { return selected; };
+    browser.refresh();
+    CHECK (browser.getTargetTrackIndex() == midiTrack);
+
+    selected = 0;
+    browser.refresh();
+    CHECK (browser.getTargetTrackIndex() == 0);
+
+    // Explicit sync (what MainComponent does when the lane is clicked) also works.
+    browser.setTargetTrack (midiTrack);
+    CHECK (browser.getTargetTrackIndex() == midiTrack);
+
+    session.close();
+}
+
+// A track converted from an input track remembers how to restore itself: removing
+// the hosted instrument returns the input marker, mapping and monitoring, so the
+// mic recovers (the fix for the currently-broken session).
+TEST_CASE ("Epic 5: removing an instrument from a converted track restores the input")
+{
+    auto dir = scratchDirectory ("epic5-restore-input");
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Restore.tracktionedit")));
+
+    te::HostedAudioDeviceInterface::Parameters params;
+    params.sampleRate = 48000.0;
+    params.blockSize = 256;
+    params.inputChannels = 2;
+    params.outputChannels = 2;
+
+    auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+    auto& dm = audio.deviceManager();
+
+    for (int i = 0; i < 300; ++i)
+    {
+        dm.dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+        if (session.isInputConfigured())
+            break;
+
+        session.reconfigureInputs();
+    }
+
+    REQUIRE (session.isInputConfigured());
+    REQUIRE (session.getInputTrackIndices().contains (0));
+    const auto mappingBefore = session.getTrackInputMapping (0);
+
+    // Convert the input track and host an instrument on it (the legacy/fallback
+    // path). The conversion records a restore marker with the original mapping.
+    REQUIRE (session.convertTrackToMidi (0));
+    CHECK (session.trackWasConvertedFromInput (0));
+    CHECK (session.isMidiTrack (0));
+    CHECK_FALSE (session.getInputTrackIndices().contains (0));
+
+    REQUIRE (session.insertBuiltInInstrument (0, "4osc"));
+    CHECK (session.trackHasInstrument (0));
+    // Inserting on an already-MIDI track does not spawn another track.
+    CHECK_FALSE (session.lastInstrumentInsertCreatedTrack());
+
+    // Remove the instrument: the track returns to its input state and monitoring
+    // comes back.
+    REQUIRE (session.removeInstrument (0));
+    CHECK_FALSE (session.trackHasInstrument (0));
+    CHECK_FALSE (session.isMidiTrack (0));
+    CHECK_FALSE (session.trackWasConvertedFromInput (0));
+    CHECK (session.getInputTrackIndices().contains (0));
+
+    const auto mappingAfter = session.getTrackInputMapping (0);
+    CHECK (mappingAfter.firstChannel == mappingBefore.firstChannel);
+    CHECK (mappingAfter.numChannels == mappingBefore.numChannels);
+
+    dm.dispatchPendingUpdates();
+    CHECK (session.isMonitoringEnabled());
 
     session.close();
 }

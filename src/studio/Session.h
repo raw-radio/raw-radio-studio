@@ -443,26 +443,51 @@ namespace rrs
             the track as a MIDI/instrument track. Instruments belong on MIDI
             tracks, never in the effect insert chain. Persists. Returns false with
             getLastError() set when the plugin is not an instrument, when the
-            track already hosts an instrument (instrument-first chain: one
-            instrument per track), or when it cannot be created.
+            destination track already hosts an instrument (instrument-first chain:
+            one instrument per track), or when it cannot be created.
 
-            If `trackIndex` is currently a hardware *input* track, the insert
-            converts it to a MIDI track: the input-track marker and its hardware
-            mapping are cleared and the wave input stops targeting the track, so
-            a track is never both an input track and a MIDI track (the confusing
-            dual state QA found in the default browser path). */
+            Target resolution: when `trackIndex` is a hardware *input* track the
+            instrument is *not* hosted there — a separate MIDI track is created
+            and the instrument goes on it, leaving the input track's marker,
+            device and monitoring completely untouched (an insert must never kill
+            the mic). `getLastInstrumentInsertTrack()` returns where it landed and
+            `lastInstrumentInsertCreatedTrack()` reports whether a new track was
+            auto-created. Any other track hosts the instrument directly. */
         bool insertInstrumentPlugin (int trackIndex, const juce::PluginDescription&);
 
         /** Inserts one of Tracktion's built-in instruments by xml type name
             (e.g. "4osc", "sampler"). Used by the headless self-test/tests as a
             deterministic stand-in when no VST3 instrument is installed. Marks the
-            track as a MIDI track (converting an input track exactly as
-            `insertInstrumentPlugin` does) and rejects a second instrument on the
-            same track. Persists. */
+            destination track as a MIDI track (an input-track target auto-creates a
+            separate MIDI track exactly as `insertInstrumentPlugin` does) and
+            rejects a second instrument on the same track. Persists. */
         bool insertBuiltInInstrument (int trackIndex, const juce::String& xmlTypeName);
 
         /** True when the track already hosts an instrument in its slot. */
         bool trackHasInstrument (int trackIndex) const;
+
+        /** Engine track index the last successful instrument insert landed on,
+            or -1. When the requested target was an input track this is the
+            auto-created MIDI track, not the input track. */
+        int getLastInstrumentInsertTrack() const { return lastInstrumentInsertTrack; }
+
+        /** True when the last instrument insert auto-created a MIDI track (the
+            requested target was an input track). Drives the UI status message. */
+        bool lastInstrumentInsertCreatedTrack() const { return lastInstrumentInsertCreatedTrackFlag; }
+
+        /** Removes the track's hosted instrument (built-in or external) and, when
+            the track was converted from an input track, restores its input state
+            (marker, mapping, trim, monitoring). Persists. */
+        bool removeInstrument (int trackIndex);
+
+        /** Explicitly converts an input track to a MIDI track, remembering how to
+            restore it. Returns false for a non-input track. Removing the hosted
+            instrument afterwards returns the track to its input state. */
+        bool convertTrackToMidi (int trackIndex);
+
+        /** True when the track was converted from an input track and carries the
+            restore marker (so removing its instrument restores the input). */
+        bool trackWasConvertedFromInput (int trackIndex) const;
 
         /** Names of the MIDI input devices the engine currently knows about
             (empty when none). Message thread only. */
@@ -754,9 +779,28 @@ namespace rrs
         tracktion::WaveInputDevice* resolveInputDeviceFor (const InputMapping&) const;
 
         /** Converts an input track into a MIDI track: stops the hardware input
-            from targeting it and clears the input-track marker + mapping, so the
-            two track kinds can never overlap. No-op for a non-input track. */
+            from targeting it, snapshots the input mapping into the restore
+            marker, and clears the input-track marker + mapping, so the two track
+            kinds can never overlap. No-op for a non-input track. */
         void detachTrackFromHardwareInput (int trackIndex);
+
+        /** Resolves where an instrument insert should land: `trackIndex` itself,
+            or a freshly-created MIDI track when it is an input track (so the
+            input/monitoring path is preserved). Falls back to an in-place
+            conversion only if the new track cannot be created. `createdNew` is
+            set when a new MIDI track was created. Returns the destination index,
+            or -1 on failure. */
+        int resolveInstrumentInsertTarget (int trackIndex, bool& createdNew);
+
+        /** Creates a MIDI track at the end of the track list, marked as a MIDI
+            track, without persisting (callers add the instrument first and save
+            once). Returns its engine track index, or -1. */
+        int createMidiTrackInternal (const juce::String& name);
+
+        /** Restores a converted track to its input state (marker, channel
+            mapping, trim and monitoring) from the restore marker. Returns false
+            when the track is not a converted input track. */
+        bool restoreInputStateFromMarker (int trackIndex);
 
         /** Length of a MIDI clip in beats at its timeline position (used to clamp
             piano-roll edits to the clip bounds). 0 when the clip is invalid. */
@@ -870,6 +914,12 @@ namespace rrs
         juce::WeakReference<tracktion::InputDeviceInstance> meterInstance;
 
         bool lastPlaying = false, lastRecording = false, lastArmed = false;
+
+        /** Destination and auto-create flag of the last successful instrument
+            insert (see `getLastInstrumentInsertTrack()`), so the UI can select
+            the new track and show a clear status message. */
+        int lastInstrumentInsertTrack = -1;
+        bool lastInstrumentInsertCreatedTrackFlag = false;
 
         /** Clips on the armed record tracks that this pass muted. Only clips
             that were *unmuted* when the pass began are collected, so ending the

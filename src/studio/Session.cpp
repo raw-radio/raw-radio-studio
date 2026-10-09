@@ -33,6 +33,19 @@ namespace rrs
         // on the Track's ValueTree so it survives save/open.
         const juce::Identifier idMidiTrack    { "rrsMidiTrack" };
 
+        // When an input track is deliberately converted to a MIDI track (legacy
+        // sessions, or the fallback path when a fresh MIDI track cannot be
+        // created), the original input mapping is snapshotted here so removing
+        // the instrument can restore the track to its input state — marker +
+        // channel mapping + monitoring — instead of leaving a dead mic. Only
+        // tracks carrying `idRestoreAsInput` are restored (native MIDI tracks
+        // added via `addMidiTrack` are never touched).
+        const juce::Identifier idRestoreAsInput      { "rrsRestoreAsInput" };
+        const juce::Identifier idRestoreFirstChannel { "rrsRestoreInputFirstChannel" };
+        const juce::Identifier idRestoreNumChannels  { "rrsRestoreInputNumChannels" };
+        const juce::Identifier idRestoreLayout       { "rrsRestoreInputLayout" };
+        const juce::Identifier idRestoreInputGainDb  { "rrsRestoreInputGainDb" };
+
         // Epic 5: the MIDI input device name selected for routing, stored on the
         // Edit state tree so the selection survives save/open.
         const juce::Identifier idMidiInput     { "rrsMidiInput" };
@@ -471,24 +484,19 @@ namespace rrs
             return -1;
         }
 
-        auto track = edit->insertNewAudioTrack (te::TrackInsertPoint::getEndOfTracks (*edit), nullptr, true);
+        const auto index = createMidiTrackInternal (name);
 
-        if (track == nullptr)
+        if (index < 0)
         {
             lastError = "Could not create the MIDI track.";
             return -1;
         }
 
-        track->state.setProperty (idMidiTrack, true, nullptr);
-        track->setName (name.isNotEmpty()
-                            ? name
-                            : ("MIDI " + juce::String (getNumMidiTracks())));
-
         edit->restartPlayback();
         save();
         sendChangeMessage();
         clearLastError();
-        return getNumAudioTracks() - 1;
+        return index;
     }
 
     tracktion::WaveInputDevice* Session::resolveInputDeviceFor (const InputMapping& mapping) const
@@ -554,10 +562,23 @@ namespace rrs
         if (edit == nullptr || track == nullptr || ! isInputTrack (*track))
             return;
 
+        // Remember how to turn this track back into an input track *before* the
+        // mapping is cleared. Removing the instrument from the converted track
+        // restores the input marker, channel mapping, trim and monitoring from
+        // this snapshot (requirement: a conversion must never be a one-way trip
+        // that kills the mic). Native MIDI tracks (added via `addMidiTrack`)
+        // never carry this marker, so only converted tracks are ever restored.
+        const auto previousMapping = readTrackMapping (trackIndex);
+        track->state.setProperty (idRestoreAsInput, true, nullptr);
+        track->state.setProperty (idRestoreFirstChannel, previousMapping.firstChannel, nullptr);
+        track->state.setProperty (idRestoreNumChannels, juce::jmax (1, previousMapping.numChannels), nullptr);
+        track->state.setProperty (idRestoreLayout, inputLayoutToString (previousMapping.layout), nullptr);
+        track->state.setProperty (idRestoreInputGainDb, (double) getTrackInputGainDb (trackIndex), nullptr);
+
         // Drop the engine-side wave routing first: the instance keeps targeting
         // this track otherwise, even after the state marker is gone (the QA
         // "input + MIDI" dual state).
-        auto* waveIn = resolveInputDeviceFor (readTrackMapping (trackIndex));
+        auto* waveIn = resolveInputDeviceFor (previousMapping);
 
         if (waveIn != nullptr)
         {
@@ -587,6 +608,85 @@ namespace rrs
         track->state.removeProperty (idNumChannels, nullptr);
         track->state.removeProperty (idLayout, nullptr);
         track->state.removeProperty (idInputGainDb, nullptr);
+    }
+
+    bool Session::convertTrackToMidi (int trackIndex)
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (edit == nullptr || track == nullptr || ! isInputTrack (*track))
+        {
+            lastError = "Only an input track can be converted to a MIDI track.";
+            return false;
+        }
+
+        // Detaching snapshots the input mapping into the restore marker, so this
+        // conversion is reversible: removing the hosted instrument returns the
+        // track to its input state (monitoring included) rather than killing it.
+        detachTrackFromHardwareInput (trackIndex);
+        track->state.setProperty (idMidiTrack, true, nullptr);
+
+        edit->restartPlayback();
+        save();
+        sendChangeMessage();
+        clearLastError();
+        return true;
+    }
+
+    bool Session::trackWasConvertedFromInput (int trackIndex) const
+    {
+        auto* track = getTrack (trackIndex);
+        return track != nullptr && (bool) track->state.getProperty (idRestoreAsInput, false);
+    }
+
+    bool Session::restoreInputStateFromMarker (int trackIndex)
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (edit == nullptr || track == nullptr || ! trackWasConvertedFromInput (trackIndex))
+            return false;
+
+        InputMapping mapping;
+        mapping.firstChannel = juce::jmax (0, (int) track->state.getProperty (idRestoreFirstChannel, 0));
+        mapping.numChannels  = juce::jmax (1, (int) track->state.getProperty (idRestoreNumChannels, 1));
+        mapping.layout = inputLayoutFromString (track->state.getProperty (idRestoreLayout, "auto").toString());
+
+        const auto gainDb = (float) (double) track->state.getProperty (idRestoreInputGainDb, 0.0);
+
+        // Restore the input marker + mapping first, then drop the MIDI marker, so
+        // the track is an input track again (never both).
+        writeTrackMapping (*track, mapping);
+        track->state.setProperty (idInputGainDb, (double) gainDb, nullptr);
+        track->state.removeProperty (idMidiTrack, nullptr);
+
+        track->state.removeProperty (idRestoreAsInput, nullptr);
+        track->state.removeProperty (idRestoreFirstChannel, nullptr);
+        track->state.removeProperty (idRestoreNumChannels, nullptr);
+        track->state.removeProperty (idRestoreLayout, nullptr);
+        track->state.removeProperty (idRestoreInputGainDb, nullptr);
+
+        // Re-enable the wave device, re-target the track and re-apply monitoring.
+        inputsConfigured = false;
+        configureTracks();
+        save();
+        sendChangeMessage();
+        return true;
+    }
+
+    int Session::createMidiTrackInternal (const juce::String& name)
+    {
+        if (edit == nullptr)
+            return -1;
+
+        auto track = edit->insertNewAudioTrack (te::TrackInsertPoint::getEndOfTracks (*edit), nullptr, true);
+
+        if (track == nullptr)
+            return -1;
+
+        track->state.setProperty (idMidiTrack, true, nullptr);
+        track->setName (name.isNotEmpty() ? name
+                                          : ("MIDI " + juce::String (getNumMidiTracks())));
+        return getNumAudioTracks() - 1;
     }
 
     int Session::getNumInputChannels() const
@@ -2541,7 +2641,55 @@ namespace rrs
 
         // Closes the editor window (hideWindowForShutdown) and detaches it from
         // the Edit's ValueTree so the next save drops it.
+        const bool removedInstrument = external->isSynth();
         external->deleteFromParent();
+
+        // Removing the last instrument from a track that was converted from an
+        // input track restores the input state (marker, mapping, monitoring) —
+        // only converted tracks carry the restore marker, so native MIDI tracks
+        // are never touched.
+        if (removedInstrument && ! trackHasInstrument (trackIndex))
+            restoreInputStateFromMarker (trackIndex);
+
+        edit->restartPlayback();
+        save();
+        sendChangeMessage();
+        clearLastError();
+        return true;
+    }
+
+    bool Session::removeInstrument (int trackIndex)
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (edit == nullptr || track == nullptr)
+        {
+            lastError = "No such track.";
+            return false;
+        }
+
+        // The hosted instrument is the track's first synth plugin; unlike the
+        // effect insert chain this can be a built-in (internal) synth, which the
+        // external-plugin path cannot address.
+        te::Plugin* instrument = nullptr;
+
+        for (auto* plugin : track->pluginList)
+            if (plugin != nullptr && plugin->isSynth())
+            {
+                instrument = plugin;
+                break;
+            }
+
+        if (instrument == nullptr)
+        {
+            lastError = "This track has no instrument to remove.";
+            return false;
+        }
+
+        instrument->deleteFromParent();
+
+        if (! trackHasInstrument (trackIndex))
+            restoreInputStateFromMarker (trackIndex);
 
         edit->restartPlayback();
         save();
@@ -2582,6 +2730,42 @@ namespace rrs
         return false;
     }
 
+    int Session::resolveInstrumentInsertTarget (int trackIndex, bool& createdNew)
+    {
+        createdNew = false;
+
+        // A failed insert must not leave a stale "where did it go" answer behind.
+        lastInstrumentInsertTrack = -1;
+        lastInstrumentInsertCreatedTrackFlag = false;
+
+        auto* track = getTrack (trackIndex);
+
+        if (track == nullptr)
+            return -1;
+
+        // An input track is the monitoring path — never convert it just to host an
+        // instrument. Put the instrument on a dedicated MIDI track instead, so the
+        // input track keeps its marker, device and monitoring completely intact.
+        if (! isInputTrack (*track))
+            return trackIndex;
+
+        const auto fresh = createMidiTrackInternal ({});
+
+        if (fresh >= 0)
+        {
+            createdNew = true;
+            return fresh;
+        }
+
+        // Could not append a track (e.g. no edit): fall back to converting the
+        // input track in place. The conversion records a restore marker, so
+        // removing the instrument brings the input (and monitoring) back.
+        if (convertTrackToMidi (trackIndex))
+            return trackIndex;
+
+        return -1;
+    }
+
     bool Session::insertInstrumentPlugin (int trackIndex, const juce::PluginDescription& description)
     {
         auto* track = getTrack (trackIndex);
@@ -2602,10 +2786,30 @@ namespace rrs
             return false;
         }
 
+        // Resolve the actual destination first: an input-track target spawns a
+        // separate MIDI track (monitoring is preserved); any other track hosts the
+        // instrument directly. The returned index is where the insert happens.
+        bool createdNew = false;
+        const auto target = resolveInstrumentInsertTarget (trackIndex, createdNew);
+
+        if (target < 0)
+        {
+            lastError = "Could not create a MIDI track for the instrument.";
+            return false;
+        }
+
+        auto* targetTrack = getTrack (target);
+
+        if (targetTrack == nullptr)
+        {
+            lastError = "No such track.";
+            return false;
+        }
+
         // Instrument-first chain: one instrument per track. A second insert is
         // rejected rather than silently stacking (a second synth would make the
         // audio path ambiguous). Remove the first to swap.
-        if (trackHasInstrument (trackIndex))
+        if (trackHasInstrument (target))
         {
             lastError = "This track already hosts an instrument. "
                         "Remove it first to insert a different one.";
@@ -2621,14 +2825,13 @@ namespace rrs
         }
 
         // Insert the instrument at the head of the chain (it must generate before
-        // any effect).
-        track->pluginList.insertPlugin (plugin, 0, nullptr);
+        // any effect), then mark the destination as a MIDI track. The input track
+        // (when the target was one) is deliberately left untouched.
+        targetTrack->pluginList.insertPlugin (plugin, 0, nullptr);
+        targetTrack->state.setProperty (idMidiTrack, true, nullptr);
 
-        // A track is either an input track or a MIDI track, never both: converting
-        // an input track clears its marker + hardware routing so `reconfigureInputs`
-        // and monitoring no longer see it (Epic 5 QA dual-state fix).
-        detachTrackFromHardwareInput (trackIndex);
-        track->state.setProperty (idMidiTrack, true, nullptr);
+        lastInstrumentInsertTrack = target;
+        lastInstrumentInsertCreatedTrackFlag = createdNew;
 
         edit->restartPlayback();
         save();
@@ -2653,9 +2856,26 @@ namespace rrs
             return false;
         }
 
+        bool createdNew = false;
+        const auto target = resolveInstrumentInsertTarget (trackIndex, createdNew);
+
+        if (target < 0)
+        {
+            lastError = "Could not create a MIDI track for the instrument.";
+            return false;
+        }
+
+        auto* targetTrack = getTrack (target);
+
+        if (targetTrack == nullptr)
+        {
+            lastError = "No such track.";
+            return false;
+        }
+
         // Instrument-first chain: one instrument per track (see
         // insertInstrumentPlugin).
-        if (trackHasInstrument (trackIndex))
+        if (trackHasInstrument (target))
         {
             lastError = "This track already hosts an instrument. "
                         "Remove it first to insert a different one.";
@@ -2670,11 +2890,11 @@ namespace rrs
             return false;
         }
 
-        track->pluginList.insertPlugin (plugin, 0, nullptr);
+        targetTrack->pluginList.insertPlugin (plugin, 0, nullptr);
+        targetTrack->state.setProperty (idMidiTrack, true, nullptr);
 
-        // Convert an input track the same way the external-instrument path does.
-        detachTrackFromHardwareInput (trackIndex);
-        track->state.setProperty (idMidiTrack, true, nullptr);
+        lastInstrumentInsertTrack = target;
+        lastInstrumentInsertCreatedTrackFlag = createdNew;
 
         edit->restartPlayback();
         save();
