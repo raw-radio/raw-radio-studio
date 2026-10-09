@@ -4405,3 +4405,129 @@ TEST_CASE ("Epic 5: MIDI + audio coexist and export correctly through an instrum
     session.close();
 }
 
+// Epic 5 QA BUG 1 / BUG 7: inserting an instrument on an input track converts it
+// to a MIDI track (the input marker is cleared — no input+MIDI dual state), and a
+// second instrument on the same track is rejected (instrument-first chain).
+TEST_CASE ("Epic 5: instrument insert converts an input track and rejects a second")
+{
+    auto dir = scratchDirectory ("epic5-convert");
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Convert.tracktionedit")));
+
+    // A brand-new session has one input track at index 0.
+    REQUIRE (session.getInputTrackIndices().contains (0));
+    CHECK_FALSE (session.isMidiTrack (0));
+
+    REQUIRE (session.insertBuiltInInstrument (0, "4osc"));
+
+    const auto inputTrackId = juce::Identifier ("rrsInputTrack");
+
+    CHECK (session.isMidiTrack (0));
+    CHECK (session.trackHasInstrument (0));
+    // The input-track marker is gone: `inputTrackIndices()` must not return it,
+    // so a later reconfigure cannot bind a wave input to a MIDI track.
+    CHECK_FALSE (session.getInputTrackIndices().contains (0));
+    REQUIRE (session.getTrack (0) != nullptr);
+    CHECK_FALSE (session.getTrack (0)->state.hasProperty (inputTrackId));
+    // It can no longer carry a hardware input mapping.
+    session.clearLastError();
+    CHECK_FALSE (session.setTrackInputMapping (0, InputMapping {}));
+
+    // A second instrument on the same track is rejected, not stacked.
+    session.clearLastError();
+    CHECK_FALSE (session.insertBuiltInInstrument (0, "4osc"));
+    CHECK (session.getLastError().isNotEmpty());
+
+    session.close();
+}
+
+// Epic 5 QA BUG 6: piano-roll note edits are clamped to the clip bounds — a note
+// asked to run or move past the clip end is pulled back so it still sounds.
+TEST_CASE ("Epic 5: piano-roll note edits are clamped to the clip bounds")
+{
+    auto dir = scratchDirectory ("epic5-clamp");
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Clamp.tracktionedit")));
+
+    const auto midiTrack = session.addMidiTrack ("Clamp");
+    REQUIRE (midiTrack >= 0);
+
+    const auto clipIndex = session.createMidiClip (midiTrack, 0.0, 2.0);
+    REQUIRE (clipIndex >= 0);
+
+    Session::MidiClipInfo info;
+    REQUIRE (session.getMidiClipInfo (midiTrack, clipIndex, info));
+    const auto beatsPerSecond =
+        session.getEdit()->tempoSequence.getBeatsPerSecondAt (te::TimePosition::fromSeconds (0.0));
+    const auto clipBeats = info.lengthSeconds * beatsPerSecond;
+    REQUIRE (clipBeats > 1.0);
+
+    // A note asked to run far past the clip end is shortened to fit.
+    const auto noteIndex = session.addMidiNote (midiTrack, clipIndex, 60, clipBeats - 0.5, 100.0, 100);
+    REQUIRE (noteIndex >= 0);
+
+    auto notes = session.getMidiNotes (midiTrack, clipIndex);
+    REQUIRE (notes.size() == 1);
+    CHECK (notes[0].startBeats + notes[0].lengthBeats <= clipBeats + 0.01);
+
+    // Moving it past the end keeps it inside the clip.
+    REQUIRE (session.moveMidiNote (midiTrack, clipIndex, 0, 62, 1000.0));
+    notes = session.getMidiNotes (midiTrack, clipIndex);
+    REQUIRE (notes.size() == 1);
+    CHECK (notes[0].startBeats + notes[0].lengthBeats <= clipBeats + 0.01);
+
+    // Resizing it past the end is clamped too.
+    REQUIRE (session.resizeMidiNote (midiTrack, clipIndex, 0, 100.0));
+    notes = session.getMidiNotes (midiTrack, clipIndex);
+    REQUIRE (notes.size() == 1);
+    CHECK (notes[0].startBeats + notes[0].lengthBeats <= clipBeats + 0.01);
+
+    session.close();
+}
+
+// Epic 5 QA BUG 4: switching the selected MIDI input clears the previous device's
+// routing, so an armed MIDI track does not keep listening to the old controller.
+TEST_CASE ("Epic 5: switching MIDI input clears the previous device routing")
+{
+    auto dir = scratchDirectory ("epic5-midi-switch");
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Switch.tracktionedit")));
+
+    te::HostedAudioDeviceInterface::Parameters params;
+    params.sampleRate = 48000.0;
+    params.blockSize = 256;
+    params.inputChannels = 2;
+    params.outputChannels = 2;
+
+    auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+
+    REQUIRE (audio.deviceManager().createVirtualMidiDevice ("RRS Switch MIDI").wasOk());
+
+    for (int i = 0; i < 400; ++i)
+    {
+        audio.deviceManager().dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+        if (session.getMidiInputDeviceNames().contains ("MIDI Input"))
+            break;
+    }
+
+    const auto midiTrack = session.addMidiTrack ("Switch");
+    REQUIRE (midiTrack >= 0);
+    REQUIRE (session.insertBuiltInInstrument (midiTrack, "4osc"));
+
+    REQUIRE (session.getMidiInputDeviceNames().contains ("MIDI Input"));
+    REQUIRE (session.setSelectedMidiInput ("MIDI Input"));
+    REQUIRE (session.armMidiTrack (midiTrack, true));
+    CHECK (session.isTrackArmed (midiTrack));
+
+    // Clearing the selection must drop the old device's target + record-enable.
+    REQUIRE (session.setSelectedMidiInput ({}) );
+    CHECK_FALSE (session.isTrackArmed (midiTrack));
+
+    session.close();
+}
+

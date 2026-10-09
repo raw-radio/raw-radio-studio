@@ -547,6 +547,48 @@ namespace rrs
         return readTrackMapping (trackIndex);
     }
 
+    void Session::detachTrackFromHardwareInput (int trackIndex)
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (edit == nullptr || track == nullptr || ! isInputTrack (*track))
+            return;
+
+        // Drop the engine-side wave routing first: the instance keeps targeting
+        // this track otherwise, even after the state marker is gone (the QA
+        // "input + MIDI" dual state).
+        auto* waveIn = resolveInputDeviceFor (readTrackMapping (trackIndex));
+
+        if (waveIn != nullptr)
+        {
+            for (auto* instance : edit->getAllInputDevices())
+                if (&instance->getInputDevice() == waveIn)
+                    juce::ignoreUnused (instance->removeTarget (track->itemID, &edit->getUndoManager()));
+
+            // Silence/disable the device only when no other input track still
+            // maps to it — with multitrack, one device can back several tracks.
+            bool shared = false;
+
+            for (auto index : inputTrackIndices())
+                if (index != trackIndex && resolveInputDeviceFor (readTrackMapping (index)) == waveIn)
+                    shared = true;
+
+            if (! shared)
+            {
+                waveIn->setMonitorMode (te::InputDevice::MonitorMode::off);
+                waveIn->setEnabled (false);
+            }
+        }
+
+        // Clear the input-track marker and mapping so `inputTrackIndices()` no
+        // longer returns the track.
+        track->state.removeProperty (idInputTrack, nullptr);
+        track->state.removeProperty (idFirstChannel, nullptr);
+        track->state.removeProperty (idNumChannels, nullptr);
+        track->state.removeProperty (idLayout, nullptr);
+        track->state.removeProperty (idInputGainDb, nullptr);
+    }
+
     int Session::getNumInputChannels() const
     {
         return audio.getNumActiveInputChannels();
@@ -2560,6 +2602,16 @@ namespace rrs
             return false;
         }
 
+        // Instrument-first chain: one instrument per track. A second insert is
+        // rejected rather than silently stacking (a second synth would make the
+        // audio path ambiguous). Remove the first to swap.
+        if (trackHasInstrument (trackIndex))
+        {
+            lastError = "This track already hosts an instrument. "
+                        "Remove it first to insert a different one.";
+            return false;
+        }
+
         auto plugin = edit->getPluginCache().createNewPlugin (te::ExternalPlugin::xmlTypeName, description);
 
         if (plugin == nullptr)
@@ -2569,10 +2621,13 @@ namespace rrs
         }
 
         // Insert the instrument at the head of the chain (it must generate before
-        // any effect), unless the slot is already taken — then append so the
-        // second instrument/effect order is stable.
-        const int index = trackHasInstrument (trackIndex) ? -1 : 0;
-        track->pluginList.insertPlugin (plugin, index, nullptr);
+        // any effect).
+        track->pluginList.insertPlugin (plugin, 0, nullptr);
+
+        // A track is either an input track or a MIDI track, never both: converting
+        // an input track clears its marker + hardware routing so `reconfigureInputs`
+        // and monitoring no longer see it (Epic 5 QA dual-state fix).
+        detachTrackFromHardwareInput (trackIndex);
         track->state.setProperty (idMidiTrack, true, nullptr);
 
         edit->restartPlayback();
@@ -2598,6 +2653,15 @@ namespace rrs
             return false;
         }
 
+        // Instrument-first chain: one instrument per track (see
+        // insertInstrumentPlugin).
+        if (trackHasInstrument (trackIndex))
+        {
+            lastError = "This track already hosts an instrument. "
+                        "Remove it first to insert a different one.";
+            return false;
+        }
+
         auto plugin = edit->getPluginCache().createNewPlugin (xmlTypeName, {});
 
         if (plugin == nullptr)
@@ -2606,8 +2670,10 @@ namespace rrs
             return false;
         }
 
-        const int index = trackHasInstrument (trackIndex) ? -1 : 0;
-        track->pluginList.insertPlugin (plugin, index, nullptr);
+        track->pluginList.insertPlugin (plugin, 0, nullptr);
+
+        // Convert an input track the same way the external-instrument path does.
+        detachTrackFromHardwareInput (trackIndex);
         track->state.setProperty (idMidiTrack, true, nullptr);
 
         edit->restartPlayback();
@@ -2682,6 +2748,30 @@ namespace rrs
         if (edit == nullptr)
             return false;
 
+        const auto previous = getSelectedMidiInputName();
+
+        // Switching (or clearing) the selection drops the previous device's
+        // targets and record-enables, so an armed MIDI track cannot keep
+        // listening to the old controller (Epic 5 QA: after switching input, the
+        // armed track stayed on the old device).
+        if (previous.isNotEmpty() && previous != name)
+        {
+            if (auto* oldDevice = findMidiInputByName (previous))
+            {
+                for (auto* instance : edit->getAllInputDevices())
+                {
+                    if (&instance->getInputDevice() != oldDevice)
+                        continue;
+
+                    for (auto target : instance->getTargets())
+                    {
+                        instance->setRecordingEnabled (target, false);
+                        juce::ignoreUnused (instance->removeTarget (target, &edit->getUndoManager()));
+                    }
+                }
+            }
+        }
+
         edit->state.setProperty (idMidiInput, name, nullptr);
 
         if (name.isNotEmpty())
@@ -2733,26 +2823,46 @@ namespace rrs
         }
 
         device->setEnabled (true);
-        audio.deviceManager().dispatchPendingUpdates();
 
-        bool found = false;
-
-        for (auto* instance : edit->getAllInputDevices())
+        // The playback graph owns the input-device instances, so rebuild it (and
+        // flush the pending device updates) *before* enumerating: a just-enabled
+        // controller otherwise has no instance yet and the route spuriously
+        // fails. Retried once because the device list is rebuilt asynchronously.
+        auto routeToTrack = [&]() -> bool
         {
-            if (dynamic_cast<te::MidiInputDevice*> (&instance->getInputDevice()) == nullptr)
-                continue;
+            bool routed = false;
 
-            if (&instance->getInputDevice() != device)
-                continue;
-
-            if (auto result = instance->setTarget (track->itemID, true, &edit->getUndoManager(), 0); ! result)
+            for (auto* instance : edit->getAllInputDevices())
             {
-                lastError = result.error();
-                continue;
+                if (dynamic_cast<te::MidiInputDevice*> (&instance->getInputDevice()) == nullptr)
+                    continue;
+
+                if (&instance->getInputDevice() != device)
+                    continue;
+
+                if (auto result = instance->setTarget (track->itemID, true, &edit->getUndoManager(), 0); ! result)
+                {
+                    lastError = result.error();
+                    continue;
+                }
+
+                instance->setRecordingEnabled (track->itemID, shouldArm);
+                routed = true;
             }
 
-            instance->setRecordingEnabled (track->itemID, shouldArm);
-            found = true;
+            return routed;
+        };
+
+        edit->restartPlayback();
+        audio.deviceManager().dispatchPendingUpdates();
+
+        bool found = routeToTrack();
+
+        if (! found)
+        {
+            edit->restartPlayback();
+            audio.deviceManager().dispatchPendingUpdates();
+            found = routeToTrack();
         }
 
         if (! found)
@@ -2761,7 +2871,6 @@ namespace rrs
             return false;
         }
 
-        edit->restartPlayback();
         clearLastError();
         sendChangeMessage();
         return true;
@@ -2918,6 +3027,19 @@ namespace rrs
         return notes;
     }
 
+    double Session::midiClipLengthInBeats (const te::MidiClip& clip) const
+    {
+        if (edit == nullptr)
+            return 0.0;
+
+        // The note sequence's beat space starts at 0 relative to the clip, so the
+        // usable length is the clip's timeline span converted to beats. Used to
+        // clamp piano-roll edits to the clip bounds (notes past the clip end
+        // would otherwise never sound).
+        const auto range = edit->tempoSequence.toBeats (clip.getPosition().time);
+        return juce::jmax (0.0, range.getLength().inBeats());
+    }
+
     int Session::addMidiNote (int trackIndex, int clipIndex, int noteNumber,
                               double startBeats, double lengthBeats, int velocity)
     {
@@ -2929,11 +3051,23 @@ namespace rrs
             return -1;
         }
 
+        // Clamp to the clip: a note (start + length) past the clip end is silent.
+        const auto clipBeats = midiClipLengthInBeats (*midi);
+        const auto requestedLength = juce::jmax (0.01, lengthBeats);
+        auto start = juce::jmax (0.0, startBeats);
+        auto length = requestedLength;
+
+        if (clipBeats > 0.0)
+        {
+            start = juce::jmin (start, juce::jmax (0.0, clipBeats - 0.01));
+            length = juce::jmin (requestedLength, juce::jmax (0.01, clipBeats - start));
+        }
+
         edit->getUndoManager().beginNewTransaction ("Add MIDI note");
 
         auto* note = midi->getSequence().addNote (juce::jlimit (0, 127, noteNumber),
-                                                  te::BeatPosition::fromBeats (juce::jmax (0.0, startBeats)),
-                                                  te::BeatDuration::fromBeats (juce::jmax (0.01, lengthBeats)),
+                                                  te::BeatPosition::fromBeats (start),
+                                                  te::BeatDuration::fromBeats (length),
                                                   juce::jlimit (1, 127, velocity),
                                                   0, &edit->getUndoManager());
 
@@ -2966,9 +3100,18 @@ namespace rrs
 
         edit->getUndoManager().beginNewTransaction ("Move MIDI note");
         auto* note = notes[noteIndex];
+        const auto length = note->getLengthBeats();
+
+        // Clamp the start so the moved note stays inside the clip (end <= length).
+        auto startBeats = juce::jmax (0.0, newStartBeats);
+        const auto clipBeats = midiClipLengthInBeats (*midi);
+
+        if (clipBeats > 0.0)
+            startBeats = juce::jmin (startBeats, juce::jmax (0.0, clipBeats - length.inBeats()));
+
         note->setNoteNumber (juce::jlimit (0, 127, newNoteNumber), &edit->getUndoManager());
-        note->setStartAndLength (te::BeatPosition::fromBeats (juce::jmax (0.0, newStartBeats)),
-                                 note->getLengthBeats(), &edit->getUndoManager());
+        note->setStartAndLength (te::BeatPosition::fromBeats (startBeats), length,
+                                 &edit->getUndoManager());
         afterClipEdit();
         clearLastError();
         return true;
@@ -2991,8 +3134,16 @@ namespace rrs
 
         edit->getUndoManager().beginNewTransaction ("Resize MIDI note");
         auto* note = notes[noteIndex];
-        note->setStartAndLength (note->getStartBeat(),
-                                 te::BeatDuration::fromBeats (juce::jmax (0.01, newLengthBeats)),
+        const auto start = note->getStartBeat();
+
+        // Clamp the length so the note cannot extend past the clip end.
+        auto length = juce::jmax (0.01, newLengthBeats);
+        const auto clipBeats = midiClipLengthInBeats (*midi);
+
+        if (clipBeats > 0.0)
+            length = juce::jmin (length, juce::jmax (0.01, clipBeats - start.inBeats()));
+
+        note->setStartAndLength (start, te::BeatDuration::fromBeats (length),
                                  &edit->getUndoManager());
         afterClipEdit();
         clearLastError();

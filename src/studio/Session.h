@@ -442,14 +442,23 @@ namespace rrs
         /** Inserts an instrument plugin into a track's instrument slot and marks
             the track as a MIDI/instrument track. Instruments belong on MIDI
             tracks, never in the effect insert chain. Persists. Returns false with
-            getLastError() set when the plugin is not an instrument or cannot be
-            created. */
+            getLastError() set when the plugin is not an instrument, when the
+            track already hosts an instrument (instrument-first chain: one
+            instrument per track), or when it cannot be created.
+
+            If `trackIndex` is currently a hardware *input* track, the insert
+            converts it to a MIDI track: the input-track marker and its hardware
+            mapping are cleared and the wave input stops targeting the track, so
+            a track is never both an input track and a MIDI track (the confusing
+            dual state QA found in the default browser path). */
         bool insertInstrumentPlugin (int trackIndex, const juce::PluginDescription&);
 
         /** Inserts one of Tracktion's built-in instruments by xml type name
             (e.g. "4osc", "sampler"). Used by the headless self-test/tests as a
             deterministic stand-in when no VST3 instrument is installed. Marks the
-            track as a MIDI track. Persists. */
+            track as a MIDI track (converting an input track exactly as
+            `insertInstrumentPlugin` does) and rejects a second instrument on the
+            same track. Persists. */
         bool insertBuiltInInstrument (int trackIndex, const juce::String& xmlTypeName);
 
         /** True when the track already hosts an instrument in its slot. */
@@ -469,12 +478,18 @@ namespace rrs
         juce::String getSelectedMidiInputName() const;
 
         /** Selects the MIDI input device by name (also enables it). An empty name
-            clears the selection. */
+            clears the selection. Switching away from a previously selected
+            device removes that device's track targets and record-enables, so an
+            armed MIDI track cannot keep listening to the old controller. */
         bool setSelectedMidiInput (const juce::String& name);
 
         /** Arms/disarms a MIDI track: routes the selected MIDI input to the track
             and toggles its record-enable. Returns false with getLastError() set
-            when the track is not a MIDI track or no MIDI input is selected. */
+            when the track is not a MIDI track or no MIDI input is selected. The
+            playback graph is rebuilt and pending device updates are flushed
+            *before* the input instances are enumerated, so a just-enabled
+            controller's instance exists and routing does not spuriously fail
+            (it is retried once if it still is not found). */
         bool armMidiTrack (int trackIndex, bool shouldArm);
         bool isMidiTrackArmed (int trackIndex) const;
 
@@ -737,6 +752,15 @@ namespace rrs
         /** Resolves the wave input device that carries `channel`, or the best
             available fallback. */
         tracktion::WaveInputDevice* resolveInputDeviceFor (const InputMapping&) const;
+
+        /** Converts an input track into a MIDI track: stops the hardware input
+            from targeting it and clears the input-track marker + mapping, so the
+            two track kinds can never overlap. No-op for a non-input track. */
+        void detachTrackFromHardwareInput (int trackIndex);
+
+        /** Length of a MIDI clip in beats at its timeline position (used to clamp
+            piano-roll edits to the clip bounds). 0 when the clip is invalid. */
+        double midiClipLengthInBeats (const tracktion::MidiClip&) const;
 
         /** Applies the user's monitoring preference to every input device.
             Returns false when no input device is available to act on. */

@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace rrs
 {
@@ -112,6 +113,11 @@ namespace rrs
         return juce::jmax (4.0, clipLengthSeconds * beatsPerSecond());
     }
 
+    double PianoRollPanel::clipLengthBeats() const
+    {
+        return juce::jmax (0.0, clipLengthSeconds * beatsPerSecond());
+    }
+
     juce::Rectangle<int> PianoRollPanel::gridArea() const
     {
         auto area = getLocalBounds();
@@ -200,8 +206,15 @@ namespace rrs
 
     void PianoRollPanel::addNoteAt (juce::Point<int> position)
     {
+        const auto clipBeats = clipLengthBeats();
         const auto pitch = noteForY (position.y);
-        const auto beat = juce::jmax (0.0, snapBeat (beatForX (position.x)));
+
+        // Clamp so the new note (start + default length) cannot pass the clip end
+        // (out-of-bounds notes never sound).
+        auto beat = juce::jmax (0.0, snapBeat (beatForX (position.x)));
+
+        if (clipBeats > 0.0)
+            beat = juce::jmin (beat, juce::jmax (0.0, clipBeats - defaultNoteBeats));
 
         const auto index = session.addMidiNote (trackIndex, clipIndex, pitch, beat,
                                                 defaultNoteBeats, 100);
@@ -240,12 +253,9 @@ namespace rrs
         {
             selectedNote = hit;
             dragNote = hit;
-            dragOriginalPitch = notes[(size_t) hit].noteNumber;
-            dragOriginalStart = notes[(size_t) hit].startBeats;
-            dragOriginalLength = notes[(size_t) hit].lengthBeats;
-            dragPreviewPitch = dragOriginalPitch;
-            dragPreviewStart = dragOriginalStart;
-            dragPreviewLength = dragOriginalLength;
+            dragPreviewPitch = notes[(size_t) hit].noteNumber;
+            dragPreviewStart = notes[(size_t) hit].startBeats;
+            dragPreviewLength = notes[(size_t) hit].lengthBeats;
             dragMouseDown = e.getPosition();
             dragMode = isOnResizeEdge (hit, e.getPosition()) ? DragMode::resize : DragMode::move;
             repaint();
@@ -265,15 +275,31 @@ namespace rrs
             const auto capture = notes[(size_t) dragNote];
             const auto deltaBeats = beatForX (e.getPosition().x) - beatForX (dragMouseDown.x);
             const auto deltaPitch = noteForY (e.getPosition().y) - noteForY (dragMouseDown.y);
+            const auto clipBeats = clipLengthBeats();
 
             dragPreviewPitch = juce::jlimit (0, 127, capture.noteNumber + deltaPitch);
-            dragPreviewStart = juce::jmax (0.0, snapBeat (capture.startBeats + deltaBeats));
+
+            // Keep the note body inside the clip: start in [0, clipBeats - length].
+            auto start = juce::jmax (0.0, snapBeat (capture.startBeats + deltaBeats));
+
+            if (clipBeats > 0.0)
+                start = juce::jmin (start, juce::jmax (0.0, clipBeats - capture.lengthBeats));
+
+            dragPreviewStart = start;
         }
         else if (dragMode == DragMode::resize)
         {
             const auto capture = notes[(size_t) dragNote];
             const auto targetEnd = snapBeat (beatForX (e.getPosition().x));
-            dragPreviewLength = juce::jmax (gridStepBeats, targetEnd - capture.startBeats);
+            const auto clipBeats = clipLengthBeats();
+
+            // Clamp the length so start + length cannot pass the clip end.
+            const auto maxLength = clipBeats > 0.0
+                                       ? juce::jmax (gridStepBeats, clipBeats - capture.startBeats)
+                                       : std::numeric_limits<double>::max();
+
+            dragPreviewLength = juce::jlimit (gridStepBeats, maxLength,
+                                              targetEnd - capture.startBeats);
         }
 
         repaint();
@@ -299,7 +325,7 @@ namespace rrs
             return true;
         }
 
-        // Pitch nudge with the arrow keys (Alt = semitone, otherwise octave).
+        // Pitch nudge with the arrow keys (no modifier = semitone, Shift = octave).
         if (juce::isPositiveAndBelow (selectedNote, (int) notes.size()))
         {
             const int step = key.getModifiers().isShiftDown() ? 12 : 1;
@@ -397,11 +423,6 @@ namespace rrs
         for (int i = 0; i < (int) notes.size(); ++i)
         {
             auto info = notes[(size_t) i];
-
-            if (i == selectedNote && dragMode == DragMode::none)
-            {
-                // Selection is shown via the outline below.
-            }
 
             if (i == dragNote && dragMode == DragMode::move)
             {

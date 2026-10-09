@@ -426,8 +426,10 @@ namespace rrs
                 return;
 
             // Arm the selected lane when one is selected (input or MIDI); fall
-            // back to track 0 for the Epic 1 single-track flow.
-            const int target = selectedTrackIndex >= 0 ? selectedTrackIndex : 0;
+            // back to the first armable track otherwise so Arm does not error
+            // when a playback-only backing track is selected (Epic 1 single-track
+            // flow).
+            const int target = armTargetTrack();
 
             if (! session.setTrackArmed (target, armButton.getToggleState()))
                 showStatus (session.getLastError(), true);
@@ -652,7 +654,7 @@ namespace rrs
         playButton.setIconName (session.isPlaying() ? "pause" : "play");
         recordButton.setToggleState (session.isRecording(), juce::dontSendNotification);
         playButton.setToggleState (session.isPlaying(), juce::dontSendNotification);
-        armButton.setToggleState (session.isTrackArmed (selectedTrackIndex >= 0 ? selectedTrackIndex : 0),
+        armButton.setToggleState (session.isTrackArmed (armTargetTrack()),
                                   juce::dontSendNotification);
         monitorButton.setToggleState (session.isMonitoringEnabled(), juce::dontSendNotification);
 
@@ -705,6 +707,28 @@ namespace rrs
             midiInputBox.setText (selected, juce::dontSendNotification);
         else
             midiInputBox.setText (names[0], juce::dontSendNotification);
+    }
+
+    int MainComponent::armTargetTrack() const
+    {
+        // Prefer the selected track when it can actually be armed (input or MIDI).
+        if (selectedTrackIndex >= 0
+            && (session.getInputTrackIndices().contains (selectedTrackIndex)
+                || session.isMidiTrack (selectedTrackIndex)))
+            return selectedTrackIndex;
+
+        // Otherwise fall back to the first armable track: an input track first
+        // (Epic 1 single-track flow), then a MIDI track, finally track 0.
+        const auto inputs = session.getInputTrackIndices();
+
+        if (! inputs.isEmpty())
+            return inputs[0];
+
+        for (int i = 0; i < session.getNumAudioTracks(); ++i)
+            if (session.isMidiTrack (i))
+                return i;
+
+        return 0;
     }
 
     void MainComponent::openPianoRoll()

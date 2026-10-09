@@ -80,6 +80,12 @@ namespace rrs
         void openPianoRoll();
         /** Re-populates the MIDI input device combo from the Session. */
         void refreshMidiInputs();
+        /** Track the Arm button operates on: the selected track when it is an
+            input or MIDI track, otherwise the first input track (Epic 1
+            single-track flow), then the first MIDI track, finally track 0. This
+            keeps Arm from erroring when a playback-only backing track is
+            selected. */
+        int armTargetTrack() const;
 
         /** Starts an offline WAV render of `range` to `file` and manages the
             busy/metronome state shared by full-session and region export

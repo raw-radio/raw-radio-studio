@@ -51,7 +51,8 @@ namespace
     // These paths exist purely to exercise the real capture pipeline on a
     // developer/QA machine:
     //   * `--list-devices`                    enumerate the audio backends and
-    //                                         their input/output device names;
+    //                                         their input/output device names,
+    //                                         plus the MIDI input/output devices;
     //   * `--selftest-record <s> <out.wav>`   capture <s> seconds from the
     //                                         selected input and write a WAV;
     //   * `--selftest-multitrack <s> <out>`   same, plus one mono WAV per input
@@ -227,6 +228,33 @@ namespace
             for (auto& name : outputs)
                 std::cout << "      - \"" << name << "\"\n";
         }
+
+        // MIDI devices (Epic 5). Enumerated from the engine's DeviceManager, the
+        // same source the "MIDI in" selector and the MIDI routing use, so the
+        // list matches what the app can actually route.
+        auto& tracktionDm = audio.deviceManager();
+
+        std::cout << "MIDI inputs:\n";
+
+        const auto midiIns = tracktionDm.getMidiInDevices();
+
+        if (midiIns.empty())
+            std::cout << "  (none)\n";
+
+        for (auto& device : midiIns)
+            if (device != nullptr)
+                std::cout << "  - \"" << device->getName() << "\"\n";
+
+        std::cout << "MIDI outputs:\n";
+
+        const auto numMidiOuts = tracktionDm.getNumMidiOutDevices();
+
+        if (numMidiOuts == 0)
+            std::cout << "  (none)\n";
+
+        for (int i = 0; i < numMidiOuts; ++i)
+            if (auto* device = tracktionDm.getMidiOutDevice (i))
+                std::cout << "  - \"" << device->getName() << "\"\n";
 
         return 0;
     }

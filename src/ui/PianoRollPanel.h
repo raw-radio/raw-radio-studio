@@ -70,6 +70,9 @@ namespace rrs
         int yForNote (int note) const;
         int noteForY (int y) const;
         double gridLengthBeats() const;
+        /** The clip's actual length in beats (the grid may be padded to a minimum
+            of 4 beats for usability, but notes may not pass the real clip end). */
+        double clipLengthBeats() const;
         double beatsPerSecond() const;
 
         juce::Rectangle<int> noteRect (const Session::MidiNoteInfo&) const;
@@ -93,9 +96,6 @@ namespace rrs
         enum class DragMode { none, move, resize };
         DragMode dragMode = DragMode::none;
         int dragNote = -1;
-        int dragOriginalPitch = 0;
-        double dragOriginalStart = 0.0;
-        double dragOriginalLength = 0.0;
         double dragPreviewStart = 0.0;
         double dragPreviewLength = 0.0;
         int dragPreviewPitch = 0;
