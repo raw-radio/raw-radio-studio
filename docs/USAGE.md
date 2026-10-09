@@ -222,6 +222,47 @@ mouse, so a single drag is a single undo step.
 
 ---
 
+## 9. MIDI & virtual instruments (Epic 5)
+
+MIDI lives on its own kind of track and does not affect audio tracks.
+
+**Add a MIDI/instrument track.** Press **MIDI track** (waveform icon, next to
+**Add track**). It has no audio input; instead it hosts an instrument and records
+MIDI.
+
+**Host an instrument.** Open **Plugins**, set the **Effects / Instruments**
+selector to **Instruments**, pick a synth/sampler and press **Insert**. The
+instrument goes into the track's *instrument slot* (before any effects). If no
+VST3/LV2/AU instrument is installed, the build's built-in synth is available to
+the headless self-test but not listed in the browser.
+
+**Select a MIDI input.** Pick your controller in the **MIDI in** combo in the
+transport row (hot-plugged devices appear within a moment). The choice is saved
+with the project.
+
+**Record MIDI.** Click the MIDI track's lane to arm it (or select the lane and
+press **Arm**), press **Record**, and play. A MIDI clip is created on the track
+as you record; press **Stop** to finish.
+
+**Edit with the piano roll.** Select a MIDI clip (click it on the lane) and press
+**Piano roll** (metronome icon). In the editor:
+
+- **Click** empty grid: add a note (snapped to a 1/16 grid).
+- **Drag** a note's body: move it in pitch and time.
+- **Drag** a note's right edge: change its length.
+- **Delete / Backspace**: remove the selected note.
+- **Up / Down**: nudge the selected note by a semitone (hold `Shift` for an
+  octave).
+
+Playback goes through the track's instrument, so you hear edits as the transport
+plays. The visible range is C2..B5.
+
+> A real MIDI controller and a third-party VST3 synth have not been exercised on
+> the development machine; the audio path is identical to the synthetic tests.
+> See [`EPIC5_GAPS.md`](EPIC5_GAPS.md).
+
+---
+
 ## Where things live
 
 | Thing | Location |
