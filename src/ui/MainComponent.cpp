@@ -8,6 +8,7 @@
 #include "ui/BrandFonts.h"
 #include "ui/ClipSnap.h"
 #include "ui/DevicePanelLayout.h"
+#include "ui/TrackLaneLayout.h"
 
 #include <array>
 #include <cmath>
@@ -1424,10 +1425,10 @@ namespace rrs
                     }
 
                     // Two non-overlapping rows inside the lane: the track name in
-                    // the top ~20 px and the clip strip below it. Split a single
-                    // inner rectangle so the rows can never overlap.
-                    auto inner = lane.reduced (10, 4);
-                    auto nameArea = inner.removeFromTop (20);
+                    // the top row and the clip strip below it. Shared geometry
+                    // with clipRectFor() so a drawn clip and its hit rect match.
+                    juce::Rectangle<int> nameArea, clipBand;
+                    track_lane::splitLane (lane, nameArea, clipBand);
 
                     g.setColour (brand::textPrimary);
                     g.setFont (brand::uiMedium (13.0f));
@@ -1437,9 +1438,6 @@ namespace rrs
                     // Epic 4: draw the track's clips on the timeline. The clip
                     // strip sits below the name row; each clip's rectangle comes
                     // from the same x<->time map as the ruler and the playhead.
-                    auto clipBand = juce::Rectangle<int> (inner.getX(), inner.getY(),
-                                                          inner.getWidth(),
-                                                          juce::jmax (8, inner.getHeight() - 2));
                     const auto timelineLength = juce::jmax (1.0e-6, session.getTimelineLengthSeconds());
 
                     for (const auto& clip : session.getClips (index))
@@ -1691,13 +1689,10 @@ namespace rrs
         if (trackLaneArea.isEmpty() || session.getEdit() == nullptr)
             return;
 
-        auto lanes = trackLaneArea.reduced (8, 6);
-        const auto numTracks = session.getNumAudioTracks();
-
-        trackLaneRects.reserve ((size_t) juce::jmax (0, numTracks));
-
-        for (int i = 0; i < numTracks && lanes.getHeight() > 0; ++i)
-            trackLaneRects.push_back (lanes.removeFromTop (juce::jmin (46, lanes.getHeight())));
+        // One *uniform* height for every lane (owner bug fix): the input track and
+        // every imported "minus" lane used to differ, which made the shorter
+        // clips' fades/trim handles hard to hit. See ui/TrackLaneLayout.h.
+        trackLaneRects = track_lane::computeLaneRects (trackLaneArea, session.getNumAudioTracks());
     }
 
     juce::Rectangle<int> MainComponent::clipRectFor (int trackIndex, const Session::ClipInfo& info) const
@@ -1705,11 +1700,9 @@ namespace rrs
         if (trackIndex < 0 || trackIndex >= (int) trackLaneRects.size())
             return {};
 
-        auto inner = trackLaneRects[(size_t) trackIndex].reduced (10, 4);
-        inner.removeFromTop (20);
-
-        auto band = juce::Rectangle<int> (inner.getX(), inner.getY(), inner.getWidth(),
-                                          juce::jmax (8, inner.getHeight() - 2));
+        // Same split as paint(): name row on top, clip strip below.
+        juce::Rectangle<int> nameRow, band;
+        track_lane::splitLane (trackLaneRects[(size_t) trackIndex], nameRow, band);
 
         const auto length = juce::jmax (1.0e-6, session.getTimelineLengthSeconds());
         const auto x1 = Timeline::xForSeconds (info.startSeconds, length, trackLaneArea);

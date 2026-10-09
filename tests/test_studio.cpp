@@ -26,6 +26,7 @@
 #include "ui/IconCache.h"
 #include "ui/MeterBallistics.h"
 #include "ui/MixerLayout.h"
+#include "ui/TrackLaneLayout.h"
 
 #include <vector>
 
@@ -1157,4 +1158,70 @@ TEST_CASE ("clip edge snapping picks the nearest boundary within the threshold")
     const auto b = clipsnap::snapTimeToEdges (2.9, edges, 0.5);
     CHECK (a.time == doctest::Approx (b.time));
     CHECK (a.snapped == b.snapped);
+}
+
+//==============================================================================
+// Uniform track-lane geometry (owner bug fix). The arrangement used to give the
+// first lane a fixed height and shrink later lanes into the leftover space, so
+// the armed input track's clips stayed tall while imported "minus" clips below
+// were squeezed. Every lane must now share one height so clip fades/trim handles
+// are equally usable everywhere.
+TEST_CASE ("track lanes share one uniform height with clips filling them")
+{
+    using namespace rrs::track_lane;
+
+    // A roomy arrangement: every lane gets the full 72 px DAW default.
+    {
+        const auto rects = computeLaneRects ({ 0, 0, 900, 600 }, 3);
+        REQUIRE (rects.size() == 3);
+
+        for (const auto& r : rects)
+            CHECK (r.getHeight() == preferredHeight);
+
+        // Stacked top-to-bottom, no overlap, inside the area.
+        CHECK (rects[0].getY() < rects[1].getY());
+        CHECK (rects[1].getY() < rects[2].getY());
+        CHECK (rects[0].getBottom() == rects[1].getY());
+        CHECK (rects[2].getBottom() <= 600);
+    }
+
+    // The exact input-vs-import regression: whatever the track count, the input
+    // lane and the imported lane are the same height.
+    {
+        const auto rects = computeLaneRects ({ 0, 0, 900, 222 }, 3);
+        REQUIRE (rects.size() == 3);
+        CHECK (rects[0].getHeight() == rects[1].getHeight());
+        CHECK (rects[1].getHeight() == rects[2].getHeight());
+    }
+
+    // A cramped arrangement still yields identical lanes (all fit, all equal).
+    {
+        const auto rects = computeLaneRects ({ 0, 0, 900, 120 }, 4);
+        REQUIRE (rects.size() == 4);
+
+        for (const auto& r : rects)
+            CHECK (r.getHeight() == rects[0].getHeight());
+
+        CHECK (rects.back().getBottom() <= 120);
+    }
+
+    // Degenerate inputs are handled without producing lanes.
+    CHECK (computeLaneRects ({ 0, 0, 900, 300 }, 0).empty());
+    CHECK (computeLaneRects ({ 0, 0, 0, 0 }, 3).empty());
+
+    // The shared height is capped at the preferred DAW default.
+    CHECK (uniformLaneHeight (10000, 1) == preferredHeight);
+    CHECK (uniformLaneHeight (0, 3) == 1);
+
+    // The name row / clip strip split keeps the clip strip inside the lane and
+    // below the name row, even when the lane is cramped.
+    for (const int laneHeight : { preferredHeight, 50, 30, 18 })
+    {
+        juce::Rectangle<int> nameRow, clipBand;
+        splitLane ({ 0, 0, 900, laneHeight }, nameRow, clipBand);
+
+        CHECK (nameRow.getBottom() <= clipBand.getY());
+        CHECK (clipBand.getHeight() >= 8);
+        CHECK (clipBand.getBottom() <= laneHeight);
+    }
 }
