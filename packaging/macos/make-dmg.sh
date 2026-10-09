@@ -12,7 +12,7 @@
 #
 # Example:
 #   packaging/macos/make-dmg.sh \
-#       build/raw_radio_studio_artefacts/Release/raw-radio-studio.app 0.1.1 dist
+#       build/raw_radio_studio_artefacts/Release/raw-radio-studio.app 0.1.2 dist
 #
 # Output:
 #   <output-dir>/raw-radio-studio-<version>-macos.dmg
