@@ -58,6 +58,7 @@ int main (int argc, char** argv)
 #include "ui/BrandButton.h"
 #include "ui/BrandColours.h"
 #include "ui/PluginBrowser.h"
+#include "ui/TrackLaneLayout.h"
 
 #include <algorithm>
 #include <atomic>
@@ -963,6 +964,80 @@ TEST_CASE ("imported/backing tracks stay playback-only: cannot arm or input-map 
 
     // The real input track keeps its controls (the guard is not over-broad).
     CHECK (session.setTrackInputMapping (0, InputMapping { 0, 1, InputLayout::Mono }));
+
+    session.close();
+}
+
+//==============================================================================
+// Arrangement clip height (owner bug fix): an input track's clip and an imported
+// "minus" clip must render at the same height, and every clip must fill its
+// lane. In the default window a lane is only ~38 px tall, so the old reserved
+// 20 px name row left the clip an 8 px sliver while the armed input lane's
+// background filled the whole lane — the "input track is taller than the
+// imported clip" report. e7054e9 made the LANES uniform but left this reserved
+// row in place, so the clips still disagreed. This headless diagnostic builds a
+// real session (input track + imported track), prints the lane and clip heights,
+// and pins them equal. It fails if a clip no longer fills its lane.
+TEST_CASE ("input and imported clips share one height and fill their lane")
+{
+    auto dir = scratchDirectory ("clip-height");
+    auto wavFile = writeSineWav (dir.getChildFile ("minus.wav"), 48000.0, 0.5);
+    REQUIRE (wavFile.existsAsFile());
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Clips.tracktionedit")));
+    REQUIRE (session.getNumAudioTracks() == 1);
+
+    // A recorded take on the armed input track (track 0), so both tracks carry a
+    // clip and the comparison is clip-vs-clip, not clip-vs-lane.
+    {
+        auto* edit = session.getEdit();
+        REQUIRE (edit != nullptr);
+
+        auto tracks = te::getAudioTracks (*edit);
+        REQUIRE (tracks.size() == 1);
+
+        const te::ClipPosition position { { te::TimePosition(), te::TimeDuration::fromSeconds (0.5) }, {} };
+        REQUIRE (tracks[0]->insertWaveClip ("Take", wavFile, position, false) != nullptr);
+    }
+
+    // An imported "minus" backing track (track 1).
+    REQUIRE (session.importAudioFile (wavFile));
+    REQUIRE (session.getNumAudioTracks() == 2);
+
+    // Two representative arrangement heights: a roomy 72 px default and the
+    // cramped default window (~38 px lanes, where the bug was visible).
+    for (const int areaHeight : { 600, 88 })
+    {
+        const juce::Rectangle<int> area { 0, 0, 900, areaHeight };
+        const auto lanes = track_lane::computeLaneRects (area, session.getNumAudioTracks());
+        REQUIRE (lanes.size() == 2);
+
+        int laneHeights[2] {}, clipHeights[2] {};
+
+        for (int i = 0; i < 2; ++i)
+        {
+            const auto clips = session.getClips (i);
+            REQUIRE (clips.size() == 1);
+
+            juce::Rectangle<int> nameRow, band;
+            track_lane::splitLane (lanes[(size_t) i], nameRow, band);
+
+            // The drawn clip uses the band's y/height (x comes from the timeline
+            // map, which never changes the height).
+            laneHeights[i] = lanes[(size_t) i].getHeight();
+            clipHeights[i] = band.getHeight();
+
+            std::cout << "[clip-height] area " << areaHeight
+                      << " track " << i << ": lane " << laneHeights[i]
+                      << " px, clip " << clipHeights[i] << " px\n";
+        }
+
+        CHECK (laneHeights[0] == laneHeights[1]);
+        CHECK (clipHeights[0] == clipHeights[1]);
+        CHECK (clipHeights[0] == laneHeights[0] - 2 * track_lane::clipInset);
+    }
 
     session.close();
 }

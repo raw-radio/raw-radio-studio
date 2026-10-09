@@ -1432,20 +1432,16 @@ namespace rrs
                         g.fillRoundedRectangle (laneRect.withWidth (3.0f), 1.5f);
                     }
 
-                    // Two non-overlapping rows inside the lane: the track name in
-                    // the top row and the clip strip below it. Shared geometry
+                    // The clip fills the lane; the track name is an overlay drawn
+                    // over it (below, after the clips) so an input clip and an
+                    // imported clip are exactly the same height. Shared geometry
                     // with clipRectFor() so a drawn clip and its hit rect match.
                     juce::Rectangle<int> nameArea, clipBand;
                     track_lane::splitLane (lane, nameArea, clipBand);
 
-                    g.setColour (brand::textPrimary);
-                    g.setFont (brand::uiMedium (13.0f));
-                    g.drawText (track->getName() + (armed ? "   [ARMED]" : ""),
-                                nameArea, juce::Justification::centredLeft);
-
-                    // Epic 4: draw the track's clips on the timeline. The clip
-                    // strip sits below the name row; each clip's rectangle comes
-                    // from the same x<->time map as the ruler and the playhead.
+                    // Epic 4: draw the track's clips on the timeline. Each clip's
+                    // rectangle comes from the same x<->time map as the ruler and
+                    // the playhead.
                     const auto timelineLength = juce::jmax (1.0e-6, session.getTimelineLengthSeconds());
 
                     for (const auto& clip : session.getClips (index))
@@ -1511,7 +1507,10 @@ namespace rrs
                             g.drawRoundedRectangle (r.toFloat().reduced (0.5f), 3.0f, 2.0f);
                         }
 
-                        if (r.getWidth() > 40)
+                        // The clip's own name only where the clip is roomy enough
+                        // to read it without colliding with the track-name
+                        // overlay (which now sits on top of the clip).
+                        if (r.getWidth() > 40 && r.getHeight() >= 40)
                         {
                             g.setColour (brand::textPrimary);
                             g.setFont (brand::uiRegular (10.0f));
@@ -1519,6 +1518,27 @@ namespace rrs
                                             + clip.name,
                                         r.reduced (6, 0), juce::Justification::centredLeft);
                         }
+                    }
+
+                    // Track-name overlay: drawn after the clips so it stays
+                    // legible on top of the clip that now fills the lane. A faint
+                    // backdrop keeps it readable over a bright clip.
+                    {
+                        const auto nameText = track->getName() + (armed ? "   [ARMED]" : "");
+                        g.setFont (brand::uiMedium (13.0f));
+
+                        const auto nameWidth = juce::GlyphArrangement::getStringWidthInt (g.getCurrentFont(),
+                                                                                          nameText);
+                        const auto textW = juce::jmin (nameArea.getWidth(), nameWidth + 12);
+
+                        if (textW > 0 && nameArea.getHeight() > 0)
+                        {
+                            g.setColour (brand::bgWindow.withAlpha (0.55f));
+                            g.fillRoundedRectangle (nameArea.withWidth (textW).toFloat(), 3.0f);
+                        }
+
+                        g.setColour (brand::textPrimary);
+                        g.drawText (nameText, nameArea, juce::Justification::centredLeft);
                     }
 
                     ++index;

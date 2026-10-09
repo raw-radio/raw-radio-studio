@@ -9,6 +9,15 @@
 // 50–100 px range) whenever the arrangement is tall enough, shrinking evenly
 // only when many tracks share a short window so the lanes always stay identical.
 //
+// Uniform lanes alone were not enough (owner report: input track still looked
+// taller than the imported clips). The clip band was still `lane` minus a
+// reserved 20 px name row minus insets, so in a 38 px lane (the default window)
+// the imported clip collapsed to the 8 px floor while the armed input lane's
+// background filled the lane — a tall block next to a thin strip. A clip must
+// therefore *fill its lane*: the name is a top overlay drawn ON TOP of the clip,
+// not a reserved row, so an input clip and an imported clip are exactly the same
+// height and the trim/fade hit rectangles match what is drawn.
+//
 // This is pure geometry (`juce::Rectangle`), separated out like MixerLayout.h /
 // DevicePanelLayout.h so it is unit-testable without a Session or an engine.
 // Never touched from the audio thread.
@@ -65,28 +74,29 @@ namespace rrs::track_lane
         return rects;
     }
 
-    /** Height of a lane's track-name row, when there is room for it. */
+    /** Height of a lane's track-name overlay, when there is room for it. The
+        overlay is drawn ON TOP of the clip band (see `splitLane`) and never
+        shortens it. */
     inline constexpr int nameRowHeight = 20;
 
-    /** Minimum clip-strip height kept below the name row, so the trim/fade hit
-        zones stay usable even in a cramped lane. */
-    inline constexpr int minClipBandHeight = 10;
+    /** Vertical breathing room kept above/below a clip inside its lane, so
+        stacked lanes read as separate rows. Small: the clip still fills the
+        lane for all but this uniform inset. */
+    inline constexpr int clipInset = 2;
 
-    /** Splits one lane into its name row (top) and clip strip (below). Shared by
-        paint() and clipRectFor() so a drawn clip and its hit rectangle can never
-        disagree, and the clip strip is always kept inside the lane. */
+    /** Splits one lane into the full-height clip band and the track-name overlay
+        drawn over it. The clip fills the lane (minus `clipInset` on every side),
+        so an input clip and an imported clip are exactly the same height
+        regardless of how many tracks share the arrangement. Shared by paint()
+        and clipRectFor() so a drawn clip and its hit rectangle can never
+        disagree, and the clip is always kept inside the lane. */
     inline void splitLane (juce::Rectangle<int> lane,
                            juce::Rectangle<int>& nameRow,
                            juce::Rectangle<int>& clipBand) noexcept
     {
+        clipBand = lane.reduced (0, clipInset);
+
         auto inner = lane.reduced (10, 4);
-
-        const auto nameHeight = juce::jmin (nameRowHeight,
-                                            juce::jmax (0, inner.getHeight() - minClipBandHeight));
-        nameRow = inner.removeFromTop (nameHeight);
-
-        clipBand = juce::Rectangle<int> (inner.getX(), inner.getY(),
-                                         inner.getWidth(),
-                                         juce::jmax (8, inner.getHeight() - 2));
+        nameRow = inner.removeFromTop (juce::jmin (nameRowHeight, inner.getHeight()));
     }
 }

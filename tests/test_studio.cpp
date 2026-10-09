@@ -1162,11 +1162,14 @@ TEST_CASE ("clip edge snapping picks the nearest boundary within the threshold")
 }
 
 //==============================================================================
-// Uniform track-lane geometry (owner bug fix). The arrangement used to give the
-// first lane a fixed height and shrink later lanes into the leftover space, so
-// the armed input track's clips stayed tall while imported "minus" clips below
-// were squeezed. Every lane must now share one height so clip fades/trim handles
-// are equally usable everywhere.
+// Uniform track-lane geometry (owner bug fix). Two things had to line up:
+//   * every lane shares one height (the first lane used to get a fixed 46 px and
+//     later lanes were squeezed into the leftover space), and
+//   * every clip FILLS its lane (the clip band used to be the lane minus a
+//     reserved 20 px name row, so in the default 38 px lane an imported clip
+//     collapsed to the 8 px floor while the armed input lane's background filled
+//     the lane — a tall block next to a thin strip). The name is now an overlay
+//     drawn on top of the clip, so input and imported clips are the same height.
 TEST_CASE ("track lanes share one uniform height with clips filling them")
 {
     using namespace rrs::track_lane;
@@ -1214,16 +1217,19 @@ TEST_CASE ("track lanes share one uniform height with clips filling them")
     CHECK (uniformLaneHeight (10000, 1) == preferredHeight);
     CHECK (uniformLaneHeight (0, 3) == 1);
 
-    // The name row / clip strip split keeps the clip strip inside the lane and
-    // below the name row, even when the lane is cramped.
+    // The clip fills its lane (uniform `clipInset` all round) and the name row is
+    // an overlay INSIDE the clip band, not a reserved strip that would squeeze a
+    // cramped clip down to a thin sliver.
     for (const int laneHeight : { preferredHeight, 50, 30, 18 })
     {
         juce::Rectangle<int> nameRow, clipBand;
         splitLane ({ 0, 0, 900, laneHeight }, nameRow, clipBand);
 
-        CHECK (nameRow.getBottom() <= clipBand.getY());
-        CHECK (clipBand.getHeight() >= 8);
-        CHECK (clipBand.getBottom() <= laneHeight);
+        CHECK (clipBand.getHeight() == laneHeight - 2 * clipInset);
+        CHECK (clipBand.getY() == clipInset);
+        CHECK (clipBand.getBottom() == laneHeight - clipInset);
+        CHECK (nameRow.getY() >= clipBand.getY());
+        CHECK (nameRow.getBottom() <= clipBand.getBottom());
     }
 }
 
