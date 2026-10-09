@@ -32,6 +32,30 @@
   renders through the built-in stand-in instrument and reports peak/RMS; fails on
   silence.
 
+## Closed — QA hardening (commit `e183bfb`)
+
+These issues found while exercising the default browser / routing paths are
+**fixed** and no longer open:
+
+- **Input + MIDI track exclusivity** — a track is either a hardware *input* track
+  or a *MIDI* track, never both. Inserting an instrument on an input track now
+  clears its input-track marker and hardware mapping and stops the wave input
+  from targeting it (`Session::detachTrackFromHardwareInput`), removing the
+  confusing dual state.
+- **MIDI device listing** — `--list-devices` now enumerates MIDI devices,
+  printing a **MIDI inputs** / **MIDI outputs** section alongside the audio
+  backends (from the same `DeviceManager` the "MIDI in" selector uses).
+- **Arm / route robustness** — **Arm** falls back to the first armable track
+  when a playback-only backing track is selected (`MainComponent::armTargetTrack`);
+  MIDI routing rebuilds the playback graph and flushes pending device updates
+  before enumerating input instances (retried once), and switching the selected
+  MIDI input drops the previous device's targets and record-enables.
+- **Note clamp** — piano-roll add/move/resize now clamp notes to the clip bounds,
+  so a note past the clip end can no longer be created (it would never sound).
+- **Second-instrument rejection** — a track hosts at most one instrument; a second
+  insert is rejected with a clear error instead of silently stacking, and the
+  instrument is always inserted at the head of the chain.
+
 ## Open — no real MIDI controller has been exercised
 
 **What is missing.** All MIDI capture verification is **synthetic**: the tests
@@ -44,9 +68,12 @@ identical — `MidiInputDevice::handleIncomingMidiMessage` dispatches to the sam
 `MidiInputDeviceInstance` whether the message came from a physical port or the
 hosted/virtual input.
 
-**Manual step.** Connect a class-compliant USB MIDI controller, `--list-devices`
-(or the "MIDI in" combo) should list it, arm a MIDI track, select the controller,
-Record, play notes → a MIDI clip appears and the piano roll shows the notes.
+**Manual step.** Connect a class-compliant USB MIDI controller, run
+`--list-devices` — it now prints a **MIDI inputs** / **MIDI outputs** section
+(in addition to the audio backends) and should list the controller; the
+equivalent in-app view is the **MIDI in** combo. Then arm a MIDI track, select
+the controller, Record, play notes → a MIDI clip appears and the piano roll
+shows the notes.
 
 ## Open — no real VST3/LV2/AU instrument was exercised
 
@@ -66,10 +93,10 @@ its state are restored.
 ## Open — MIDI editor is basic
 
 **What is missing.** The piano roll has no velocity lane, no quantise, no
-multi-select / marquee, no copy/paste, no scroll/zoom (the eight-octave range is
-fixed: C2..B5), and no snap toggle (it snaps to a 1/16 grid). Overdub/loop MIDI
-recording is available through the engine transport only — there is no dedicated
-overdub toggle.
+multi-select / marquee, no copy/paste, no scroll/zoom (the four-octave range is
+fixed: lowest note 36 → C1, highest note 83 → B4), and no snap toggle (it snaps
+to a 1/16 grid). Overdub/loop MIDI recording is available through the engine
+transport only — there is no dedicated overdub toggle.
 
 **Planned approach.** A velocity strip, a snap/quantise control, marquee select,
 and vertical scroll/zoom. MIDI clip editing on the arrangement (move/trim/split

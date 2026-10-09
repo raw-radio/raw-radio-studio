@@ -238,7 +238,9 @@ the headless self-test but not listed in the browser.
 
 **Select a MIDI input.** Pick your controller in the **MIDI in** combo in the
 transport row (hot-plugged devices appear within a moment). The choice is saved
-with the project.
+with the project. To list what the system exposes, run the app with
+`--list-devices`: it prints the audio backends plus a **MIDI inputs** / **MIDI
+outputs** section (the same source the **MIDI in** combo reads).
 
 **Record MIDI.** Click the MIDI track's lane to arm it (or select the lane and
 press **Arm**), press **Record**, and play. A MIDI clip is created on the track
@@ -255,7 +257,7 @@ as you record; press **Stop** to finish.
   octave).
 
 Playback goes through the track's instrument, so you hear edits as the transport
-plays. The visible range is C2..B5.
+plays. The visible range is four octaves, C1..B4 (MIDI notes 36–83).
 
 > A real MIDI controller and a third-party VST3 synth have not been exercised on
 > the development machine; the audio path is identical to the synthetic tests.
