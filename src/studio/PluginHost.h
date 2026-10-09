@@ -57,8 +57,14 @@ namespace rrs
 
         //==============================================================================
         /** The known plugins, optionally filtered by a case-insensitive search
-            across name / manufacturer / format, sorted by name. */
-        juce::Array<juce::PluginDescription> getKnownPlugins (const juce::String& searchText = {}) const;
+            across name / manufacturer / format, sorted by name.
+
+            When `effectsOnly` is true (the default) instruments, generators,
+            panners and other non-effect plugins are excluded: the browser feeds
+            a track's insert chain, which accepts audio effects only (see
+            studio/PluginSelection.h). Pass false for a raw inventory. */
+        juce::Array<juce::PluginDescription> getKnownPlugins (const juce::String& searchText = {},
+                                                              bool effectsOnly = true) const;
 
         int getNumKnownPlugins() const;
 

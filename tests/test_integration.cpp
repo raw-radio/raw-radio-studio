@@ -3915,3 +3915,103 @@ TEST_CASE ("deleting a track's last clip keeps the track removable and import wo
 
     session.close();
 }
+
+//==============================================================================
+// Owner bug: inserting an instrument (DLSMusicDevice) or a panner (HRTFPanner)
+// as an insert effect killed the track. Effects-only: those are rejected before
+// the plugin joins the chain, the track's audio is untouched, and ordinary
+// effects still insert.
+TEST_CASE ("insert-plugin rejects instruments/non-effects and leaves the track audio intact")
+{
+    auto dir = scratchDirectory ("insert-filter");
+    auto tone = writeSineWav (dir.getChildFile ("tone.wav"), 48000.0, 0.5);
+    REQUIRE (tone.existsAsFile());
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("InsertFilter.tracktionedit")));
+    REQUIRE (session.importAudioFile (tone));
+    const int trackIndex = session.getNumAudioTracks() - 1;
+    REQUIRE (trackIndex >= 1);
+
+    auto renderPeak = [&] (const juce::File& dest)
+    {
+        dest.deleteFile();
+        std::atomic<bool> finished { false };
+        bool succeeded = false;
+        juce::String error;
+
+        auto handle = WavExport::start (*session.getEdit(), dest,
+                                        [&] (bool ok, juce::File, juce::String message)
+                                        {
+                                            succeeded = ok;
+                                            error = message;
+                                            finished = true;
+                                        });
+        REQUIRE (handle != nullptr);
+
+        for (int i = 0; i < 400 && ! finished.load(); ++i)
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (25);
+
+        REQUIRE (finished.load());
+        INFO ("render error: " << error);
+        REQUIRE (succeeded);
+        return readWavPeak (dest);
+    };
+
+    const auto before = renderPeak (dir.getChildFile ("before.wav"));
+    REQUIRE (before > 0.1f);
+
+    // DLSMusicDevice-like instrument: JUCE sets isInstrument and category "Synth".
+    juce::PluginDescription instrument;
+    instrument.name = "DLSMusicDevice";
+    instrument.pluginFormatName = "AudioUnit";
+    instrument.fileOrIdentifier = "AudioUnit:Synths/aumu,dls ,appl";
+    instrument.isInstrument = true;
+    instrument.category = "Synth";
+    instrument.numInputChannels = 0;
+    instrument.numOutputChannels = 4;
+
+    session.clearLastError();
+    CHECK_FALSE (session.insertPlugin (trackIndex, instrument, -1));
+    CHECK (session.getLastError().isNotEmpty());
+    CHECK (session.getNumPlugins (trackIndex) == 0);
+
+    // HRTFPanner-like panner (an AU effect-typed plugin that is not an insert
+    // effect and mangles the chain).
+    juce::PluginDescription panner;
+    panner.name = "HRTFPanner";
+    panner.pluginFormatName = "AudioUnit";
+    panner.fileOrIdentifier = "AudioUnit:Panners/aupn,hrtf,appl";
+    panner.isInstrument = false;
+    panner.category = "Panner";
+    panner.numInputChannels = 2;
+    panner.numOutputChannels = 2;
+
+    session.clearLastError();
+    CHECK_FALSE (session.insertPlugin (trackIndex, panner, -1));
+    CHECK (session.getLastError().isNotEmpty());
+    CHECK (session.getNumPlugins (trackIndex) == 0);
+
+    // A positive asymmetric layout (1-in / 2-out) is rejected too.
+    juce::PluginDescription asymmetric;
+    asymmetric.name = "MonoToStereoThing";
+    asymmetric.pluginFormatName = "VST3";
+    asymmetric.fileOrIdentifier = "rrs_asymmetric";
+    asymmetric.category = "Effect";
+    asymmetric.numInputChannels = 1;
+    asymmetric.numOutputChannels = 2;
+
+    session.clearLastError();
+    CHECK_FALSE (session.insertPlugin (trackIndex, asymmetric, -1));
+    CHECK (session.getLastError().isNotEmpty());
+    CHECK (session.getNumPlugins (trackIndex) == 0);
+
+    // The rejected inserts never touched the track: its clip survives and it
+    // still renders the same audio.
+    CHECK (session.getClips (trackIndex).size() == 1);
+    const auto after = renderPeak (dir.getChildFile ("after.wav"));
+    CHECK (after == doctest::Approx (before).epsilon (0.02));
+
+    session.close();
+}

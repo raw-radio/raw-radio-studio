@@ -18,6 +18,7 @@
 #include "studio/InputMapping.h"
 #include "studio/LastDirectoryStore.h"
 #include "studio/PluginPresets.h"
+#include "studio/PluginSelection.h"
 #include "studio/TimeStretch.h"
 #include "ui/BrandFonts.h"
 #include "ui/ClipSnap.h"
@@ -1224,4 +1225,42 @@ TEST_CASE ("track lanes share one uniform height with clips filling them")
         CHECK (clipBand.getHeight() >= 8);
         CHECK (clipBand.getBottom() <= laneHeight);
     }
+}
+
+//==============================================================================
+// Insert-plugin eligibility (owner bug fix). Instruments/panners are not audio
+// effects: DLSMusicDevice (isInstrument, category "Synth") and HRTFPanner
+// (category "Panner") must be rejected from the track insert, while ordinary
+// effects pass.
+TEST_CASE ("insert-plugin filter rejects instruments and non-effects")
+{
+    using namespace rrs::plugin_selection;
+
+    // DLSMusicDevice: JUCE sets isInstrument and category "Synth".
+    CHECK (isInstrumentOrNonEffect (true, "Synth"));
+    CHECK_FALSE (insertRejectionReason (true, "Synth", 0, 4).isEmpty());
+
+    // HRTFPanner: an AU effect-typed panner (category "Panner").
+    CHECK (isNonEffectCategory ("Panner"));
+    CHECK_FALSE (insertRejectionReason (false, "Panner", 2, 2).isEmpty());
+
+    // Generators / mixers / MIDI effects are non-effects too.
+    CHECK (isNonEffectCategory ("Generator"));
+    CHECK (isNonEffectCategory ("Mixer"));
+    CHECK (isNonEffectCategory ("MidiEffects"));
+
+    // An ordinary stereo effect passes, including one with no reported category.
+    CHECK (insertRejectionReason (false, "Fx", 2, 2).isEmpty());
+    CHECK (insertRejectionReason (false, "", 2, 2).isEmpty());
+    CHECK (insertRejectionReason (false, "Effect", 1, 1).isEmpty());
+
+    // An unknown category is not treated as a non-effect (no false rejects).
+    CHECK_FALSE (isNonEffectCategory (""));
+
+    // A positive asymmetric layout (1-in/2-out) is flagged; unknown 0/0 is not.
+    CHECK (hasIncompatibleInsertLayout (1, 2));
+    CHECK (hasIncompatibleInsertLayout (0, 2));
+    CHECK_FALSE (hasIncompatibleInsertLayout (2, 2));
+    CHECK_FALSE (hasIncompatibleInsertLayout (0, 0));
+    CHECK_FALSE (hasIncompatibleInsertLayout (1, 1));
 }

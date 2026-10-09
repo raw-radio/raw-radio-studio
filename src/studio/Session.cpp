@@ -5,6 +5,7 @@
 #include "AppPaths.h"
 #include "AudioImport.h"
 #include "InputRouting.h"
+#include "PluginSelection.h"
 #include "TimeStretch.h"
 
 #include <algorithm>
@@ -2330,12 +2331,47 @@ namespace rrs
             return false;
         }
 
+        // Effects only. An instrument/generator/panner inserted as an effect
+        // either has no audio input or mangles the signal (owner bug: inserting
+        // DLSMusicDevice / HRTFPanner killed the track). Reject *before* touching
+        // the track so its audio graph is left exactly as it was.
+        if (auto reason = plugin_selection::insertRejectionReason (description.isInstrument,
+                                                                   description.category,
+                                                                   description.numInputChannels,
+                                                                   description.numOutputChannels);
+            reason.isNotEmpty())
+        {
+            lastError = reason;
+            return false;
+        }
+
         auto plugin = edit->getPluginCache().createNewPlugin (te::ExternalPlugin::xmlTypeName, description);
 
         if (plugin == nullptr)
         {
             lastError = "Could not create plugin: " + description.name;
             return false;
+        }
+
+        // Re-check against the live instance when one is already available: a
+        // scanned description can carry unknown 0/0 counts, and this catches a
+        // genuine layout mismatch before the plugin joins the chain. The plugin
+        // reference is dropped on rejection, so nothing is inserted.
+        if (auto* external = dynamic_cast<te::ExternalPlugin*> (plugin.get()))
+        {
+            if (auto* instance = external->getAudioPluginInstance())
+            {
+                if (auto reason = plugin_selection::insertRejectionReason (
+                        description.isInstrument,
+                        description.category,
+                        instance->getTotalNumInputChannels(),
+                        instance->getTotalNumOutputChannels());
+                    reason.isNotEmpty())
+                {
+                    lastError = reason;
+                    return false;
+                }
+            }
         }
 
         track->pluginList.insertPlugin (plugin, pluginIndex, nullptr);
