@@ -4,7 +4,7 @@ This directory holds the project documentation for `raw-radio-studio`.
 
 ## Specification
 
-The canonical specification is **`STUDIO_SPEC.md`** (document version 1.4.0). It
+The canonical specification is **`STUDIO_SPEC.md`** (document version 1.6.0). It
 defines the product vision, functional and non-functional requirements,
 architecture, licensing, build/CI/release plan, and the Epic 0–7 roadmap with
 acceptance criteria.

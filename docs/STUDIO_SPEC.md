@@ -1,15 +1,15 @@
 # raw-radio-studio — Technical & Product Specification
 
 > **Status:** Living document — versioned in git, changes via Pull Request only. This is the frozen
-> baseline of settled product decisions; the ADRs in [§12](#12-decisions-baseline-adr-table) are the
+> baseline of settled product decisions; the ADRs in [§12](#12-decisions-baseline-adr-style-table) are the
 > authoritative record of *what* was decided and *why*. Anything not marked as a hard requirement is a
 > target and may move.
 >
-> **Document version:** 1.5.0
-> **Last updated:** 2026 (Epic 3 delivered: plugin hosting, routing, software cue mixes, stems, region export, presets; Epic 2 cue-mix gap closed)
+> **Document version:** 1.6.0
+> **Last updated:** 2026 (Epic 5 delivered: MIDI input/routing and recording, piano-roll editor, virtual-instrument hosting; MIDI + audio coexist and export)
 > **Owner:** raw-radio project owner
 > **Repository:** https://github.com/raw-radio/raw-radio-studio
-> **Local project dir (to be bootstrapped in Epic 0):** `/Users/mac/projects/raw_radio/raw-radio-studio`
+> **Local project dir:** the repository root (`raw-radio-studio/`)
 > **License:** AGPLv3 (top-level) — see [§7](#7-licensing--legal)
 
 ---
@@ -27,7 +27,7 @@
 9. [Roadmap (Epics 0–7)](#9-roadmap-epics-07)
 10. [Risks & Open Questions](#10-risks--open-questions)
 11. [Glossary](#11-glossary)
-12. [Decisions Baseline (ADR-style table)](#12-decisions-baseline-adr-table)
+12. [Decisions Baseline (ADR-style table)](#12-decisions-baseline-adr-style-table)
 13. [Changelog](#13-changelog)
 
 ---
@@ -744,7 +744,7 @@ The epic order below is **agreed and frozen**. Dependencies are explicit.
 **Goal:** A buildable, licensed, CI-driven skeleton repo.
 
 **Deliverables**
-- Repo `raw-radio-studio` scaffolded at `/Users/mac/projects/raw_radio/raw-radio-studio`.
+- Repo `raw-radio-studio` scaffolded as a standalone git repository.
 - Top-level CMake (≥ 3.22) + C++20; app target that opens an empty JUCE window.
 - Pinned git submodules (non-recursive): JUCE release tag `9.0.3` + Tracktion Engine exact `develop`
   commit `2d2d452f`.
@@ -1066,7 +1066,7 @@ Epic 0 ──► Epic 1 ──► Epic 2 ──► Epic 3 ──► Epic 4 ─�
 #### 10.9.1 Resolved decisions (owner)
 
 The following previously-open questions are now **settled by the owner**. They are recorded here and
-mirrored as ADRs in [§12](#12-decisions-baseline-adr-table).
+mirrored as ADRs in [§12](#12-decisions-baseline-adr-style-table).
 
 | OQ | Question | Resolution | ADR |
 |----|----------|------------|-----|
@@ -1197,6 +1197,27 @@ requirements. Format follows [Keep a Changelog](https://keepachangelog.com/) loo
 ### [Unreleased]
 
 - (nothing yet)
+
+### [1.6.0] — 2026 — Epic 5 implemented: MIDI recording/editing, piano-roll editor, virtual-instrument hosting
+
+- **Epic 5 (§9) marked as delivered** (real-controller / real-instrument verification and a richer
+  piano-roll UX are deferred as explicit open items; see [`docs/EPIC5_GAPS.md`](EPIC5_GAPS.md)):
+  - MIDI input + routing — enumerate/select/enable a MIDI input device and route it to the armed
+    MIDI track (persisted on the Edit state) — FR-MIDI-1/FR-MIDI-4;
+  - MIDI recording — arm a MIDI track and Record; the engine captures the incoming messages into a
+    MIDI clip — FR-MIDI-1;
+  - piano-roll MIDI editor — add / move / resize / delete notes on a beat×pitch grid, each one an
+    undoable `UndoManager` transaction — FR-MIDI-2;
+  - virtual instrument hosting — a dedicated instrument slot on a MIDI track, separate from the
+    effect insert chain (VST3 default, LV2 opt-in, AU on macOS only); the built-in `4osc`/`sampler`
+    act as deterministic stand-ins for headless tests — FR-MIDI-3;
+  - MIDI + audio coexist in one `Edit` and export together — FR-EXP-1.
+- **Added [`docs/EPIC5_GAPS.md`](EPIC5_GAPS.md)** for the still-open Epic 5 items (real MIDI
+  controller / real VST3-instrument manual verification, basic piano-roll UX, asynchronous MIDI
+  device list).
+- **No new dependencies:** MIDI I/O and instrument hosting use the already-pinned JUCE / Tracktion
+  Engine, so `NOTICE` / `DEPENDENCIES.md` are unchanged.
+- Bumped document version to **1.6.0**.
 
 ### [1.5.0] — 2026 — Epic 4 implemented: arrangement editing, fades, comping, undo/redo, time-stretch
 

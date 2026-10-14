@@ -7,8 +7,8 @@ All actions below are on the main window unless a panel is named. Sessions are
 Tracktion Engine projects saved as `.tracktionedit` files; the default location
 is the app's `Projects/` folder (see [Where things live](#where-things-live)).
 
-> **Status: pre-alpha.** Menus and labels can shift. This guide tracks the
-> current build.
+> **Status: pre-alpha (v0.1.2). Epics 0–5 are delivered.** Menus and labels can
+> shift. This guide tracks the current build.
 
 Russian translation: [`USAGE_RU.md`](USAGE_RU.md) (the English guide above is
 authoritative if they diverge).
