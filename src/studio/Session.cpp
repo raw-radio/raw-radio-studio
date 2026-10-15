@@ -4613,6 +4613,11 @@ namespace rrs
             masterMeter->measurer->removeClient (masterMeter->client);
 
         masterMeter.reset();
+
+        // Drop the peek caches too, so a stale frame from the previous session /
+        // track set can never be read by peekTrackMeter/peekMasterMeter.
+        trackMeterCache.clear();
+        masterMeterCache.clear();
     }
 
     void Session::attachMeters()
@@ -4706,7 +4711,17 @@ namespace rrs
                 reading.peakDb[ch] = meter.client.getAndClearAudioLevel (ch).dB;
 
         reading.clipped = meter.client.getAndClearOverload();
+
+        // Publish for peekTrackMeter (lane mini-meters / mixer strips): the engine
+        // meter is read-and-clear, so other consumers must read this cache instead
+        // of splitting the level with a second clear.
+        trackMeterCache.store (trackIndex, reading);
         return reading;
+    }
+
+    Session::MeterReading Session::peekTrackMeter (int trackIndex) const
+    {
+        return trackMeterCache.peek (trackIndex);
     }
 
     Session::MeterReading Session::readMasterMeter()
@@ -4723,7 +4738,14 @@ namespace rrs
                 reading.peakDb[ch] = masterMeter->client.getAndClearAudioLevel (ch).dB;
 
         reading.clipped = masterMeter->client.getAndClearOverload();
+
+        masterMeterCache.store (0, reading);
         return reading;
+    }
+
+    Session::MeterReading Session::peekMasterMeter() const
+    {
+        return masterMeterCache.peek (0);
     }
 
     //==============================================================================

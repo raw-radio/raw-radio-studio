@@ -22,6 +22,7 @@
 #include <JuceHeader.h>
 
 #include "studio/Session.h"
+#include "ui/TrackLaneLayout.h"
 
 namespace rrs
 {
@@ -33,8 +34,9 @@ namespace rrs
         static constexpr int preferredHeight = 28;
 
         /** Horizontal inset so the 0 s and end-of-session markers are not
-            clipped against the strip edges. */
-        static constexpr int hInset = 8;
+            clipped against the strip edges. Bound to the lane inset so a clip at
+            0 s starts exactly on the gutter's right edge (track_lane::laneContentX). */
+        static constexpr int hInset = rrs::track_lane::laneInset;
 
         explicit Timeline (Session&);
 

@@ -1,8 +1,9 @@
 # Epic 8 — open gaps (explicit)
 
-> Status: **Epic 8 in progress — phase 1a delivered.** Phase 1a (device panel → left collapsible
-> sidebar; manual mixer collapse; lane-height floor 56 px + vertical scroll + 56/72/96 preset) is
-> implemented on `main`; phases **1b / 2 / 3 / 4 / 5 are not started**. This file records the
+> Status: **Epic 8 in progress — phases 1a and 1b delivered.** Phase 1a (device panel → left
+> collapsible sidebar; manual mixer collapse; lane-height floor 56 px + vertical scroll + 56/72/96
+> preset) and phase 1b (in-lane arm/mute/solo + input selector + mini level indicator, hotkeys) are
+> implemented on `main`; phases **2 / 3 / 4 / 5 are not started**. This file records the
 > owner-agreed, phase-ordered plan and what is still open in each phase, so the epic is not silently
 > marked done as it is implemented. It is not a substitute for the epic definition in
 > [`STUDIO_SPEC.md`](STUDIO_SPEC.md) §9 (Epic 8 — Arrangement UX).
@@ -124,23 +125,51 @@ edge of the edit row per **R-B**).
 
 ## Phase 1b — in-lane track controls
 
-**Not started.**
+**Delivered** (Epic 8 phase 1b — `src/ui/TrackLaneLayout.h` control geometry,
+`src/ui/MainComponent.{h,cpp}` paint/hit-test/paint-controls, `src/studio/Session.{h,cpp}`
+`peekTrackMeter`).
 
-**What to do.** Put **arm / mute / solo + input selector + mini level indicator** at the **left of
-each lane**. Wire **hotkeys** for arm/record; **clicking the lane arms/disarms** (retained).
+**What was done.** A **control band ("gutter")** — the left `gutterWidth` (112) px of every lane —
+holds **arm / mute / solo / input selector / mini level indicator**. The band is a *column* (every
+lane shares the same x/width), **not** a per-lane offset inside the timeline: the x<->time map runs
+over `track_lane::timelineAreaFor(trackLaneArea)` (the lane area with the gutter carved off the
+left); its `hInset` (== `track_lane::laneInset` == `hMargin`) puts `0 s` exactly on
+`track_lane::laneContentX(area)` (the gutter's right edge), and the ruler is trimmed the same way
+so ticks and clips stay aligned. The band scrolls with the lanes (same `laneScrollOffsetY`, baked
+into `trackLaneRects`) and is clipped to `trackLaneArea`. arm/mute/solo write the existing `Session`
+state (single source of truth — the mixer reads the same state and both repaint via the Session
+change message); the input selector reuses `Session::getTrackInputMapping` / `setTrackInputMapping`
+with the same popup as `MixerPanel`.
 
-**Integration points.**
+**Metering (pump ownership, 1b follow-up).** The engine's level meters are **read-and-clear**, so a
+single owner pumps them: **`MainComponent::pumpMeters()`** runs on the always-on ~30 Hz tick and calls
+`Session::readTrackMeter(i)` / `readMasterMeter()`, publishing per-track + master readings. The mixer
+strips and the lane mini-meters only **peek** them (`Session::peekTrackMeter` / `peekMasterMeter`).
+This makes metering independent of the mixer's state (expanded / manually collapsed / auto-hidden /
+`ui.mixerCollapsed=true` at startup) — collapsing the mixer no longer freezes the meters.
 
-- Track lanes are painted, **not components** — controls live in the painted geometry of
-  `MainComponent` (see «Known implementation notes» #1). Hit-testing for lane clicks is spread
-  across `clipRectFor`/`hitTestClip`/`zoneForPoint`/`mouseDown`/`mouseDrag`/`mouseUp`
-  (`src/ui/MainComponent.cpp:2004,2019,2031,2243,2320,2440`).
-- Hotkeys are handled in `MainComponent::keyPressed` (`src/ui/MainComponent.cpp:2445-2475`); there
-  is **no `MenuBarModel`**.
-- The input selector + mini meter reuse the existing input-mapping / metering APIs
-  (`src/studio/Session.h`, `src/ui/InputMeter.*`).
+**Hotkeys:** **Space** (play/stop), **R** (toggle record), **A** (arm/disarm the track under the
+cursor). They only act when `MainComponent` itself owns the keyboard focus (never when a
+`juce::Button` is focused — the button already reacts to Space itself) and never while the piano-roll
+overlay is open (so Space/R cannot start the transport/record mid-MIDI-edit). Auto-repeat is guarded
+(a held key is ignored until released).
 
-**Estimate:** **S/M.**
+**MIDI / playback-only tracks (deliberate):** a MIDI/instrument track and an imported playback-only
+track show **no input chip and no mini level meter** — they have no audio hardware input (MIDI tracks
+still **arm** via their MIDI input; playback-only tracks show a disabled arm glyph). Their slot is
+reserved so every lane's clip zone starts at the same x.
+
+**Open / deferred (1b):**
+
+- **Track selection concept** — the lane is still not a first-class "selected track"; `A` arms the
+  track **under the cursor** (deterministic without it). Introducing a selected-track model is a
+  later decision.
+- **Right-click context menu** on the band (spec §4.7: Remove track / input mapping) is **not**
+  implemented.
+- The **96 px large preset** shows the full control set but does not yet use the reserved space for
+  future `fx`/`send` buttons (that is a later epilogue, not 1b).
+
+**Estimate:** **S/M** (as planned).
 
 **UX spec:** `docs/EPIC8_UX_SPEC.md` (lane control strip).
 

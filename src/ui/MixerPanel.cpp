@@ -201,8 +201,13 @@ namespace rrs
         for (size_t i = 0; i < strips.size(); ++i)
         {
             const auto& strip = strips[i];
-            const auto reading = strip.isMaster ? session.readMasterMeter()
-                                                : session.readTrackMeter (strip.trackIndex);
+
+            // The engine meter is read-and-clear; MainComponent owns the pump
+            // (independent of the mixer's visibility) and publishes per-track /
+            // master readings. The mixer only peeks them, so collapsing or
+            // hiding the mixer can never freeze the meters.
+            const auto reading = strip.isMaster ? session.peekMasterMeter()
+                                                : session.peekTrackMeter (strip.trackIndex);
             const auto peakDb = juce::jmax (reading.peakDb[0], reading.peakDb[1]);
 
             auto& visual = meters[i];

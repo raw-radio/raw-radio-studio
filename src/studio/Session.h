@@ -18,6 +18,7 @@
 
 #include "AudioEngine.h"
 #include "InputMapping.h"
+#include "MeterCache.h"
 #include "PluginPresets.h"
 
 namespace rrs
@@ -671,6 +672,17 @@ namespace rrs
         MeterReading readTrackMeter (int trackIndex);
         MeterReading readMasterMeter();
 
+        /** The most recent track-meter reading WITHOUT clearing the engine meter
+            (Epic 8 phase 1b). The engine's level meter is read-and-clear, so only
+            one consumer may call `readTrackMeter` (MainComponent pumps it at
+            ~30 Hz, independent of the mixer's visibility); the mixer strips and
+            the lane mini-meters read this cache. Returns silence before the first
+            `readTrackMeter`. */
+        MeterReading peekTrackMeter (int trackIndex) const;
+
+        /** Master-bus counterpart of `peekTrackMeter` (no clear). */
+        MeterReading peekMasterMeter() const;
+
         //==============================================================================
         // Count-in / metronome (FR-REC-10, target)
         void setMetronomeEnabled (bool);
@@ -914,6 +926,14 @@ namespace rrs
         std::unique_ptr<MeterClient> masterMeter;
         tracktion::LevelMeterPlugin* masterMeterPlugin = nullptr;
         int metersTrackCount = -1;
+
+        /** Cache of the last read-and-clear track-meter reading, so the lane
+            mini-meters and the mixer strips can peek the same level (see
+            peekTrackMeter). Cleared when the track set changes. */
+        MeterCache<MeterReading> trackMeterCache;
+
+        /** Cache of the last read-and-clear master-meter reading (peekMasterMeter). */
+        MeterCache<MeterReading> masterMeterCache;
 
         AudioEngine& audio;
         std::unique_ptr<tracktion::Edit> edit;

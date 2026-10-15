@@ -35,16 +35,29 @@ namespace rrs
                                                    juce::PathStrokeType::rounded));
         }
 
-        /** Right-pointing chevron for the rail expand handle. */
-        void drawRailChevron (juce::Graphics& g, juce::Rectangle<int> area, juce::Colour colour)
+        /** Chevron for the collapse/expand handle. `pointRight` = expand (drawn
+            while collapsed); otherwise point left = collapse (while expanded). */
+        void drawHandleChevron (juce::Graphics& g, juce::Rectangle<int> area, bool pointRight,
+                                juce::Colour colour)
         {
-            auto r = area.toFloat().reduced (7.0f, 5.0f);
+            auto r = area.toFloat().reduced (area.getWidth() * 0.30f, area.getHeight() * 0.22f);
             juce::Path p;
-            p.startNewSubPath (r.getX(), r.getY());
-            p.lineTo (r.getRight(), r.getCentreY());
-            p.lineTo (r.getX(), r.getBottom());
+
+            if (pointRight)
+            {
+                p.startNewSubPath (r.getX(), r.getY());
+                p.lineTo (r.getRight(), r.getCentreY());
+                p.lineTo (r.getX(), r.getBottom());
+            }
+            else
+            {
+                p.startNewSubPath (r.getRight(), r.getY());
+                p.lineTo (r.getX(), r.getCentreY());
+                p.lineTo (r.getRight(), r.getBottom());
+            }
+
             g.setColour (colour);
-            g.strokePath (p, juce::PathStrokeType (1.6f, juce::PathStrokeType::curved,
+            g.strokePath (p, juce::PathStrokeType (1.8f, juce::PathStrokeType::curved,
                                                    juce::PathStrokeType::rounded));
         }
     }
@@ -166,7 +179,9 @@ namespace rrs
     juce::Rectangle<int> SidebarPanel::railIconRect (int section) const
     {
         const int x = (sidebar::railWidth - sidebar::railIconSize) / 2;
-        int y = sidebar::railIconPadding;
+        // Start below the top collapse/expand handle (which is at the top of the
+        // rail), plus the separating hairline.
+        int y = sidebar::railIconPadding * 2 + sidebar::railIconSize;
 
         for (int s = 0; s < numSections; ++s)
         {
@@ -179,11 +194,10 @@ namespace rrs
         return {};
     }
 
-    juce::Rectangle<int> SidebarPanel::railHandleRect() const
+    juce::Rectangle<int> SidebarPanel::handleRect() const
     {
-        const int x = (sidebar::railWidth - sidebar::railIconSize) / 2;
-        return { x, juce::jmax (0, getHeight() - sidebar::railIconSize - sidebar::railIconPadding),
-                 sidebar::railIconSize, sidebar::railIconSize };
+        return collapsed ? sidebar::handleRectRail()
+                         : sidebar::handleRectExpanded (getWidth());
     }
 
     bool SidebarPanel::isOnResizeZone (juce::Point<int> p) const
@@ -258,21 +272,10 @@ namespace rrs
         g.setColour (brand::bgPanel);
         g.fillRect (getLocalBounds());
 
-        // Right-edge divider doubles as the resize affordance.
-        const bool highlight = resizing || hoveringResize;
-
-        if (! collapsed)
-        {
-            g.setColour (highlight ? brand::borderFocus : brand::border);
-            g.fillRect (getWidth() - 1, 0, 1, getHeight());
-        }
-
         if (collapsed)
         {
-            // Rail: icon per section + a bottom expand handle.
-            g.setColour (brand::border);
-            g.fillRect (getWidth() - 1, 0, 1, getHeight());
-
+            // Rail: one icon per section. The collapse/expand handle and the
+            // resize line are drawn in paintOverChildren() so they sit on top.
             for (int s = 0; s < numSections; ++s)
             {
                 auto box = railIconRect (s);
@@ -287,13 +290,6 @@ namespace rrs
                                                    box.reduced (8));
             }
 
-            const auto handle = railHandleRect();
-
-            // Hairline above the handle.
-            g.setColour (brand::border);
-            g.fillRect (6, handle.getY() - 8, getWidth() - 12, 1);
-
-            drawRailChevron (g, handle, hoveringHandle ? brand::accent : brand::textTertiary);
             return;
         }
 
@@ -351,10 +347,47 @@ namespace rrs
         }
     }
 
+    void SidebarPanel::paintOverChildren (juce::Graphics& g)
+    {
+        // The right-edge resize line is drawn ON TOP of everything (headers are
+        // painted in paint(); the DevicePanel is a child). Drawn in paint() it was
+        // overpainted by the full-width accordion headers, so it looked broken.
+        const bool highlight = resizing || hoveringResize;
+
+        g.setColour (highlight ? brand::borderFocus : brand::border);
+        g.fillRect (getWidth() - 1, 0, 1, getHeight());
+
+        // The collapse/expand handle, always visible and on top, at the TOP of
+        // the column (never under the status/action rows).
+        const auto h = handleRect();
+
+        if (collapsed)
+        {
+            // Hairline separating the handle from the section icons.
+            g.setColour (brand::border);
+            g.fillRect (6, h.getBottom() + 4, getWidth() - 12, 1);
+        }
+
+        g.setColour (brand::bgWindow);
+        g.fillRoundedRectangle (h.toFloat(), 5.0f);
+        g.setColour (hoveringHandle ? brand::borderFocus : brand::border);
+        g.drawRoundedRectangle (h.toFloat().reduced (0.5f), 5.0f, hoveringHandle ? 1.5f : 1.0f);
+        drawHandleChevron (g, h, collapsed, hoveringHandle ? brand::accent : brand::textPrimary);
+    }
+
     //==============================================================================
     void SidebarPanel::mouseDown (const juce::MouseEvent& e)
     {
         const auto p = e.getPosition();
+
+        // Collapse/expand handle first: it sits at the top of the column in both
+        // states and must win over the header beneath it (expanded) and the rail
+        // icons (collapsed).
+        if (handleRect().contains (p))
+        {
+            toggleCollapsed();
+            return;
+        }
 
         if (collapsed)
         {
@@ -374,9 +407,6 @@ namespace rrs
                     return;
                 }
             }
-
-            if (railHandleRect().contains (p))
-                toggleCollapsed();
 
             return;
         }
@@ -441,19 +471,18 @@ namespace rrs
     {
         const auto p = e.getPosition();
 
+        const bool overHandle = handleRect().contains (p);
+
         int newSection = -1;
         int newRail = -1;
-        bool newHandle = false;
 
         if (collapsed)
         {
             for (int s = 0; s < numSections; ++s)
                 if (railIconRect (s).contains (p))
                     newRail = s;
-
-            newHandle = railHandleRect().contains (p);
         }
-        else
+        else if (! overHandle)
         {
             for (int s = 0; s < numSections; ++s)
                 if (headerRect (s).contains (p))
@@ -463,11 +492,11 @@ namespace rrs
         const bool newResize = isOnResizeZone (p);
 
         if (newSection != hoveredSection || newRail != hoveredRailIcon
-            || newHandle != hoveringHandle || newResize != hoveringResize)
+            || overHandle != hoveringHandle || newResize != hoveringResize)
         {
             hoveredSection = newSection;
             hoveredRailIcon = newRail;
-            hoveringHandle = newHandle;
+            hoveringHandle = overHandle;
             hoveringResize = newResize;
             repaint();
         }
@@ -487,8 +516,21 @@ namespace rrs
 
     juce::MouseCursor SidebarPanel::getMouseCursor()
     {
-        if (isOnResizeZone (getMouseXYRelative()))
+        const auto p = getMouseXYRelative();
+
+        // The resize zone wins (it is at the very edge, outside the handle).
+        if (isOnResizeZone (p))
             return juce::MouseCursor::LeftRightResizeCursor;
+
+        if (handleRect().contains (p))
+            return juce::MouseCursor::PointingHandCursor;
+
+        if (collapsed)
+        {
+            for (int s = 0; s < numSections; ++s)
+                if (railIconRect (s).contains (p))
+                    return juce::MouseCursor::PointingHandCursor;
+        }
 
         return juce::MouseCursor::NormalCursor;
     }

@@ -25,6 +25,10 @@ namespace rrs
         explicit SidebarPanel (DevicePanel& deviceToHost);
 
         void paint (juce::Graphics&) override;
+        /** Draws the resize line and the collapse/expand handle ON TOP of the
+            children (accordion content such as the DevicePanel) and of the
+            headers drawn in paint(), so the line can never look broken. */
+        void paintOverChildren (juce::Graphics&) override;
         void resized() override;
 
         void mouseDown (const juce::MouseEvent&) override;
@@ -84,7 +88,9 @@ namespace rrs
         juce::Rectangle<int> headerRect (int section) const;
         juce::Rectangle<int> contentRect (int section) const;
         juce::Rectangle<int> railIconRect (int section) const;
-        juce::Rectangle<int> railHandleRect() const;
+        /** The collapse/expand toggle, at the TOP of the column in both states
+            (never under the status/action rows). */
+        juce::Rectangle<int> handleRect() const;
         bool isOnResizeZone (juce::Point<int> p) const;
 
         DevicePanel& device;

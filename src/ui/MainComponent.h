@@ -23,12 +23,14 @@
 #include "ui/BrandButton.h"
 #include "ui/DevicePanel.h"
 #include "ui/InputMeter.h"
+#include "ui/MeterBallistics.h"
 #include "ui/MixerPanel.h"
 #include "ui/PianoRollPanel.h"
 #include "ui/PluginBrowser.h"
 #include "ui/RoutingPanel.h"
 #include "ui/SidebarPanel.h"
 #include "ui/Timeline.h"
+#include "ui/TrackLaneLayout.h"
 
 #include <vector>
 
@@ -48,8 +50,11 @@ namespace rrs
         void mouseDown (const juce::MouseEvent&) override;
         void mouseDrag (const juce::MouseEvent&) override;
         void mouseUp (const juce::MouseEvent&) override;
+        void mouseMove (const juce::MouseEvent&) override;
+        void mouseExit (const juce::MouseEvent&) override;
         void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
         bool keyPressed (const juce::KeyPress&) override;
+        bool keyStateChanged (bool isKeyDown) override;
 
         /** Hover cursor feedback over the arrangement: resize cursors on a clip's
             trim edges and corner-resize cursors on its fade handles, so the
@@ -140,6 +145,28 @@ namespace rrs
         juce::String channelsSummaryText() const;
         /** Multi-line body for the sidebar «Status» section. */
         juce::String statusText() const;
+
+        // --- Epic 8 phase 1b (in-lane controls) ---
+        /** The metering pump: OWNER of the engine's read-and-clear level meters.
+            Runs every ~30 Hz tick (independent of the mixer's visibility /
+            collapsed state) and publishes per-track + master readings for the
+            mixer strips and the lane mini-meters (which peek them). */
+        void pumpMeters (double dtSeconds);
+        /** Draws one lane's control band (arm / mute / solo / input / meter). */
+        void drawLaneControls (juce::Graphics&, juce::Rectangle<int> lane, bool isInput,
+                               bool armEnabled, bool armed, bool recording, bool muted,
+                               bool soloed, int meterIndex);
+        void drawMiniMeter (juce::Graphics&, juce::Rectangle<int>, int meterIndex);
+        /** The control under `p` for lane `trackIndex` (none when `p` is in the
+            clip zone / outside the gutter). */
+        track_lane::LaneControl laneControlAt (int trackIndex, juce::Point<int> p) const;
+        /** Opens the per-track input-assignment popup (same menu as MixerPanel). */
+        void showLaneInputMenu (int trackIndex);
+        /** Handles a gutter click (arm/mute/solo/input, or select-track on the
+            empty band). */
+        void handleLaneControl (int trackIndex, track_lane::LaneControl);
+        /** Arms/disarms the track under the cursor (hotkey `A`). */
+        void toggleHoveredTrackArm();
 
         void runStartupRecovery();
         void onSessionOpened();
@@ -330,6 +357,30 @@ namespace rrs
         int uiRefreshTicks = 0;
 
         juce::Rectangle<int> trackLaneArea;
+
+        /** Epic 8 phase 1b: the x<->time map for clips / playhead / region /
+            ruler starts at `trackLaneArea.getX() + gutterWidth` — the gutter
+            (control column) occupies the left of every lane. */
+        juce::Rectangle<int> trackTimelineArea;
+
+        /** Hover state for the drawn lane controls (JUCE sends no mouseEnter for
+            sub-rectangles, so MainComponent tracks them in mouseMove). */
+        int hoverTrackIndex = -1;
+        track_lane::LaneControl hoverControl = track_lane::LaneControl::none;
+
+        /** Per-lane mini-meter ballistics + clip-hold counters (message thread). */
+        std::vector<MeterBallistics> laneMeters;
+        std::vector<int> laneMeterClipHold;
+        double lastLaneMeterMs = 0.0;
+
+        /** Cached `Session::getInputTrackIndices()` (refreshed in
+            refreshTransportUi) so hover/lane hit-tests don't allocate an Array on
+            every mouse move. */
+        juce::Array<int> inputTrackIndexCache;
+
+        /** Key codes currently held, so an auto-repeat cannot flip a transport /
+            arm hotkey repeatedly. Pruned in keyStateChanged(). */
+        juce::Array<int> heldHotkeyCodes;
 
         /** Lane rectangles in `trackLaneArea`, engine-track order (FR-REC-2:
             click a lane to arm/disarm it). Computed with `laneScrollOffsetY` and

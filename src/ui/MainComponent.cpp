@@ -12,6 +12,7 @@
 
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <iostream>
 
 #ifndef RAW_RADIO_STUDIO_VERSION
@@ -726,10 +727,12 @@ namespace rrs
         transportLabel.setText (state + "   " + formatTime (position),
                                 juce::dontSendNotification);
 
-        // Epic 8 phase 1a: the lane scrollbar / hit-rect cache must follow the
-        // track set (this runs on every Session change and at ~10 Hz), not just a
-        // window resize — otherwise adding/opening tracks would leave the lanes
-        // scrolled-but-unscrollable or the scrollbar hidden.
+        // Epic 8 phase 1a/1b: the lane scrollbar / hit-rect cache / input-track
+        // cache must follow the track set (this runs on every Session change and
+        // at ~10 Hz), not just a window resize — otherwise adding/opening tracks
+        // would leave the lanes scrolled-but-unscrollable, the scrollbar hidden,
+        // or the lane controls using a stale input-track list.
+        inputTrackIndexCache = session.getInputTrackIndices();
         updateLaneScrollBar();
         rebuildTrackLaneRects();
 
@@ -1799,6 +1802,14 @@ namespace rrs
         // repainted from this single ~30 Hz tick. The transport/status chrome is
         // heavier, so it is refreshed only every third tick (still ~10 Hz for the
         // time readout); the playhead still repaints on every tick.
+        // Epic 8 phase 1b/1a follow-up: the metering PUMP runs every tick
+        // (~30 Hz), independent of the mixer's visibility. It owns the engine's
+        // read-and-clear meters and feeds both the lane mini-meters and the mixer.
+        const auto now = juce::Time::getMillisecondCounterHiRes();
+        const double dt = lastLaneMeterMs > 0.0 ? (now - lastLaneMeterMs) / 1000.0 : 1.0 / 30.0;
+        lastLaneMeterMs = now;
+        pumpMeters (dt);
+
         if (++uiRefreshTicks >= 3)
         {
             uiRefreshTicks = 0;
@@ -1867,6 +1878,15 @@ namespace rrs
                 // every path that can change the geometry (resized, session
                 // change / refreshTransportUi, wheel, scrollbar, preset change) —
                 // NOT here, so paint() does no per-frame allocation.
+                const auto& inputTracks = inputTrackIndexCache;
+                const bool recording = session.isRecording();
+
+                bool anySolo = false;
+
+                for (int i = 0; i < (int) trackLaneRects.size(); ++i)
+                    if (session.isTrackSolo (i))
+                        anySolo = true;
+
                 int index = 0;
 
                 for (auto* track : tracks)
@@ -1876,6 +1896,16 @@ namespace rrs
 
                     auto lane = trackLaneRects[(size_t) index];
                     const auto armed = session.isTrackArmed (index);
+                    const auto isInput = inputTracks.contains (index);
+                    const auto armEnabled = isInput || session.isMidiTrack (index);
+                    const auto muted = session.isTrackMuted (index);
+                    const auto soloed = session.isTrackSolo (index);
+
+                    // Solo elsewhere dims this whole lane (spec §4.5).
+                    const bool dim = anySolo && ! soloed;
+
+                    if (dim)
+                        g.setOpacity (0.45f);
 
                     // Neutral zebra: never encode "armed" as a blue tint. Armed
                     // lanes use laneArmed plus a 3 px left accent stripe.
@@ -1893,6 +1923,11 @@ namespace rrs
                         g.fillRoundedRectangle (laneRect.withWidth (3.0f), 1.5f);
                     }
 
+                    // Control band (gutter): the left `gutterWidth` px of the lane.
+                    const auto controls = track_lane::computeLaneControlRects (lane);
+                    g.setColour (brand::bgPanel);
+                    g.fillRoundedRectangle (controls.band.toFloat(), 5.0f);
+
                     // The clip fills the lane; the track name is an overlay drawn
                     // over it (below, after the clips) so an input clip and an
                     // imported clip are exactly the same height. Shared geometry
@@ -1900,9 +1935,13 @@ namespace rrs
                     juce::Rectangle<int> nameArea, clipBand;
                     track_lane::splitLane (lane, nameArea, clipBand);
 
+                    // The name overlay lives in the CLIP zone, to the right of the
+                    // gutter, so it never covers the controls.
+                    nameArea = nameArea.withTrimmedLeft (track_lane::gutterWidth);
+
                     // Epic 4: draw the track's clips on the timeline. Each clip's
                     // rectangle comes from the same x<->time map as the ruler and
-                    // the playhead.
+                    // the playhead (its left edge is the gutter's right edge).
                     const auto timelineLength = juce::jmax (1.0e-6, session.getTimelineLengthSeconds());
 
                     for (const auto& clip : session.getClips (index))
@@ -1924,8 +1963,8 @@ namespace rrs
                             fadeOut = dragPreviewFadeOut;
                         }
 
-                        const auto x1 = Timeline::xForSeconds (startSeconds, timelineLength, trackLaneArea);
-                        const auto x2 = Timeline::xForSeconds (endSeconds, timelineLength, trackLaneArea);
+                        const auto x1 = Timeline::xForSeconds (startSeconds, timelineLength, trackTimelineArea);
+                        const auto x2 = Timeline::xForSeconds (endSeconds, timelineLength, trackTimelineArea);
                         auto r = juce::Rectangle<int> (x1, clipBand.getY(),
                                                        juce::jmax (3, x2 - x1),
                                                        clipBand.getHeight());
@@ -1943,7 +1982,7 @@ namespace rrs
                         if (fadeIn > 0.0)
                         {
                             const auto px = juce::jmax (0, Timeline::xForSeconds (startSeconds + fadeIn,
-                                                                                  timelineLength, trackLaneArea) - x1);
+                                                                                  timelineLength, trackTimelineArea) - x1);
                             juce::Path p;
                             p.addTriangle ((float) x1, (float) r.getY(),
                                            (float) (x1 + px), (float) r.getY(),
@@ -1954,7 +1993,7 @@ namespace rrs
                         if (fadeOut > 0.0)
                         {
                             const auto px = juce::jmax (0, x2 - Timeline::xForSeconds (endSeconds - fadeOut,
-                                                                                       timelineLength, trackLaneArea));
+                                                                                       timelineLength, trackTimelineArea));
                             juce::Path p;
                             p.addTriangle ((float) x2, (float) r.getY(),
                                            (float) (x2 - px), (float) r.getY(),
@@ -2002,6 +2041,13 @@ namespace rrs
                         g.drawText (nameText, nameArea, juce::Justification::centredLeft);
                     }
 
+                    // Epic 8 phase 1b: arm / mute / solo / input / mini-meter.
+                    drawLaneControls (g, lane, isInput, armEnabled, armed, recording,
+                                      muted, soloed, index);
+
+                    if (dim)
+                        g.setOpacity (1.0f);
+
                     ++index;
                 }
             }
@@ -2018,9 +2064,9 @@ namespace rrs
             {
                 const auto length = session.getTimelineLengthSeconds();
                 const auto sx = (float) Timeline::xForSeconds (session.getSelectionStartSeconds(),
-                                                               length, trackLaneArea);
+                                                               length, trackTimelineArea);
                 const auto ex = (float) Timeline::xForSeconds (session.getSelectionEndSeconds(),
-                                                               length, trackLaneArea);
+                                                               length, trackTimelineArea);
                 g.setColour (brand::accent.withAlpha (0.14f));
                 g.fillRect (juce::Rectangle<float> (sx, (float) trackLaneArea.getY() + 2.0f,
                                                     juce::jmax (1.0f, ex - sx),
@@ -2033,7 +2079,7 @@ namespace rrs
             {
                 const auto x = (float) Timeline::xForSeconds (session.getPositionSeconds(),
                                                               session.getTimelineLengthSeconds(),
-                                                              trackLaneArea);
+                                                              trackTimelineArea);
                 g.setColour (brand::accent.withAlpha (0.85f));
                 g.fillRect (juce::Rectangle<float> (x - 1.0f, (float) trackLaneArea.getY() + 2.0f,
                                                     2.0f, (float) trackLaneArea.getHeight() - 4.0f));
@@ -2046,7 +2092,7 @@ namespace rrs
             {
                 const auto x = (float) Timeline::xForSeconds (snapTime,
                                                               session.getTimelineLengthSeconds(),
-                                                              trackLaneArea);
+                                                              trackTimelineArea);
                 g.setColour (brand::warning.withAlpha (0.9f));
                 g.fillRect (juce::Rectangle<float> (x - 1.0f, (float) trackLaneArea.getY() + 2.0f,
                                                     2.0f, (float) trackLaneArea.getHeight() - 4.0f));
@@ -2198,9 +2244,11 @@ namespace rrs
         // still lines up.
         auto scrollGutter = middle.removeFromRight (8);
 
-        // Ruler directly above the arrangement lanes, same width as the lanes so
-        // a click on the ruler and the lane playhead line share one x<->time map.
-        timeline.setBounds (middle.removeFromTop (Timeline::preferredHeight));
+        // Ruler directly above the arrangement lanes. Epic 8 phase 1b: trim its
+        // left by the control gutter so the ticks line up with the clip zone
+        // (the map's left edge is the gutter's right edge).
+        auto rulerRow = middle.removeFromTop (Timeline::preferredHeight);
+        timeline.setBounds (track_lane::timelineAreaFor (rulerRow));
         middle.removeFromTop (2);
 
         // FR-EXP-2: selection start/end readout just under the ruler.
@@ -2208,6 +2256,10 @@ namespace rrs
 
         middle.removeFromTop (2);
         trackLaneArea = middle;
+
+        // The clip/playhead/ruler share this map: left edge = gutter's right (see
+        // track_lane::timelineAreaFor / laneContentX for the explicit invariant).
+        trackTimelineArea = track_lane::timelineAreaFor (trackLaneArea);
 
         // The scrollbar sits in the gutter beside the lanes (not beside the ruler).
         if (laneScrollBar != nullptr)
@@ -2240,13 +2292,14 @@ namespace rrs
         if (trackIndex < 0 || trackIndex >= (int) trackLaneRects.size())
             return {};
 
-        // Same split as paint(): name row on top, clip strip below.
+        // Same split as paint(): name row on top, clip strip below. The x<->time
+        // map is the gutter-trimmed timeline area (Epic 8 phase 1b).
         juce::Rectangle<int> nameRow, band;
         track_lane::splitLane (trackLaneRects[(size_t) trackIndex], nameRow, band);
 
         const auto length = juce::jmax (1.0e-6, session.getTimelineLengthSeconds());
-        const auto x1 = Timeline::xForSeconds (info.startSeconds, length, trackLaneArea);
-        const auto x2 = Timeline::xForSeconds (info.endSeconds, length, trackLaneArea);
+        const auto x1 = Timeline::xForSeconds (info.startSeconds, length, trackTimelineArea);
+        const auto x2 = Timeline::xForSeconds (info.endSeconds, length, trackTimelineArea);
         return { x1, band.getY(), juce::jmax (3, x2 - x1), band.getHeight() };
     }
 
@@ -2329,6 +2382,20 @@ namespace rrs
                 continue;
 
             const auto trackIndex = (int) i;
+
+            // Epic 8 phase 1b: over a clickable gutter control show a hand cursor;
+            // the empty band stays normal.
+            const auto control = laneControlAt (trackIndex, position);
+
+            if (control == track_lane::LaneControl::arm
+                || control == track_lane::LaneControl::mute
+                || control == track_lane::LaneControl::solo
+                || control == track_lane::LaneControl::input)
+                return juce::MouseCursor::PointingHandCursor;
+
+            if (control != track_lane::LaneControl::none)
+                return juce::MouseCursor::NormalCursor;
+
             const auto clipIndex = hitTestClip (trackIndex, position);
 
             if (clipIndex < 0)
@@ -2476,7 +2543,7 @@ namespace rrs
         if (length <= 0.0)
             return 0.0;
 
-        const auto span = juce::jmax (1, trackLaneArea.getWidth() - 2 * Timeline::hInset);
+        const auto span = juce::jmax (1, trackTimelineArea.getWidth() - 2 * Timeline::hInset);
         return length * (double) snapThresholdPx / (double) span;
     }
 
@@ -2544,6 +2611,18 @@ namespace rrs
                 continue;
 
             const auto index = (int) i;
+
+            // Epic 8 phase 1b: the gutter (the lane's left control band) handles
+            // its own controls. A click there never starts a clip drag or a
+            // timeline edit.
+            const auto control = laneControlAt (index, e.getPosition());
+
+            if (control != track_lane::LaneControl::none)
+            {
+                handleLaneControl (index, control);
+                return;
+            }
+
             const auto clipIndex = hitTestClip (index, e.getPosition());
 
             // Clicking a clip selects it and starts a move/trim/fade drag.
@@ -2558,7 +2637,7 @@ namespace rrs
 
                 const auto info = clipInfoFor (index, clipIndex);
                 const auto length = session.getTimelineLengthSeconds();
-                const auto mouseSeconds = Timeline::secondsForX (e.getPosition().x, length, trackLaneArea);
+                const auto mouseSeconds = Timeline::secondsForX (e.getPosition().x, length, trackTimelineArea);
 
                 dragTrackIndex = index;
                 dragClipIndex = clipIndex;
@@ -2586,7 +2665,7 @@ namespace rrs
 
             // MIDI tracks arm exactly like input tracks (via their MIDI input);
             // only imported/backing tracks are playback-only.
-            if (! session.getInputTrackIndices().contains (index) && ! session.isMidiTrack (index))
+            if (! inputTrackIndexCache.contains (index) && ! session.isMidiTrack (index))
             {
                 showStatus (session.getTrackName (index)
                             + " selected (backing track, playback only). Remove track (trash) removes it.");
@@ -2614,7 +2693,7 @@ namespace rrs
             return;
 
         const auto length = session.getTimelineLengthSeconds();
-        const auto mouseSeconds = Timeline::secondsForX (e.getPosition().x, length, trackLaneArea);
+        const auto mouseSeconds = Timeline::secondsForX (e.getPosition().x, length, trackTimelineArea);
         const auto delta = mouseSeconds - dragMouseDownSeconds;
         constexpr double minLen = 0.01;
 
@@ -2733,10 +2812,76 @@ namespace rrs
         commitClipDrag();
     }
 
+    void MainComponent::mouseMove (const juce::MouseEvent& e)
+    {
+        // JUCE sends no mouseEnter for painted sub-rectangles, so the hover state
+        // for the lane controls is tracked here (spec §9.2).
+        int newTrack = -1;
+        auto newControl = track_lane::LaneControl::none;
+
+        if (trackLaneArea.contains (e.getPosition()))
+            for (size_t i = 0; i < trackLaneRects.size(); ++i)
+                if (trackLaneRects[i].contains (e.getPosition()))
+                {
+                    newTrack = (int) i;
+                    newControl = laneControlAt (newTrack, e.getPosition());
+                    break;
+                }
+
+        if (newTrack != hoverTrackIndex || newControl != hoverControl)
+        {
+            const int oldTrack = hoverTrackIndex;
+
+            hoverTrackIndex = newTrack;
+            hoverControl = newControl;
+
+            // Repaint only the two affected lanes' control bands, not the whole
+            // arrangement (the hover state is per-lane).
+            auto repaintLaneControls = [this] (int trackIndex)
+            {
+                if (juce::isPositiveAndBelow (trackIndex, (int) trackLaneRects.size()))
+                    repaint (track_lane::computeLaneControlRects (trackLaneRects[(size_t) trackIndex])
+                                 .band.expanded (2));
+            };
+
+            repaintLaneControls (oldTrack);
+            repaintLaneControls (newTrack);
+        }
+    }
+
+    void MainComponent::mouseExit (const juce::MouseEvent&)
+    {
+        if (hoverTrackIndex == -1 && hoverControl == track_lane::LaneControl::none)
+            return;
+
+        hoverTrackIndex = -1;
+        hoverControl = track_lane::LaneControl::none;
+        repaint();
+    }
+
     bool MainComponent::keyPressed (const juce::KeyPress& key)
     {
         const auto mods = key.getModifiers();
         const auto code = key.getKeyCode();
+
+        // Transport/arm hotkeys only act when MainComponent itself owns the
+        // keyboard focus (never when a juce::Button has it — a focused button
+        // already reacts to Space/R itself) and never while the MIDI piano-roll
+        // overlay is open (Space/R would otherwise start the transport/record
+        // mid-edit). S/D/L/F (clip edits) are unaffected.
+        const bool transportHotkeysAllowed = (juce::Component::getCurrentlyFocusedComponent() == this)
+                                             && ! pianoRoll.isVisible();
+
+        // Auto-repeat guard: JUCE has no repeat flag, so a hotkey that is still
+        // held is ignored until keyStateChanged() sees it released.
+        auto isRepeat = [this] (int keyCode)
+        {
+            if (heldHotkeyCodes.contains (keyCode))
+                return true;
+
+            heldHotkeyCodes.addIfNotAlreadyThere (keyCode);
+            return false;
+        };
 
         if (mods.isCommandDown() && (code == 'z' || code == 'Z'))
         {
@@ -2761,15 +2906,407 @@ namespace rrs
             return true;
         }
 
+        // Epic 8 phase 1b hotkeys (no clash with Cmd+Z, Delete, \, S/D/L/F).
+        // Space = play/stop.
+        if (code == juce::KeyPress::spaceKey && ! mods.isCommandDown() && ! mods.isAltDown())
+        {
+            if (! transportHotkeysAllowed)
+                return false;
+
+            if (isRepeat (code))
+                return true;
+
+            if (exportInProgress)
+                return true;
+
+            if (session.isPlaying())
+                session.stop();
+            else
+                session.play();
+
+            refreshTransportUi();
+            return true;
+        }
+
         if (! mods.isCommandDown() && ! mods.isAltDown())
         {
             if (code == 's' || code == 'S') { splitSelectedAtPlayhead(); return true; }
             if (code == 'd' || code == 'D') { duplicateSelectedClip(); return true; }
             if (code == 'l' || code == 'L') { loopSelectedClip(); return true; }
             if (code == 'f' || code == 'F') { crossfadeSelectedClip(); return true; }
+
+            // R = toggle record (same as the Record button).
+            if (code == 'r' || code == 'R')
+            {
+                if (! transportHotkeysAllowed)
+                    return false;
+
+                if (isRepeat (code))
+                    return true;
+
+                if (! exportInProgress)
+                {
+                    if (session.isRecording())
+                        session.stop();
+                    else if (! session.record())
+                        showStatus (session.getLastError(), true);
+                }
+
+                refreshTransportUi();
+                return true;
+            }
+
+            // A = arm/disarm the track under the cursor (no track-selection
+            // concept exists yet, so a hover target is deterministic).
+            if (code == 'a' || code == 'A')
+            {
+                if (! transportHotkeysAllowed)
+                    return false;
+
+                if (isRepeat (code))
+                    return true;
+
+                if (! exportInProgress)
+                    toggleHoveredTrackArm();
+
+                return true;
+            }
         }
 
         return false;
+    }
+
+    bool MainComponent::keyStateChanged (bool)
+    {
+        // Prune released hotkeys so the next press is treated as a fresh press
+        // (auto-repeat guard for Space/R/A).
+        for (int i = heldHotkeyCodes.size(); --i >= 0;)
+            if (! juce::KeyPress::isKeyCurrentlyDown (heldHotkeyCodes[i]))
+                heldHotkeyCodes.remove (i);
+
+        return false;
+    }
+
+    void MainComponent::toggleHoveredTrackArm()
+    {
+        const int index = hoverTrackIndex;
+
+        if (! juce::isPositiveAndBelow (index, session.getNumAudioTracks()))
+        {
+            showStatus ("Point at a track lane, then press A to arm/disarm it.");
+            return;
+        }
+
+        if (! inputTrackIndexCache.contains (index) && ! session.isMidiTrack (index))
+        {
+            showStatus (session.getTrackName (index) + " is a playback-only track (cannot be armed).");
+            return;
+        }
+
+        const auto nowArmed = ! session.isTrackArmed (index);
+
+        if (session.setTrackArmed (index, nowArmed))
+            showStatus ((nowArmed ? "Armed: " : "Disarmed: ") + session.getTrackName (index));
+        else
+            showStatus (session.getLastError(), true);
+
+        refreshTransportUi();
+    }
+
+    //==============================================================================
+    // Epic 8 phase 1b — in-lane controls (gutter).
+    //==============================================================================
+    track_lane::LaneControl MainComponent::laneControlAt (int trackIndex, juce::Point<int> p) const
+    {
+        if (! juce::isPositiveAndBelow (trackIndex, (int) trackLaneRects.size()))
+            return track_lane::LaneControl::none;
+
+        const bool isInput = inputTrackIndexCache.contains (trackIndex);
+        return track_lane::controlAt (trackLaneRects[(size_t) trackIndex], isInput, p);
+    }
+
+    void MainComponent::handleLaneControl (int trackIndex, track_lane::LaneControl control)
+    {
+        if (exportInProgress || ! juce::isPositiveAndBelow (trackIndex, session.getNumAudioTracks()))
+            return;
+
+        const bool isInput = inputTrackIndexCache.contains (trackIndex);
+        const bool armEnabled = isInput || session.isMidiTrack (trackIndex);
+
+        switch (control)
+        {
+            case track_lane::LaneControl::arm:
+                if (! armEnabled)
+                {
+                    selectTrack (trackIndex);
+                    return;
+                }
+
+                if (session.setTrackArmed (trackIndex, ! session.isTrackArmed (trackIndex)))
+                    showStatus ((session.isTrackArmed (trackIndex) ? "Armed: " : "Disarmed: ")
+                                    + session.getTrackName (trackIndex));
+                else
+                    showStatus (session.getLastError(), true);
+
+                refreshTransportUi();
+                return;
+
+            case track_lane::LaneControl::mute:
+                session.setTrackMute (trackIndex, ! session.isTrackMuted (trackIndex));
+                refreshTransportUi();
+                return;
+
+            case track_lane::LaneControl::solo:
+                session.setTrackSolo (trackIndex, ! session.isTrackSolo (trackIndex));
+                refreshTransportUi();
+                return;
+
+            case track_lane::LaneControl::input:
+                if (isInput)
+                    showLaneInputMenu (trackIndex);
+                else
+                    selectTrack (trackIndex);
+                return;
+
+            case track_lane::LaneControl::meter:
+            case track_lane::LaneControl::band:
+            case track_lane::LaneControl::none:
+            default:
+                selectTrack (trackIndex);
+                return;
+        }
+    }
+
+    void MainComponent::showLaneInputMenu (int trackIndex)
+    {
+        // Same menu as MixerPanel::showInputMenu (channel + layout, FR-REC-3).
+        auto mapping = session.getTrackInputMapping (trackIndex);
+        const auto numChannels = juce::jmax (1, session.getNumInputChannels());
+
+        juce::PopupMenu channelMenu;
+
+        for (int ch = 0; ch < numChannels; ++ch)
+            channelMenu.addItem (100 + ch, "Input " + juce::String (ch + 1), true,
+                                 ch == mapping.firstChannel);
+
+        juce::PopupMenu layoutMenu;
+        layoutMenu.addItem (200, "Auto", true, mapping.layout == InputLayout::Auto);
+        layoutMenu.addItem (201, "Mono", true, mapping.layout == InputLayout::Mono);
+        layoutMenu.addItem (202, "Stereo", true, mapping.layout == InputLayout::Stereo);
+        layoutMenu.addItem (203, "Multi-channel", true, mapping.layout == InputLayout::MultiChannel);
+
+        juce::PopupMenu menu;
+        menu.addSectionHeader ("Input for " + session.getTrackName (trackIndex));
+        menu.addSubMenu ("Channel", channelMenu);
+        menu.addSubMenu ("Layout", layoutMenu);
+
+        juce::Component::SafePointer<MainComponent> safe (this);
+
+        menu.showMenuAsync (juce::PopupMenu::Options().withMousePosition(),
+                            [safe, trackIndex, numChannels] (int result)
+                            {
+                                auto* self = safe.getComponent();
+
+                                if (self == nullptr || result == 0)
+                                    return;
+
+                                auto m = self->session.getTrackInputMapping (trackIndex);
+
+                                if (result >= 100 && result < 100 + numChannels)
+                                    m.firstChannel = result - 100;
+                                else if (result == 200) m.layout = InputLayout::Auto;
+                                else if (result == 201) m.layout = InputLayout::Mono;
+                                else if (result == 202) m.layout = InputLayout::Stereo;
+                                else if (result == 203) m.layout = InputLayout::MultiChannel;
+
+                                // Keep the channel count coherent with the layout.
+                                if (m.layout == InputLayout::MultiChannel)
+                                    m.numChannels = juce::jmax (1, numChannels - m.firstChannel);
+                                else if (m.layout == InputLayout::Stereo)
+                                    m.numChannels = 2;
+                                else
+                                    m.numChannels = 1;
+
+                                self->session.setTrackInputMapping (trackIndex, m);
+                                self->refreshTransportUi();
+                                self->repaint();
+                            });
+    }
+
+    void MainComponent::pumpMeters (double dtSeconds)
+    {
+        const int numTracks = session.getEdit() != nullptr ? session.getNumAudioTracks() : 0;
+
+        if ((int) laneMeters.size() != numTracks)
+        {
+            laneMeters.assign ((size_t) juce::jmax (0, numTracks), MeterBallistics {});
+            laneMeterClipHold.assign ((size_t) juce::jmax (0, numTracks), 0);
+        }
+
+        // OWNER of the engine's read-and-clear meters. This runs on the 30 Hz
+        // tick that always runs, so metering works whether the mixer is expanded,
+        // manually collapsed, auto-hidden, or was collapsed at startup. The mixer
+        // strips and the lane mini-meters read these cached values (peek).
+        for (int i = 0; i < numTracks; ++i)
+        {
+            const auto reading = session.readTrackMeter (i);
+            const auto peak = juce::jmax (reading.peakDb[0], reading.peakDb[1]);
+
+            laneMeters[(size_t) i].update (peak, dtSeconds);
+
+            if (reading.clipped)
+                laneMeterClipHold[(size_t) i] = 60;
+            else if (laneMeterClipHold[(size_t) i] > 0)
+                --laneMeterClipHold[(size_t) i];
+        }
+
+        // Publish the master reading too (consumed by the mixer's master strip).
+        session.readMasterMeter();
+
+        // Diagnostic hook (silent unless RRS_METER_PUMP_DEBUG is set): proves the
+        // metering pump runs regardless of the mixer's collapsed/visible state.
+        if (std::getenv ("RRS_METER_PUMP_DEBUG") != nullptr)
+        {
+            static int dbgCounter = 0;
+
+            if (++dbgCounter % 30 == 0)
+                std::cerr << "[meter-pump] tracks=" << numTracks
+                          << " mixerCollapsed=" << (mixerPanel.isCollapsed() ? 1 : 0)
+                          << " mixerVisible=" << (mixerPanel.isVisible() ? 1 : 0)
+                          << std::endl;
+        }
+    }
+
+    void MainComponent::drawMiniMeter (juce::Graphics& g, juce::Rectangle<int> area, int meterIndex)
+    {
+        auto bar = area.toFloat();
+
+        g.setColour (brand::meterTrough);
+        g.fillRoundedRectangle (bar, 2.0f);
+
+        if (! juce::isPositiveAndBelow (meterIndex, (int) laneMeters.size()))
+            return;
+
+        // Invariant: the clip-hold vector is resized together with laneMeters,
+        // but guard it anyway so a mid-tick track-count change can never index OOB.
+        const bool hasClipHold = juce::isPositiveAndBelow (meterIndex, (int) laneMeterClipHold.size());
+
+        const auto& meter = laneMeters[(size_t) meterIndex];
+        const auto level = MeterBallistics::normaliseMeterDb (meter.getDb());
+        const auto hold  = MeterBallistics::normaliseMeterDb (meter.getHoldDb());
+
+        const auto fill = bar.getHeight() * level;
+        g.setColour (brand::vuGreen);
+        g.fillRoundedRectangle (bar.withTrimmedTop (bar.getHeight() - fill), 2.0f);
+
+        if (hold > 0.0f)
+        {
+            const auto holdY = bar.getY() + bar.getHeight() * (1.0f - hold);
+            g.setColour (brand::vuYellow);
+            g.fillRect (juce::Rectangle<float> (bar.getX(), holdY - 1.0f, bar.getWidth(), 2.0f));
+        }
+
+        if (hasClipHold && laneMeterClipHold[(size_t) meterIndex] > 0)
+        {
+            g.setColour (brand::vuRed);
+            g.fillRoundedRectangle (bar.withHeight (3.0f), 1.5f);
+        }
+    }
+
+    void MainComponent::drawLaneControls (juce::Graphics& g, juce::Rectangle<int> lane,
+                                          bool isInput, bool armEnabled, bool armed, bool recording,
+                                          bool muted, bool soloed, int meterIndex)
+    {
+        const auto r = track_lane::computeLaneControlRects (lane);
+
+        const bool hover = (hoverTrackIndex == meterIndex);
+        const bool hArm   = hover && hoverControl == track_lane::LaneControl::arm;
+        const bool hMute  = hover && hoverControl == track_lane::LaneControl::mute;
+        const bool hSolo  = hover && hoverControl == track_lane::LaneControl::solo;
+        const bool hInput = hover && hoverControl == track_lane::LaneControl::input;
+
+        // ARM: a filled circle when armed; a pulsing red glow while recording.
+        {
+            const auto a = r.arm.toFloat();
+            const bool activeRec = armed && recording;
+
+            if (activeRec)
+            {
+                const double t = juce::Time::getMillisecondCounterHiRes() * 0.001;
+                const float pulse = 0.5f + 0.5f * (float) std::sin (t * juce::MathConstants<double>::twoPi * 2.0);
+                g.setColour (brand::record.withAlpha (0.10f + 0.30f * pulse));
+                g.fillEllipse (a.expanded (3.0f));
+            }
+
+            g.setColour (armed ? brand::record : brand::bgPanel);
+            g.fillEllipse (a);
+
+            const auto ring = ! armEnabled ? brand::textDisabled
+                                           : (armed ? brand::record : (hArm ? brand::recordHover : brand::border));
+            g.setColour (ring);
+            g.drawEllipse (a.reduced (0.5f), 1.5f);
+
+            if (! armEnabled)
+            {
+                g.setColour (brand::textDisabled);
+                g.fillRoundedRectangle (juce::Rectangle<float> (a.getCentreX() - 3.0f,
+                                                                a.getCentreY() - 0.75f, 6.0f, 1.5f), 0.75f);
+            }
+        }
+
+        auto drawSquare = [&] (juce::Rectangle<int> area, const juce::String& label, bool on,
+                               bool hovered, juce::Colour onColour)
+        {
+            g.setColour (on ? onColour.withAlpha (0.22f) : brand::bgPanel);
+            g.fillRoundedRectangle (area.toFloat(), 4.0f);
+            g.setColour (on ? onColour : (hovered ? brand::borderHover : brand::border));
+            g.drawRoundedRectangle (area.toFloat().reduced (0.5f), 4.0f, 1.0f);
+            g.setColour (on ? onColour : brand::textSecondary);
+            g.setFont (brand::uiSemiBold (juce::jmax (9.0f, area.getHeight() * 0.62f)));
+            g.drawText (label, area, juce::Justification::centred);
+        };
+
+        drawSquare (r.mute, "M", muted, hMute, brand::record);
+        drawSquare (r.solo, "S", soloed, hSolo, brand::warning);
+
+        // INPUT chip / mini meter: live only on audio-input tracks, and only while
+        // the chip fits (spec §4.6 degradation: hidden below 44 px — unreachable at
+        // the 56 px floor, but the rule is honoured). The empty slot is still
+        // drawn so clips on every lane line up (spec §4.1).
+        const bool showInput = isInput && track_lane::controlMetrics (lane.getHeight()).inputVisible;
+
+        if (showInput)
+        {
+            g.setColour (brand::bgPanel);
+            g.fillRoundedRectangle (r.input.toFloat(), 4.0f);
+            g.setColour (hInput ? brand::borderHover : brand::border);
+            g.drawRoundedRectangle (r.input.toFloat().reduced (0.5f), 4.0f, 1.0f);
+            g.setColour (brand::textSecondary);
+            g.setFont (brand::uiMedium (10.0f));
+
+            const auto mapping = session.getTrackInputMapping (meterIndex);
+            juce::String code;
+
+            switch (mapping.layout)
+            {
+                case InputLayout::Mono:         code = "M"; break;
+                case InputLayout::Stereo:       code = "S"; break;
+                case InputLayout::MultiChannel: code = "N"; break;
+                case InputLayout::Auto:
+                default:                        code = "A"; break;
+            }
+
+            g.drawText (code + juce::String (mapping.firstChannel + 1), r.input,
+                        juce::Justification::centred);
+        }
+        else
+        {
+            g.setColour (brand::bgPanel);
+            g.fillRoundedRectangle (r.input.toFloat(), 4.0f);
+        }
+
+        if (showInput)
+            drawMiniMeter (g, r.meter, meterIndex);
     }
 
     void MainComponent::splitSelectedAtPlayhead()

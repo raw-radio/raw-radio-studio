@@ -30,6 +30,7 @@
 #include "ui/MixerLayout.h"
 #include "ui/TrackLaneLayout.h"
 #include "ui/SidebarLayout.h"
+#include "studio/MeterCache.h"
 
 #include <vector>
 
@@ -1440,6 +1441,241 @@ TEST_CASE ("laneIndexAtY and scroll bounds at the edges (Epic 8 phase 1a)")
             CHECK (r.getHeight() == minHeight);
         CHECK (needsScroll (300, 16, minHeight));
     }
+}
+
+//==============================================================================
+// Epic 8 (1a follow-up): the collapse/expand handle must stay inside the column
+// and never overlap the 4 px resize zone on the very edge, and must sit at the
+// TOP (so it can never fall under the status/action rows).
+TEST_CASE ("sidebar collapse handle geometry (Epic 8 follow-up)")
+{
+    using namespace rrs::sidebar;
+
+    for (const int w : { minWidth, 320, 360, maxWidth })
+    {
+        const auto h = handleRectExpanded (w);
+        CHECK (h.getX() >= 0);
+        CHECK (h.getRight() <= w - resizeZone); // does not touch the resize zone
+        CHECK (h.getY() >= 0);
+        CHECK (h.getBottom() <= padding + headerHeight); // inside the first header
+    }
+
+    const auto rail = handleRectRail();
+    CHECK (rail.getX() >= 0);
+    CHECK (rail.getRight() <= railWidth);
+    CHECK (rail.getY() == railIconPadding);           // at the TOP of the rail
+    CHECK (rail.getBottom() <= railWidth);            // top area, far from the bottom
+}
+
+//==============================================================================
+// Epic 8 phase 1b: the lane control band ("gutter") geometry. Every control is
+// laid out inside the left `gutterWidth` px of the lane, in a fixed order, so the
+// bands line up into one column and clips start at the same x on every lane.
+TEST_CASE ("lane control band geometry (Epic 8 phase 1b)")
+{
+    using namespace rrs::track_lane;
+
+    CHECK (gutterWidth == 112);
+
+    // Per-height sizes (owner R-A presets 56 / 72 / 96).
+    CHECK (controlMetrics (56).arm == 18);
+    CHECK (controlMetrics (56).ms == 16);
+    CHECK (controlMetrics (56).inputW == 24);
+    CHECK (controlMetrics (72).arm == 20);
+    CHECK (controlMetrics (72).ms == 18);
+    CHECK (controlMetrics (72).inputW == 28);
+    CHECK (controlMetrics (96).arm == 20);
+    CHECK (controlMetrics (96).inputW == 28);
+    CHECK (controlMetrics (56).inputVisible);
+
+    const juce::Rectangle<int> lane { 100, 40, 800, 72 };
+    const auto r = computeLaneControlRects (lane);
+
+    // The band is the lane's clip band, left `gutterWidth` px wide.
+    CHECK (r.band.getX() == lane.getX());
+    CHECK (r.band.getWidth() == gutterWidth);
+    CHECK (r.band.getY() == lane.getY() + clipInset);
+    CHECK (r.band.getHeight() == lane.getHeight() - 2 * clipInset);
+
+    // Every control sits inside the band, in the fixed arm/mute/solo/input order.
+    CHECK (r.band.contains (r.arm));
+    CHECK (r.band.contains (r.mute));
+    CHECK (r.band.contains (r.solo));
+    CHECK (r.band.contains (r.input));
+    CHECK (r.arm.getX() < r.mute.getX());
+    CHECK (r.mute.getX() < r.solo.getX());
+    CHECK (r.solo.getX() < r.input.getX());
+    CHECK (r.input.getX() < r.meter.getRight());
+
+    // The clip zone starts exactly at the band's right edge.
+    CHECK (r.band.getRight() == lane.getX() + gutterWidth);
+
+    // The band follows the lane's x/hMargin from computeLaneRects (single source).
+    const auto lanes = computeLaneRects ({ 0, 0, 900, 600 }, 1);
+    REQUIRE (lanes.size() == 1);
+    CHECK (computeLaneControlRects (lanes[0]).band.getX() == lanes[0].getX());
+    CHECK (lanes[0].getX() == hMargin);
+}
+
+//==============================================================================
+// Epic 8 phase 1b: x -> control hit-test. The gutter and the clip zone must not
+// overlap: a point at/right of the band is the clip zone (none).
+TEST_CASE ("lane control hit-test maps x to the right control (Epic 8 phase 1b)")
+{
+    using namespace rrs::track_lane;
+
+    const juce::Rectangle<int> lane { 100, 40, 800, 72 };
+    const auto r = computeLaneControlRects (lane);
+
+    const auto centre = [] (juce::Rectangle<int> rect) { return rect.getCentre(); };
+
+    CHECK (controlAt (lane, true, centre (r.arm)) == LaneControl::arm);
+    CHECK (controlAt (lane, true, centre (r.mute)) == LaneControl::mute);
+    CHECK (controlAt (lane, true, centre (r.solo)) == LaneControl::solo);
+    CHECK (controlAt (lane, true, centre (r.input)) == LaneControl::input);
+    CHECK (controlAt (lane, true, centre (r.meter)) == LaneControl::meter);
+
+    // Left pad (inside the band, before the arm) is the empty band.
+    CHECK (controlAt (lane, true, { lane.getX() + 1, r.band.getCentreY() }) == LaneControl::band);
+
+    // The first clip-zone pixel is NOT the gutter (it is the timeline).
+    CHECK (controlAt (lane, true, { lane.getX() + gutterWidth, r.band.getCentreY() }) == LaneControl::none);
+    CHECK (controlAt (lane, true, { lane.getX() - 1, r.band.getCentreY() }) == LaneControl::none);
+
+    // On a playback-only track the input chip / meter are inert (they fall back to
+    // the empty band), but mute/solo still work.
+    CHECK (controlAt (lane, false, centre (r.input)) == LaneControl::band);
+    CHECK (controlAt (lane, false, centre (r.meter)) == LaneControl::band);
+    CHECK (controlAt (lane, false, centre (r.mute)) == LaneControl::mute);
+}
+
+//==============================================================================
+// Epic 8 phase 1b: the gutter column scrolls with the lanes — the control band of
+// lane i keeps the same x and shifts by exactly the scroll offset.
+TEST_CASE ("gutter and lanes scroll in lockstep (Epic 8 phase 1b)")
+{
+    using namespace rrs::track_lane;
+
+    const juce::Rectangle<int> area { 0, 0, 900, 600 };
+    const auto atTop = computeLaneRects (area, 8, 0);
+    const auto scrolled = computeLaneRects (area, 8, 40);
+    REQUIRE (atTop.size() == 8);
+    REQUIRE (scrolled.size() == 8);
+
+    for (int i = 0; i < 8; ++i)
+    {
+        const auto bandTop = computeLaneControlRects (atTop[(size_t) i]).band;
+        const auto bandScrolled = computeLaneControlRects (scrolled[(size_t) i]).band;
+
+        CHECK (bandTop.getX() == bandScrolled.getX());
+        CHECK (bandTop.getHeight() == bandScrolled.getHeight());
+        CHECK (bandTop.getY() - bandScrolled.getY() == 40);
+    }
+}
+
+//==============================================================================
+// Epic 8 phase 1b (follow-up): the read-and-clear -> peek meter cache used for
+// single-owner metering (MainComponent pumps; mixer strips + lane meters peek).
+TEST_CASE ("meter cache stores, peeks (silence before store) and clears (Epic 8 phase 1b)")
+{
+    struct FakeReading { float db = -100.0f; bool clipped = false; };
+
+    rrs::MeterCache<FakeReading> cache;
+    CHECK (cache.size() == 0);
+
+    // Nothing stored yet (or out of range) -> silence.
+    CHECK (cache.peek (0).db == doctest::Approx (-100.0f));
+    CHECK (cache.peek (5).db == doctest::Approx (-100.0f));
+    CHECK (cache.peek (-1).db == doctest::Approx (-100.0f));
+
+    FakeReading r;
+    r.db = -6.0f;
+    r.clipped = true;
+    cache.store (2, r);
+
+    CHECK (cache.peek (2).db == doctest::Approx (-6.0f));
+    CHECK (cache.peek (2).clipped);
+    // Untouched indices stay silent.
+    CHECK (cache.peek (0).db == doctest::Approx (-100.0f));
+    CHECK (cache.peek (1).db == doctest::Approx (-100.0f));
+
+    // Overwrite + clear (track-set change / session teardown).
+    cache.store (2, FakeReading {});
+    CHECK (cache.peek (2).db == doctest::Approx (-100.0f));
+
+    cache.clear();
+    CHECK (cache.size() == 0);
+    CHECK (cache.peek (2).db == doctest::Approx (-100.0f));
+}
+
+//==============================================================================
+// Epic 8 phase 1b: control metrics bucket boundaries (the auto height 56..72
+// must bucket correctly) and the input-visible degradation rule.
+TEST_CASE ("lane control metrics boundaries (Epic 8 phase 1b)")
+{
+    using namespace rrs::track_lane;
+
+    // input-visible rule: < 44 hides the chip/meter.
+    CHECK_FALSE (controlMetrics (43).inputVisible);
+    CHECK (controlMetrics (44).inputVisible);
+    CHECK (controlMetrics (56).inputVisible);
+
+    // compact (< 64) / normal (64..83) / large (>= 84).
+    CHECK (controlMetrics (63).arm == 18);
+    CHECK (controlMetrics (63).ms == 16);
+    CHECK (controlMetrics (64).arm == 20);
+    CHECK (controlMetrics (64).ms == 18);
+    CHECK (controlMetrics (83).arm == 20);
+    CHECK (controlMetrics (83).inputW == 28);
+    CHECK (controlMetrics (84).arm == 20);
+    CHECK (controlMetrics (84).inputW == 28);
+}
+
+//==============================================================================
+// Epic 8 phase 1b: points in the gaps between controls are the empty band, and
+// the mini meter is nested vertically inside the band.
+TEST_CASE ("lane control gaps and meter geometry (Epic 8 phase 1b)")
+{
+    using namespace rrs::track_lane;
+
+    const juce::Rectangle<int> lane { 100, 40, 800, 72 };
+    const auto r = computeLaneControlRects (lane);
+    const int cy = r.band.getCentreY();
+
+    // The inter-control gaps fall back to the empty band (no accidental control).
+    CHECK (controlAt (lane, true, { r.arm.getRight() + 1, cy }) == LaneControl::band);  // arm|mute gap
+    CHECK (controlAt (lane, true, { r.mute.getRight() + 1, cy }) == LaneControl::band); // mute|solo gap
+    CHECK (controlAt (lane, true, { r.solo.getRight() + 1, cy }) == LaneControl::band); // solo|input gap
+
+    // The meter is a tall thin bar nested in the band.
+    CHECK (r.meter.getY() >= r.band.getY());
+    CHECK (r.meter.getBottom() <= r.band.getBottom());
+    CHECK (r.meter.getHeight() >= 6);
+    CHECK (r.meter.getWidth() == controlMetrics (lane.getHeight()).meterW);
+}
+
+//==============================================================================
+// Epic 8 phase 1b (HIGH): the clip zone starts EXACTLY on the gutter's right
+// edge, and the timeline map's 0 s lands there too — as a function of
+// hMargin / gutterWidth / laneInset (no reliance on "they happen to be 8").
+TEST_CASE ("clip zone starts on the gutter right edge (Epic 8 phase 1b)")
+{
+    using namespace rrs::track_lane;
+
+    const juce::Rectangle<int> area { 40, 0, 900, 400 };
+
+    CHECK (hMargin == laneInset);
+
+    // The gutter's right edge (== clip-zone left) for the layout's lanes.
+    const auto lanes = computeLaneRects (area, 1);
+    REQUIRE (lanes.size() == 1);
+    CHECK (computeLaneControlRects (lanes[0]).band.getRight() == laneContentX (area));
+    CHECK (laneContentX (area) == area.getX() + hMargin + gutterWidth);
+
+    // The map area is the lane area minus the gutter; its inset lands 0 s exactly
+    // on the gutter's right edge.
+    CHECK (timelineAreaFor (area).getX() == area.getX() + gutterWidth);
+    CHECK (timelineAreaFor (area).getX() + laneInset == laneContentX (area));
 }
 
 //==============================================================================

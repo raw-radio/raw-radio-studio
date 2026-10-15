@@ -9,6 +9,7 @@
 #pragma once
 
 #include <juce_core/juce_core.h>
+#include <juce_graphics/juce_graphics.h>
 
 namespace rrs::sidebar
 {
@@ -30,9 +31,26 @@ namespace rrs::sidebar
     inline constexpr int padding = 8;
     inline constexpr int sectionGap = 6;
 
-    /** Rail icon box (32x32 hit box, 16 px icon) and its vertical padding. */
+    /** The rail icon box (32x32 hit box, 16 px icon) and its vertical padding. */
     inline constexpr int railIconSize = 32;
     inline constexpr int railIconPadding = 6;
+
+    /** The collapse/expand toggle box at the top of the column. Expanded: a
+        24x24 chevron button at the top-right — deliberately INSIDE the column
+        (never overlapping the 4 px resize zone on the very edge). Collapsed: a
+        32x32 box at the top of the rail, above the section icons. Kept here so
+        the widget's geometry is unit-testable (see the handle-overlap test). */
+    inline juce::Rectangle<int> handleRectExpanded (int width) noexcept
+    {
+        constexpr int size = 24;
+        return { width - size - 6, padding + (headerHeight - size) / 2, size, size };
+    }
+
+    inline juce::Rectangle<int> handleRectRail() noexcept
+    {
+        const int x = (railWidth - railIconSize) / 2;
+        return { x, railIconPadding, railIconSize, railIconSize };
+    }
 
     /** Content heights of the two lightweight sections (the Device section asks
         the DevicePanel for its own dynamic height). */

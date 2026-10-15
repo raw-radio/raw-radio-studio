@@ -498,8 +498,11 @@ LEVEL (mini)            DISABLED (arm on non-input track)
   (move/trim/fade) работают в оставшемся диапазоне.
 - Полоса перехватывает `mouseDown` первой (как стрип микшера): клик по ARM/M/S/input —
   действие, клик по пустому месту полосы — `selectTrack(index)` (клик по лейну = выбор).
-- **x↔time карта не меняется**: `Timeline::xForSeconds` по-прежнему работает по всей
-  `trackLaneArea`; клип-зона лишь обрезается слева визуально и в хит-тесте. Playhead
+- **x↔time карта обрезается слева на ширину полосы (gutter).** `Timeline::xForSeconds`
+  работает по `track_lane::timelineAreaFor(trackLaneArea)` — это `trackLaneArea` без левого
+  `gutterWidth`. Её `hInset` (== `track_lane::laneInset`, тот же константа, что `hMargin`)
+  ставит `0 s` ровно на `track_lane::laneContentX(area)` = правый край полосы. Клип-зона и
+  линейка используют одну и ту же область карты, поэтому их `x` совпадают. Playhead
   рисуется на всю высоту `trackLaneArea` (сквозь полосу), как сейчас.
 - Правый клик по полосе — контекстное меню дорожки (Remove track / input mapping),
   дублирует существующие кнопки action-row.

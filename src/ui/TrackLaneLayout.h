@@ -45,8 +45,12 @@ namespace rrs::track_lane
         name plus a comfortable clip band with usable fade/trim hit zones. */
     inline constexpr int preferredHeight = 72;
 
-    /** Horizontal inset so lanes do not sit flush against the arrangement edge. */
-    inline constexpr int hMargin = 8;
+    /** Horizontal inset so lanes do not sit flush against the arrangement edge.
+        This is also the ruler's `hInset` (Timeline::hInset) — the single constant
+        that makes the clip zone start exactly on the gutter's right edge (see
+        `laneContentX`). Keep the two bound (Timeline.h sets hInset from here). */
+    inline constexpr int laneInset = 8;
+    inline constexpr int hMargin = laneInset;
 
     /** Vertical inset applied once to the whole lane stack. */
     inline constexpr int vMargin = 6;
@@ -229,5 +233,144 @@ namespace rrs::track_lane
 
         auto inner = lane.reduced (10, 4);
         nameRow = inner.removeFromTop (juce::jmin (nameRowHeight, inner.getHeight()));
+    }
+
+    //==========================================================================
+    // Epic 8 phase 1b — in-lane control band (the "gutter").
+    //
+    // The control band is the LEFT `gutterWidth` px of every lane. Because every
+    // lane shares the same x and width (computeLaneRects), these bands line up
+    // into one vertical gutter column at the left of the arrangement. The clip
+    // zone starts to the right of the gutter; the x<->time map
+    // (Timeline::xForSeconds) is unchanged except that its left edge is
+    // `trackLaneArea.getX() + gutterWidth` (see MainComponent). This header is
+    // the single source of truth for the gutter width and the control geometry,
+    // shared by paint() and the hit-tests.
+    inline constexpr int gutterWidth = 112;
+
+    /** The x where a lane's clip zone (and the timeline content) begins: the
+        gutter's right edge. Derived from one constant set so the gutter, the
+        clip zone and the ruler can never disagree:
+            laneContentX = area.x + hMargin + gutterWidth
+        and the x<->time map is `timelineAreaFor(area)` + `hInset`, which lands
+        s=0 exactly on `laneContentX(area)` because `hInset == hMargin == laneInset`. */
+    inline int laneContentX (juce::Rectangle<int> area) noexcept
+    {
+        return area.getX() + hMargin + gutterWidth;
+    }
+
+    /** The area the ruler / clip map / snap threshold operate on: the lane area
+        with the gutter carved off the left. Its `hInset` then starts the clips
+        exactly at `laneContentX(area)`. */
+    inline juce::Rectangle<int> timelineAreaFor (juce::Rectangle<int> area) noexcept
+    {
+        return area.withTrimmedLeft (gutterWidth);
+    }
+
+    /** Adapted sizes per lane height (owner R-A presets 56 / 72 / 96).
+        `inputVisible` keeps the spec rule (< 44 px hides the input chip); with
+        the 56 px floor it is always true in practice. */
+    struct ControlMetrics
+    {
+        int arm = 20;
+        int ms = 18;
+        int inputW = 28;
+        int inputH = 18;
+        int meterW = 6;
+        int pad = 4;
+        int gapSmall = 2;
+        int gapLarge = 4;
+        bool inputVisible = true;
+    };
+
+    /** Control sizes for a lane of `laneHeight` px: compact (56), normal (72)
+        and large (96) each get a slightly different scale. */
+    inline ControlMetrics controlMetrics (int laneHeight) noexcept
+    {
+        ControlMetrics m;
+
+        if (laneHeight < 64)            // compact (56)
+        {
+            m.arm = 18; m.ms = 16; m.inputW = 24; m.inputH = 16; m.meterW = 6;
+        }
+        else if (laneHeight < 84)       // normal (72)
+        {
+            m.arm = 20; m.ms = 18; m.inputW = 28; m.inputH = 18; m.meterW = 6;
+        }
+        else                            // large (96): full set
+        {
+            m.arm = 20; m.ms = 18; m.inputW = 28; m.inputH = 18; m.meterW = 6;
+        }
+
+        m.inputVisible = laneHeight >= 44;
+        return m;
+    }
+
+    /** Which control a point is over (for hover + click). `band` = the gutter
+        background but not a control. */
+    enum class LaneControl { none, band, arm, mute, solo, input, meter };
+
+    /** Pixel rectangles of one lane's controls. `input`/`meter` are always laid
+        out (their slot is reserved for alignment) even on playback-only tracks;
+        the caller decides whether to draw/act on them via `isInput`. */
+    struct LaneControlRects
+    {
+        juce::Rectangle<int> band;
+        juce::Rectangle<int> arm, mute, solo, input, meter;
+    };
+
+    /** Computes the control rectangles for `lane`. The band is the left
+        `gutterWidth` px of the lane's clip band (vertically inset by
+        `clipInset`). */
+    inline LaneControlRects computeLaneControlRects (juce::Rectangle<int> lane) noexcept
+    {
+        LaneControlRects r;
+
+        auto band = lane.reduced (0, clipInset);
+        band.setWidth (juce::jmin (gutterWidth, band.getWidth()));
+        r.band = band;
+
+        const auto m = controlMetrics (lane.getHeight());
+        const auto cy = band.getCentreY();
+        int x = band.getX() + m.pad;
+
+        auto take = [&x, cy] (int w, int h)
+        {
+            const auto rect = juce::Rectangle<int> (x, cy - h / 2, w, h);
+            x += w;
+            return rect;
+        };
+
+        r.arm = take (m.arm, m.arm);          x += m.gapSmall;
+        r.mute = take (m.ms, m.ms);           x += m.gapSmall;
+        r.solo = take (m.ms, m.ms);           x += m.gapLarge;
+        r.input = take (m.inputW, m.inputH);  x += m.gapLarge;
+
+        r.meter = { x, band.getY() + 2, m.meterW, juce::jmax (6, band.getHeight() - 4) };
+        return r;
+    }
+
+    /** Which control `p` falls on inside `lane`'s gutter, or `none` when `p` is
+        not in the gutter at all (i.e. it is in the clip zone / timeline). */
+    inline LaneControl controlAt (juce::Rectangle<int> lane, bool isInput,
+                                  juce::Point<int> p) noexcept
+    {
+        const auto r = computeLaneControlRects (lane);
+
+        if (! r.band.contains (p))
+            return LaneControl::none;
+
+        if (r.arm.contains (p))   return LaneControl::arm;
+        if (r.mute.contains (p))  return LaneControl::mute;
+        if (r.solo.contains (p))  return LaneControl::solo;
+
+        // Below the input-visible threshold (< 44 px) the chip/meter collapse and
+        // their slot is inert; at the 56 px floor this is always visible.
+        const bool inputVisible = isInput && controlMetrics (lane.getHeight()).inputVisible;
+
+        if (inputVisible && r.input.contains (p)) return LaneControl::input;
+        if (inputVisible && r.meter.contains (p)) return LaneControl::meter;
+
+        return LaneControl::band;
     }
 }
