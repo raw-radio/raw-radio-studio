@@ -11,13 +11,22 @@ reconstructed from the corresponding GitHub Releases; the product roadmap and
 the "what is delivered / still open" status live in
 [`docs/STUDIO_SPEC.md`](docs/STUDIO_SPEC.md) and the `docs/EPIC*_GAPS.md` files.
 
-## [Unreleased]
+## [0.1.3-alpha] - 2026-10-15
+
+Fourth alpha — makes the first take crash-safe, seeds the `CHANGELOG.md`, and adds
+an ASan test gate plus automated tag releases.
 
 ### Added
 
+- **ASan gate** (`-DRAW_RADIO_STUDIO_ENABLE_ASAN=ON`): the app and both test
+  binaries build with `-fsanitize=address` (the pinned JUCE/Tracktion submodules
+  stay uninstrumented) and CI runs the whole suite through `ctest` with a single,
+  narrow LSan suppression for an upstream one-shot fontconfig allocation; any
+  real leak still fails the gate.
 - **Release automation** in CI (`.github/workflows/ci.yml`): pushing a `v*` tag
   now builds, checksums (sha256 `checksums.txt`) and publishes the release
-  artifacts to a GitHub Release. Previously releases were created by hand.
+  artifacts to a GitHub Release (`-alpha`/`-beta`/`-rc` tags become pre-releases).
+  Previously releases were created by hand.
 - **AGPLv3 compliance set is embedded in every artifact** — `LICENSE`, `NOTICE`
   and the verbatim third-party texts under `LICENSES/` now ship in the `.dmg`
   (volume root), the `.deb` and the AppImage
@@ -32,6 +41,23 @@ the "what is delivered / still open" status live in
 - The macOS artifact filename now carries its architecture
   (`raw-radio-studio-<version>-macos-arm64.dmg`) instead of implying a
   universal build; only the built architecture is labelled.
+- `CONTRIBUTING.md` build/test sections updated to match reality (submodules,
+  build paths); the CI ASan job runs the whole suite via `ctest` with no extra
+  env.
+
+### Fixed
+
+- **The first take is no longer lost on a crash.** A crash before Tracktion's
+  first ~6 s flush left a 0-sample WAV header over real payload; the header is
+  now repaired/finalised on write, shrinking the loss window from ~6 s to ~1 s.
+- **Recovery keeps data**: 0-sample / broken WAVs are repaired before reading
+  instead of being silently dropped, and every skip is recorded (name + reason).
+- Recovered takes are routed back to their original track (by the
+  `_<track>_Take_` name infix) instead of piling onto track 0 by mtime.
+- A clean exit no longer leaves a parasitic "unsaved version found" recovery
+  prompt.
+- Quitting (Cmd+Q / window close) now runs the shared Save/Discard/Cancel guard
+  instead of discarding unsaved work.
 
 ### Notes
 

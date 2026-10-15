@@ -15,7 +15,7 @@
 #include <iostream>
 
 #ifndef RAW_RADIO_STUDIO_VERSION
- #define RAW_RADIO_STUDIO_VERSION "0.1.2-dev"
+ #define RAW_RADIO_STUDIO_VERSION "0.1.3-dev"
 #endif
 
 #ifndef RAW_RADIO_STUDIO_TRACKTION_VERSION

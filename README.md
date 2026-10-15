@@ -10,7 +10,7 @@ overdub → rough mix → export** — not beat-making. It is a **standalone,
 local-only** application: no accounts, no cloud, no integration with any web
 service (finished recordings are uploaded by hand, outside the app).
 
-> **Status: pre-alpha (v0.1.2).** Epics 0–5 are **delivered**: capture/monitor/export,
+> **Status: pre-alpha (v0.1.3).** Epics 0–5 are **delivered**: capture/monitor/export,
 > multitrack device-agnostic I/O with software cue mixes, a mixer with routing and
 > **VST3 / LV2 (opt-in) / AU** plugin hosting, clip editing (fades, comping,
 > time-stretch), and MIDI with a piano roll and virtual instruments. **Epics 6–7**
@@ -109,7 +109,7 @@ Handled before the single-instance gate, so they run without opening a window
 (see [`src/main.cpp`](src/main.cpp)):
 
 ```bash
-raw-radio-studio --version                          # banner: 0.1.2  (JUCE 9.0.3, Tracktion Engine 3.5.0)
+raw-radio-studio --version                          # banner: 0.1.3  (JUCE 9.0.3, Tracktion Engine 3.5.0)
 raw-radio-studio --list-devices                     # audio backends + MIDI inputs/outputs
 raw-radio-studio --selftest-record <s> <out.wav>    # capture the input to a 24-bit WAV [--device "<substr>"]
 raw-radio-studio --selftest-multitrack <s> <out>    # per-input-channel WAVs + per-channel stats
