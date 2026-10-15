@@ -7,6 +7,7 @@
 #include "InputRouting.h"
 #include "PluginSelection.h"
 #include "TimeStretch.h"
+#include "WavRepair.h"
 
 #include <algorithm>
 #include <cmath>
@@ -220,13 +221,21 @@ namespace rrs
 
         if (edit != nullptr)
         {
-            // Best-effort autosave so an accidental quit still leaves a recoverable
-            // temp version (the lock file is removed, so this is not flagged unclean).
+            // A *clean* shutdown must leave no recovery artifacts behind. The quit
+            // path (MainComponent::requestQuit) has already prompted for unsaved
+            // work, so writing an autosave temp version here would make the next
+            // launch show a spurious "an unsaved version was found" recovery
+            // prompt for a session the user deliberately closed (the old
+            // unconditional `saveTempVersion` bug).
+            //
+            // Drop the temp version (exactly like Session::close does) and clear
+            // the sentinel, so only a real crash — where this destructor never
+            // runs — is ever flagged as interrupted (FR-REC-8 / FR-PRJ-3).
             // The EditFileOperations object must be destroyed *before* the Edit:
             // its destructor touches the Edit's engine/project manager.
             {
                 te::EditFileOperations ops (*edit);
-                ops.saveTempVersion (false);
+                ops.deleteTempVersion();
             }
 
             edit.reset();
@@ -4359,8 +4368,58 @@ namespace rrs
         return files;
     }
 
+    juce::String Session::RecordingRecoveryReport::summary() const
+    {
+        juce::StringArray parts;
+
+        if (imported > 0)
+            parts.add ("recovered " + juce::String (imported) + " take(s)");
+        if (repaired > 0)
+            parts.add ("rebuilt " + juce::String (repaired) + " WAV header(s)");
+        if (! skippedFiles.isEmpty())
+            parts.add ("skipped " + juce::String (skippedFiles.size()) + " file(s)");
+
+        return parts.isEmpty() ? juce::String ("nothing to recover") : parts.joinIntoString (", ");
+    }
+
+    tracktion::AudioTrack* Session::trackForRecoveredTake (const juce::String& fileNameWithoutExtension) const
+    {
+        // Recording file names are `<session>_<track>_Take_<n>.wav` (see
+        // StudioEngineBehaviour::getFileForNewAudioRecording). Matching the
+        // `_<track>_Take_` infix against the live track names routes each take
+        // back to the track it was captured on; the trailing `_Take_` keeps the
+        // match unambiguous even when one track name is a prefix of another
+        // (`Input 1` vs `Input 10`). Takes with no recognisable track name fall
+        // back to track 0 (the Epic 1 input track), preserving the old behaviour.
+        int bestIndex = -1;
+        int bestLength = 0;
+
+        for (int i = 0; i < getNumAudioTracks(); ++i)
+        {
+            if (auto* track = getTrack (i))
+            {
+                const auto name = track->getName();
+
+                if (name.isEmpty())
+                    continue;
+
+                const auto needle = "_" + name + "_Take_";
+
+                if (fileNameWithoutExtension.contains (needle) && needle.length() > bestLength)
+                {
+                    bestIndex = i;
+                    bestLength = needle.length();
+                }
+            }
+        }
+
+        return bestIndex >= 0 ? getTrack (bestIndex) : getTrack (0);
+    }
+
     int Session::importOrphanedRecordings()
     {
+        lastRecordingRecovery = {};
+
         if (edit == nullptr || editFile == juce::File())
             return 0;
 
@@ -4369,13 +4428,10 @@ namespace rrs
         if (! recordingsDir.isDirectory())
             return 0;
 
-        auto* track = getTrack();
-
-        if (track == nullptr)
+        if (getTrack (0) == nullptr)
             return 0;
 
         const auto referenced = findReferencedRecordings();
-        int imported = 0;
 
         // `findChildFiles` returns filesystem order, which is not chronological.
         // Sort by modification time (file name as tie-breaker) so recovered takes
@@ -4391,26 +4447,64 @@ namespace rrs
                        return ta != tb ? ta < tb : a.getFileName() < b.getFileName();
                    });
 
-        // Lay recovered takes down the timeline one after another so multiple
-        // takes never overlap at time 0.
-        te::TimePosition nextStart {};
+        // The next free timeline position per engine track, so recovered takes on
+        // the same track never overlap at time 0.
+        std::vector<te::TimePosition> nextStartByTrack ((size_t) getNumAudioTracks());
 
         for (auto& file : orphanFiles)
         {
             if (referenced.contains (file))
                 continue;
 
+            // FR-REC-8 (Epic 7): a crash before Tracktion's first ~6 s flush leaves
+            // a WAV whose header still declares 0 samples although the sample data
+            // is already on disk. Rebuild the RIFF/`data` sizes from the real file
+            // length so the take is recovered instead of silently dropped. This
+            // removes the Epic 1 "unrecoverable first window" limitation.
+            const auto repair = wavrepair::repairTruncatedHeader (file);
+
+            if (repair.wasRepaired())
+                ++lastRecordingRecovery.repaired;
+
             te::AudioFile audioFile (edit->engine, file);
 
             if (! audioFile.isValid() || audioFile.getLength() <= 0.0)
             {
-                // FR-REC-8 crash window: Tracktion flushes recorded audio roughly
-                // every 6 s, so a crash inside the first window can leave a WAV
-                // whose header claims 0 samples and which cannot be recovered.
-                // Accepted for Epic 1 "basics"; hardened in Epic 7.
+                // Explicit, reportable decision: skip a take only when there is
+                // genuinely nothing usable on disk (empty / corrupt / unreadable
+                // header). Never the old silent `continue`.
+                juce::String reason;
+
+                if (repair.status == wavrepair::Result::Status::notRiff)
+                    reason = "not a readable WAV";
+                else if (repair.status == wavrepair::Result::Status::failed)
+                    reason = repair.detail.isNotEmpty() ? repair.detail : "header could not be repaired";
+                else if (repair.dataBytes <= 0)
+                    reason = "no audio data recorded";
+                else
+                    reason = "the engine could not open the take";
+
+                lastRecordingRecovery.skippedFiles.add (file.getFileName() + " (" + reason + ")");
                 continue;
             }
 
+            auto* track = trackForRecoveredTake (file.getFileNameWithoutExtension());
+
+            if (track == nullptr)
+            {
+                lastRecordingRecovery.skippedFiles.add (file.getFileName() + " (no destination track)");
+                continue;
+            }
+
+            const auto trackIndex = te::getAudioTracks (*edit).indexOf (track);
+
+            if (! juce::isPositiveAndBelow (trackIndex, (int) nextStartByTrack.size()))
+            {
+                lastRecordingRecovery.skippedFiles.add (file.getFileName() + " (no destination track)");
+                continue;
+            }
+
+            auto& nextStart = nextStartByTrack[(size_t) trackIndex];
             const auto length = te::TimeDuration::fromSeconds (audioFile.getLength());
             const te::ClipPosition position { { nextStart, length }, {} };
 
@@ -4419,18 +4513,43 @@ namespace rrs
             {
                 clip->setName ("Recovered: " + file.getFileNameWithoutExtension());
                 nextStart = nextStart + length;
-                ++imported;
+                ++lastRecordingRecovery.imported;
+                lastRecordingRecovery.importedFiles.add (file.getFileName());
+            }
+            else
+            {
+                lastRecordingRecovery.skippedFiles.add (file.getFileName() + " (could not place clip)");
             }
         }
 
-        if (imported > 0)
+        if (lastRecordingRecovery.imported > 0)
         {
             edit->restartPlayback();
             save();
             sendChangeMessage();
         }
 
-        return imported;
+        return lastRecordingRecovery.imported;
+    }
+
+    void Session::finaliseInProgressRecordingHeaders()
+    {
+        if (edit == nullptr || editFile == juce::File() || ! isRecording())
+            return;
+
+        const auto recordingsDir = paths::recordingsDirectoryFor (editFile);
+
+        if (! recordingsDir.isDirectory())
+            return;
+
+        // While a take is being written, its WAV header is still the placeholder
+        // Tracktion wrote at creation (declares 0 samples) until its first ~6 s
+        // flush. Finalising it here — on the message thread, never the audio
+        // thread — makes the on-disk file a valid WAV at any point, shrinking the
+        // crash-loss window from ~6 s to this timer's period. Completed takes are
+        // already consistent and are left untouched.
+        for (auto& file : recordingsDir.findChildFiles (juce::File::findFiles, false, "*.wav"))
+            (void) wavrepair::repairTruncatedHeader (file);
     }
 
     //==============================================================================
@@ -4670,6 +4789,20 @@ namespace rrs
             lastRecording = recording;
             lastArmed = armed;
             sendChangeMessage();
+        }
+
+        // FR-REC-8 (Epic 7): while a take is rolling, keep its WAV header valid on
+        // disk so a crash at any instant leaves a recoverable file. Throttled to
+        // ~1 Hz (the timer runs at 10 Hz); pure message-thread file I/O.
+        if (recording)
+        {
+            const auto now = juce::Time::getMillisecondCounterHiRes();
+
+            if (now - lastHeaderFinaliseMs >= 1000.0)
+            {
+                lastHeaderFinaliseMs = now;
+                finaliseInProgressRecordingHeaders();
+            }
         }
 
         if (autosaveIntervalSeconds > 0)

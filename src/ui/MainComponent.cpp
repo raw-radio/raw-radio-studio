@@ -12,6 +12,7 @@
 
 #include <array>
 #include <cmath>
+#include <iostream>
 
 #ifndef RAW_RADIO_STUDIO_VERSION
  #define RAW_RADIO_STUDIO_VERSION "0.1.2-dev"
@@ -829,7 +830,8 @@ namespace rrs
     }
 
     //==============================================================================
-    void MainComponent::confirmUnsavedChanges (const juce::String& title, std::function<void()> onProceed)
+    void MainComponent::confirmUnsavedChanges (const juce::String& title, std::function<void()> onProceed,
+                                               std::function<void()> onCancel)
     {
         if (session.getEdit() == nullptr || ! session.hasUnsavedChanges())
         {
@@ -848,7 +850,7 @@ namespace rrs
                 .withButton ("Save")
                 .withButton ("Discard")
                 .withButton ("Cancel"),
-            [safe, onProceed] (int result)
+            [safe, onProceed, onCancel] (int result)
             {
                 auto* self = safe.getComponent();
 
@@ -860,6 +862,12 @@ namespace rrs
                     if (! self->session.save())
                     {
                         self->showStatus (self->session.getLastError(), true);
+
+                        // The operation is aborted: let the caller release any
+                        // re-entrancy guard it took before showing the prompt.
+                        if (onCancel)
+                            onCancel();
+
                         return; // save failed: keep the session
                     }
 
@@ -869,8 +877,37 @@ namespace rrs
                 {
                     onProceed();
                 }
-                // result == 2 (Cancel): do nothing.
+                else // Cancel
+                {
+                    if (onCancel)
+                        onCancel();
+                }
             });
+    }
+
+    void MainComponent::requestQuit()
+    {
+        // A quit already awaiting the user's decision: ignore repeat events so a
+        // second Cmd+Q (or a window close racing the dialog) cannot stack prompts.
+        if (quitConfirmPending)
+            return;
+
+        if (session.getEdit() == nullptr || ! session.hasUnsavedChanges())
+        {
+            juce::JUCEApplicationBase::getInstance()->quit();
+            return;
+        }
+
+        quitConfirmPending = true;
+
+        confirmUnsavedChanges (
+            "Quit raw-radio-studio",
+            [this]
+            {
+                quitConfirmPending = false;
+                juce::JUCEApplicationBase::getInstance()->quit();
+            },
+            [this] { quitConfirmPending = false; });
     }
 
     void MainComponent::newSession()
@@ -1503,9 +1540,23 @@ namespace rrs
                                           "opened the last saved session.", true);
 
                     const auto recovered = self->session.importOrphanedRecordings();
+                    const auto report = self->session.getLastRecordingRecovery();
 
-                    if (recovered > 0)
-                        self->showStatus ("Recovered " + juce::String (recovered) + " recording(s).");
+                    // Never a silent recovery: always report what was imported
+                    // and, when a file had to be skipped, why (an empty take can
+                    // simply mean a crash before any audio reached disk).
+                    if (report.imported > 0 || ! report.skippedFiles.isEmpty())
+                    {
+                        juce::String recoveryMessage = "Recovery: " + report.summary() + ".";
+
+                        if (! report.skippedFiles.isEmpty())
+                            recoveryMessage << " Skipped: " << report.skippedFiles.joinIntoString ("; ");
+
+                        std::cout << "[recovery] " << recoveryMessage << std::endl;
+                        self->showStatus (recoveryMessage, ! report.skippedFiles.isEmpty());
+                    }
+
+                    juce::ignoreUnused (recovered);
                 }
                 else // Discard: drop the recovered changes, start from the last saved state
                 {

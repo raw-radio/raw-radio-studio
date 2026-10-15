@@ -721,6 +721,25 @@ namespace rrs
             }
         };
 
+        /** Outcome of the last `importOrphanedRecordings()` call, so recovery is
+            never a silent no-op: it records what was imported, what WAV headers
+            had to be rebuilt, and what was deliberately skipped (and why). */
+        struct RecordingRecoveryReport
+        {
+            int imported = 0;              ///< Orphan takes successfully placed.
+            int repaired = 0;              ///< Zero-sample headers rebuilt in place.
+            juce::StringArray importedFiles;
+            juce::StringArray skippedFiles; ///< "name (reason)" for each skip.
+
+            bool isEmpty() const noexcept
+            {
+                return imported == 0 && repaired == 0 && skippedFiles.isEmpty();
+            }
+
+            /** One-line human summary for a status bar / log. */
+            juce::String summary() const;
+        };
+
         /** Inspects disk for a session file before it is opened. */
         static RecoveryInfo detectRecovery (const juce::File& editFile);
 
@@ -728,8 +747,22 @@ namespace rrs
         bool applyTempEditRecovery (const RecoveryInfo&);
 
         /** Imports unreferenced recordings from the session's Recordings folder
-            into the current edit as clips. Returns the number imported. */
+            into the current edit as clips. Returns the number imported.
+            A take whose header still declares 0 samples (a crash before the first
+            Tracktion flush — FR-REC-8) is repaired in place first, so it is
+            restored instead of silently dropped. The full outcome is available
+            from `getLastRecordingRecovery()`. */
         int importOrphanedRecordings();
+
+        /** The report from the most recent `importOrphanedRecordings()`. */
+        RecordingRecoveryReport getLastRecordingRecovery() const { return lastRecordingRecovery; }
+
+        /** Message-thread maintenance during a record pass: finalises the header
+            of the take currently being written so it is a valid WAV at any point
+            (shrinking the ~6 s Tracktion flush window to the timer period). No
+            audio-thread work; a no-op when not recording or not a local session.
+            Safe to call directly (tests exercise it). */
+        void finaliseInProgressRecordingHeaders();
 
         //==============================================================================
         juce::String getLastError() const                       { return lastError; }
@@ -822,6 +855,12 @@ namespace rrs
         void clearInterruptionMarker();
         juce::Array<juce::File> findReferencedRecordings() const;
 
+        /** Resolves the engine track a recovered take belongs to from its file
+            name (`<session>_<track>_Take_<n>.wav`, as produced by
+            `StudioEngineBehaviour::getFileForNewAudioRecording`). Falls back to
+            track 0 when no track name matches. Returns nullptr if none exists. */
+        tracktion::AudioTrack* trackForRecoveredTake (const juce::String& fileNameWithoutExtension) const;
+
         // --- Clip-editing helpers (Epic 4) ---
         /** The clip at `clipIndex` in `track->getClips()`, or nullptr. */
         tracktion::Clip* clipAt (int trackIndex, int clipIndex) const;
@@ -887,6 +926,10 @@ namespace rrs
         int autosaveIntervalSeconds = 30;
         double lastAutosaveMs = 0.0;
 
+        /** Throttle for the in-progress recording header finaliser (runs at
+            ~1 Hz, not on every 10 Hz timer tick). */
+        double lastHeaderFinaliseMs = 0.0;
+
         /** Per-session count-in (FR-REC-10). Source of truth for the UI and for
             `record()`; mirrored onto the engine at apply time (see
             `setCountInMode`). */
@@ -938,6 +981,10 @@ namespace rrs
 
         std::vector<RecordPassClip> recordPassClips;
         bool recordPassActive = false;
+
+        /** Outcome of the last `importOrphanedRecordings()` (see the public
+            `RecordingRecoveryReport`). */
+        RecordingRecoveryReport lastRecordingRecovery;
 
         juce::String lastError;
 

@@ -53,6 +53,13 @@ namespace rrs
             editable zones are discoverable before the click. */
         juce::MouseCursor getMouseCursor() override;
 
+        /** Quit request from the window close button or Cmd+Q. Runs the same
+            unsaved-changes guard as New/Open/Close: nothing to lose quits
+            immediately, otherwise a Save/Discard/Cancel prompt is shown and the
+            app quits only on Save (after a successful write) or Discard. Re-entrant
+            calls while the prompt is open are ignored (no double prompts). */
+        void requestQuit();
+
     private:
         void changeListenerCallback (juce::ChangeBroadcaster*) override;
         void timerCallback() override;
@@ -98,12 +105,15 @@ namespace rrs
             when already visible. */
         void toggleOverlay (juce::Component& panel);
 
-        /** Shared unsaved-changes guard for New/Open/Close. Runs `onProceed`
+        /** Shared unsaved-changes guard for New/Open/Close/Quit. Runs `onProceed`
             immediately when there is nothing to lose, otherwise shows a
             Save/Discard/Cancel prompt. A failed Save keeps the session (and does
             not run `onProceed`); Discard and a successful Save proceed; Cancel
-            does nothing. */
-        void confirmUnsavedChanges (const juce::String& title, std::function<void()> onProceed);
+            does nothing. `onCancel` (optional) runs whenever the operation is
+            aborted — the Cancel button *or* a failed Save — so a caller such as
+            the quit path can release a re-entrancy guard. */
+        void confirmUnsavedChanges (const juce::String& title, std::function<void()> onProceed,
+                                    std::function<void()> onCancel = {});
 
         void loadSettings();
         void saveSettings();
@@ -264,6 +274,10 @@ namespace rrs
         bool exportInProgress = false;
         std::shared_ptr<StemsExport::Handle> stemsHandle;
         bool stemsInProgress = false;
+
+        /** True while the quit confirmation dialog is open, so a second Cmd+Q /
+            window-close event cannot stack a second prompt. */
+        bool quitConfirmPending = false;
         /** Metronome state saved when an export starts, restored when it ends so
             the click can never leak into the rendered WAV (FR-EXP-1). */
         bool exportMetronomeWasEnabled = false;

@@ -20,6 +20,7 @@
 #include "studio/PluginPresets.h"
 #include "studio/PluginSelection.h"
 #include "studio/TimeStretch.h"
+#include "studio/WavRepair.h"
 #include "ui/BrandFonts.h"
 #include "ui/ClipSnap.h"
 #include "ui/DevicePanelLayout.h"
@@ -1300,4 +1301,146 @@ TEST_CASE ("instrument-slot filter accepts instruments and rejects effects")
     CHECK_FALSE (isInstrumentPlugin (false, "Panner"));
     CHECK_FALSE (isInstrumentPlugin (false, "Mixer"));
 }
+
+//==============================================================================
+// Epic 7 (FR-REC-8): crash-safe WAV header repair.
+//
+// These exercise `rrs::wavrepair::repairTruncatedHeader` on real 24-bit WAVs:
+// the "crash before the first Tracktion flush" state is a valid header whose
+// RIFF and `data` sizes still read 0 while the sample payload is already on disk.
+namespace
+{
+    juce::File studioUnitScratchDir (const juce::String& name)
+    {
+        auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                       .getChildFile ("raw-radio-studio-unit")
+                       .getChildFile (name);
+        dir.deleteRecursively();
+        dir.createDirectory();
+        return dir;
+    }
+
+    /** Writes a valid 24-bit stereo WAV and returns its raw bytes. */
+    juce::MemoryBlock makeValidWavBytes (const juce::File& file, double sampleRate, double seconds)
+    {
+        file.deleteFile();
+
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::OutputStream> stream = std::make_unique<juce::FileOutputStream> (file);
+
+        auto writer = wav.createWriterFor (stream,
+                                           juce::AudioFormatWriterOptions{}
+                                               .withSampleRate (sampleRate)
+                                               .withNumChannels (2)
+                                               .withBitsPerSample (24));
+
+        juce::MemoryBlock bytes;
+
+        if (writer == nullptr)
+            return bytes;
+
+        const auto numSamples = (int) (sampleRate * seconds);
+        juce::AudioBuffer<float> buffer (2, numSamples);
+
+        for (int ch = 0; ch < 2; ++ch)
+            for (int i = 0; i < numSamples; ++i)
+                buffer.setSample (ch, i, 0.5f * (float) std::sin (2.0 * juce::MathConstants<double>::pi
+                                                                  * 440.0 * (double) i / sampleRate));
+
+        writer->writeFromAudioSampleBuffer (buffer, 0, numSamples);
+        writer.reset();
+
+        file.loadFileAsData (bytes);
+        return bytes;
+    }
+
+    /** Patches the RIFF + `data` chunk sizes to 0 (the mid-crash state) and
+        writes the result to `file`. */
+    bool writeZeroLengthHeaderWav (const juce::File& file, const juce::MemoryBlock& validBytes)
+    {
+        juce::MemoryBlock mb (validBytes);
+        auto* d = (unsigned char*) mb.getData();
+        const auto n = (int) mb.getSize();
+
+        for (int i = 12; i + 8 <= n; ++i)
+        {
+            if (d[i] == 'd' && d[i + 1] == 'a' && d[i + 2] == 't' && d[i + 3] == 'a')
+            {
+                d[i + 4] = d[i + 5] = d[i + 6] = d[i + 7] = 0; // data size = 0
+
+                const auto headerOnly = (juce::uint32) (i + 8) - 8; // RIFF size w/o payload
+                d[4] = (unsigned char) (headerOnly & 0xff);
+                d[5] = (unsigned char) ((headerOnly >> 8) & 0xff);
+                d[6] = (unsigned char) ((headerOnly >> 16) & 0xff);
+                d[7] = (unsigned char) ((headerOnly >> 24) & 0xff);
+
+                return file.replaceWithData (mb.getData(), mb.getSize());
+            }
+        }
+
+        return false;
+    }
+
+    juce::int64 readWavLengthInSamples (const juce::File& file)
+    {
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::AudioFormatReader> reader (
+            wav.createReaderFor (new juce::FileInputStream (file), true));
+
+        return reader != nullptr ? reader->lengthInSamples : -1;
+    }
+}
+
+TEST_CASE ("WavRepair rebuilds a zero-length header so a crashed take becomes readable")
+{
+    using namespace rrs::wavrepair;
+
+    auto dir = studioUnitScratchDir ("wavrepair");
+    const auto seed = dir.getChildFile ("seed.wav");
+    const auto bytes = makeValidWavBytes (seed, 48000.0, 0.25);
+    REQUIRE (! bytes.isEmpty());
+
+    const auto broken = dir.getChildFile ("Crash Session_Input 1_Take_1.wav");
+    REQUIRE (writeZeroLengthHeaderWav (broken, bytes));
+
+    // The crash state really is unreadable...
+    CHECK (readWavLengthInSamples (broken) == 0);
+
+    // ...until the header is rebuilt from the on-disk payload.
+    const auto result = repairTruncatedHeader (broken);
+    INFO ("repair detail: " << result.detail);
+    CHECK (result.wasRepaired());
+    CHECK (result.dataBytes > 0);
+    CHECK (result.sampleFrames > 0);
+
+    const auto repairedLen = readWavLengthInSamples (broken);
+    CHECK (repairedLen > 0);
+
+    // Re-running is idempotent: the header now matches the payload.
+    const auto again = repairTruncatedHeader (broken);
+    CHECK (again.status == wavrepair::Result::Status::consistent);
+}
+
+TEST_CASE ("WavRepair leaves a valid WAV and a non-WAV untouched")
+{
+    using namespace rrs::wavrepair;
+
+    auto dir = studioUnitScratchDir ("wavrepair-valid");
+    const auto valid = dir.getChildFile ("valid.wav");
+    REQUIRE (! makeValidWavBytes (valid, 48000.0, 0.1).isEmpty());
+
+    const auto before = valid.getSize();
+    const auto result = repairTruncatedHeader (valid);
+    CHECK (result.status == wavrepair::Result::Status::consistent);
+    CHECK_FALSE (result.wasRepaired());
+    CHECK (valid.getSize() == before);
+
+    const auto notWav = dir.getChildFile ("notes.txt");
+    notWav.replaceWithText ("this is not a wav file at all\n");
+    const auto other = repairTruncatedHeader (notWav);
+    CHECK (other.status == wavrepair::Result::Status::notRiff);
+    CHECK_FALSE (other.wasRepaired());
+    CHECK (notWav.loadFileAsString().startsWith ("this is not"));
+}
+
 

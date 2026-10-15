@@ -757,7 +757,18 @@ public:
         brandLookAndFeel.reset();
     }
 
-    void systemRequestedQuit() override { quit(); }
+    void systemRequestedQuit() override
+    {
+        // Route every quit source (Cmd+Q, the app menu, or the window's close
+        // button, which funnels through here) through the same unsaved-changes
+        // guard New/Open/Close use, so quitting can no longer silently discard
+        // unsaved work. The guard is async (a native Save/Discard/Cancel prompt),
+        // so `quit()` runs from its callback, not synchronously here.
+        if (mainWindow != nullptr)
+            mainWindow->requestQuit();
+        else
+            quit();
+    }
 
     void anotherInstanceStarted (const juce::String&) override {}
 
@@ -772,7 +783,8 @@ private:
                                     juce::DocumentWindow::allButtons)
         {
             setUsingNativeTitleBar (true);
-            setContentOwned (new rrs::MainComponent(), true);
+            content = new rrs::MainComponent();
+            setContentOwned (content, true);
             setResizable (true, false);
             // Taller minimum so the arrangement lanes AND the mixer strip both
             // fit below the device panel (Epic 2).
@@ -786,7 +798,20 @@ private:
             juce::JUCEApplication::getInstance()->systemRequestedQuit();
         }
 
+        /** Asks the content component to run its unsaved-changes guard and quit
+            (falls back to a plain quit if the content is unavailable). */
+        void requestQuit()
+        {
+            if (content != nullptr)
+                content->requestQuit();
+            else if (auto* app = juce::JUCEApplication::getInstance())
+                app->quit();
+        }
+
     private:
+        /** Owned by `setContentOwned`; used only to route a quit request. */
+        rrs::MainComponent* content = nullptr;
+
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainWindow)
     };
 

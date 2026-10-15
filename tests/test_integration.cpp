@@ -66,12 +66,79 @@ int main (int argc, char** argv)
 #include <cmath>
 #include <cstring>
 #include <memory>
+#include <new>
 #include <set>
 #include <thread>
 #include <vector>
 
 namespace te = tracktion;
 using namespace rrs;
+
+//==============================================================================
+// Epic 7 (NFR-P-5) RT-safety allocation probe.
+//
+// Global `operator new`/`delete` hooks so a test can assert the audio-callback
+// path performs no allocations. They are inert until a test "arms" the probe, so
+// the rest of the suite (and the engine's own construction/teardown) is
+// unaffected. Only the non-aligned forms are replaced; any aligned allocation
+// falls through to the default and is simply not counted — our callback path
+// never performs one.
+namespace rrs_rt_probe
+{
+    std::atomic<bool> armed { false };
+    std::atomic<long> allocations { 0 };
+}
+
+// Every *non-aligned* form of the allocation operators is routed through
+// `std::malloc`/`std::free`. This must stay complete: if a throwing form is
+// replaced but the matching *nothrow* form is left to the default
+// implementation, a buffer allocated by that default form is later released by
+// our `operator delete` (-> `std::free`), which AddressSanitizer flags as an
+// `alloc-dealloc-mismatch (operator new vs free)`. libstdc++ hits exactly this
+// through `std::stable_sort`: its `_Temporary_buffer` allocates via
+// `get_temporary_buffer` -> `::operator new(size, std::nothrow)` but frees via
+// `__return_temporary_buffer` -> `::operator delete(ptr, size)`. `stable_sort`
+// is reached from `juce::ValueTree::sort` (juce_ElementComparator.h) which
+// Tracktion calls in `TrackList::sortTracksByType` (see the ASan triage in
+// docs/EPIC7_GAPS.md). Keeping all non-aligned forms allocator-consistent means
+// the ASan gate can keep `alloc_dealloc_mismatch` enabled.
+//
+// Aligned forms (`operator new(size_t, align_val_t)` and friends) are *not*
+// replaced: JUCE/Tracktion do not over-align on this path, and leaving both the
+// aligned allocation and the aligned deallocation to the default keeps them
+// consistent with each other. Placement forms are never replaced (illegal).
+void* operator new (std::size_t size)
+{
+    if (rrs_rt_probe::armed.load (std::memory_order_relaxed))
+        rrs_rt_probe::allocations.fetch_add (1, std::memory_order_relaxed);
+
+    if (auto* p = std::malloc (size != 0 ? size : 1))
+        return p;
+
+    throw std::bad_alloc();
+}
+
+void* operator new[] (std::size_t size) { return ::operator new (size); }
+
+void* operator new (std::size_t size, const std::nothrow_t&) noexcept
+{
+    if (rrs_rt_probe::armed.load (std::memory_order_relaxed))
+        rrs_rt_probe::allocations.fetch_add (1, std::memory_order_relaxed);
+
+    return std::malloc (size != 0 ? size : 1);
+}
+
+void* operator new[] (std::size_t size, const std::nothrow_t&) noexcept
+{
+    return ::operator new (size, std::nothrow);
+}
+
+void operator delete (void* p) noexcept { std::free (p); }
+void operator delete[] (void* p) noexcept { std::free (p); }
+void operator delete (void* p, std::size_t) noexcept { std::free (p); }
+void operator delete[] (void* p, std::size_t) noexcept { std::free (p); }
+void operator delete (void* p, const std::nothrow_t&) noexcept { std::free (p); }
+void operator delete[] (void* p, const std::nothrow_t&) noexcept { std::free (p); }
 
 namespace
 {
@@ -322,6 +389,38 @@ namespace
         }
 
         return (double) crossings / 2.0 / ((double) (endSample - startSample) / sampleRate);
+    }
+
+    /** Rewrites the RIFF + `data` chunk sizes of `file` to 0, reproducing the WAV
+        a crash leaves before Tracktion's first ~6 s flush (header claims 0
+        samples although the sample payload is already on disk). */
+    bool zeroLengthWavHeader (const juce::File& file)
+    {
+        juce::MemoryBlock mb;
+
+        if (! file.loadFileAsData (mb))
+            return false;
+
+        auto* d = (unsigned char*) mb.getData();
+        const auto n = (int) mb.getSize();
+
+        for (int i = 12; i + 8 <= n; ++i)
+        {
+            if (d[i] == 'd' && d[i + 1] == 'a' && d[i + 2] == 't' && d[i + 3] == 'a')
+            {
+                d[i + 4] = d[i + 5] = d[i + 6] = d[i + 7] = 0;
+
+                const auto headerOnly = (juce::uint32) (i + 8) - 8;
+                d[4] = (unsigned char) (headerOnly & 0xff);
+                d[5] = (unsigned char) ((headerOnly >> 8) & 0xff);
+                d[6] = (unsigned char) ((headerOnly >> 16) & 0xff);
+                d[7] = (unsigned char) ((headerOnly >> 24) & 0xff);
+
+                return file.replaceWithData (mb.getData(), mb.getSize());
+            }
+        }
+
+        return false;
     }
 }
 
@@ -4777,4 +4876,221 @@ TEST_CASE ("Epic 5: switching MIDI input clears the previous device routing")
 
     session.close();
 }
+
+//==============================================================================
+// Epic 7 (FR-REC-8 / FR-PRJ-3): end-to-end crash recovery.
+//
+// Simulates a crash mid-record — the startup sentinel is left behind, an autosave
+// `.tmp_` survives, and the take captured moments before the crash has a WAV
+// header that was never flushed (declares 0 samples) although its payload is on
+// disk. Recovery must rebuild that take and import it as a usable clip.
+TEST_CASE ("crash recovery rebuilds and imports an orphaned take end-to-end")
+{
+    const auto sentinel = paths::lockFile();
+    const bool sentinelExistedBefore = sentinel.existsAsFile();
+    const auto sentinelContentBefore = sentinelExistedBefore ? sentinel.loadFileAsString() : juce::String();
+
+    auto dir = scratchDirectory ("crash-recovery-e2e");
+    const auto editFile = dir.getChildFile ("Crash Session.tracktionedit");
+
+    // A real session on disk (one default "Input 1" track).
+    {
+        AudioEngine audio (false);
+        Session session (audio);
+        REQUIRE (session.createNew (editFile));
+        REQUIRE (editFile.existsAsFile());
+    } // <- destructor cleans its own sentinel/temp; we rebuild the crash state below
+
+    // Reconstruct the artifacts a hard crash would leave behind.
+    paths::appDataDirectory().createDirectory();
+    REQUIRE (sentinel.replaceWithText ("raw-radio-studio crash sentinel\n"));
+    REQUIRE (editFile.copyFileTo (paths::tempEditFileFor (editFile)));
+
+    // The take from moments before the crash: valid audio, but a header that
+    // still declares 0 samples (no Tracktion flush yet). Named as the engine
+    // names takes (`<session>_<track>_Take_<n>.wav`); not referenced by the edit.
+    const auto recordingsDir = paths::recordingsDirectoryFor (editFile);
+    REQUIRE (recordingsDir.createDirectory());
+    const auto orphan = recordingsDir.getChildFile ("Crash Session_Input 1_Take_1.wav");
+    REQUIRE (writeSineWav (orphan, 48000.0, 0.5).existsAsFile());
+    REQUIRE (zeroLengthWavHeader (orphan));
+
+    // Detection flags the interrupted session and the recoverable take.
+    const auto info = Session::detectRecovery (editFile);
+    CHECK (info.interrupted());
+    CHECK (info.hasTempEdit);
+    CHECK (info.candidateRecordings.size() == 1);
+
+    // Restart -> apply the autosave -> reopen -> import the orphan take.
+    {
+        AudioEngine audio (false);
+        Session session (audio);
+        REQUIRE (session.applyTempEditRecovery (info));
+        REQUIRE (session.open (editFile));
+
+        const auto imported = session.importOrphanedRecordings();
+        const auto report = session.getLastRecordingRecovery();
+        INFO ("report: " << report.summary());
+        CHECK (imported == 1);
+        CHECK (report.repaired == 1);
+        CHECK (report.skippedFiles.isEmpty());
+
+        auto* track = session.getTrack (0);
+        REQUIRE (track != nullptr);
+        REQUIRE (track->getClips().size() == 1);
+
+        auto* wave = dynamic_cast<te::WaveAudioClip*> (track->getClips()[0]);
+        REQUIRE (wave != nullptr);
+        CHECK (wave->getOriginalFile() == orphan);
+        CHECK (wave->getName().startsWith ("Recovered:"));
+        CHECK (wave->getPosition().getLength().inSeconds() > 0.4);
+
+        session.close();
+    }
+
+    if (sentinelExistedBefore)
+        sentinel.replaceWithText (sentinelContentBefore);
+    else
+        sentinel.deleteFile();
+}
+
+//==============================================================================
+// Epic 7 (FR-PRJ-3): a *clean* shutdown must leave no recovery artifacts behind,
+// otherwise the next launch shows a spurious "unsaved version found" prompt for a
+// session the user deliberately closed.
+TEST_CASE ("a clean Session shutdown leaves no parasitic recovery prompt")
+{
+    const auto sentinel = paths::lockFile();
+    const bool sentinelExistedBefore = sentinel.existsAsFile();
+    const auto sentinelContentBefore = sentinelExistedBefore ? sentinel.loadFileAsString() : juce::String();
+
+    auto dir = scratchDirectory ("clean-exit");
+    const auto editFile = dir.getChildFile ("Clean Session.tracktionedit");
+
+    {
+        AudioEngine audio (false);
+        Session session (audio);
+        REQUIRE (session.createNew (editFile));
+
+        // While the session is live: sentinel present + an autosave temp version.
+        CHECK (sentinel.existsAsFile());
+
+        {
+            te::EditFileOperations ops (*session.getEdit());
+            REQUIRE (ops.saveTempVersion (true));
+        }
+
+        CHECK (paths::tempEditFileFor (editFile).existsAsFile());
+    } // <- clean shutdown (destructor)
+
+    CHECK_FALSE (paths::tempEditFileFor (editFile).existsAsFile());
+    CHECK_FALSE (sentinel.existsAsFile());
+
+    const auto info = Session::detectRecovery (editFile);
+    CHECK_FALSE (info.hasTempEdit);
+    CHECK_FALSE (info.uncleanShutdown);
+    CHECK_FALSE (info.interrupted());
+    CHECK_FALSE (info.hasRecoverables());
+
+    if (sentinelExistedBefore)
+        sentinel.replaceWithText (sentinelContentBefore);
+}
+
+//==============================================================================
+// Epic 7 (FR-REC-8): recovered takes are routed back to the track named in their
+// file name instead of all being dumped on track 0.
+TEST_CASE ("recovered takes are routed to the track named in their file name")
+{
+    const auto sentinel = paths::lockFile();
+    const bool sentinelExistedBefore = sentinel.existsAsFile();
+    const auto sentinelContentBefore = sentinelExistedBefore ? sentinel.loadFileAsString() : juce::String();
+
+    auto dir = scratchDirectory ("recovery-routing");
+    const auto editFile = dir.getChildFile ("Routing Session.tracktionedit");
+
+    {
+        AudioEngine audio (false);
+        Session session (audio);
+        REQUIRE (session.createNew (editFile));
+        REQUIRE (session.setTrackName (0, "Input 1"));
+        session.getEdit()->ensureNumberOfAudioTracks (2);
+        REQUIRE (session.setTrackName (1, "Guitar"));
+        REQUIRE (session.getNumAudioTracks() == 2);
+
+        const auto recordingsDir = paths::recordingsDirectoryFor (editFile);
+        REQUIRE (recordingsDir.createDirectory());
+
+        const auto take1 = recordingsDir.getChildFile ("Routing Session_Input 1_Take_1.wav");
+        const auto take2 = recordingsDir.getChildFile ("Routing Session_Guitar_Take_1.wav");
+        REQUIRE (writeSineWav (take1, 48000.0, 0.2, 0.5f, 220.0).existsAsFile());
+        REQUIRE (writeSineWav (take2, 48000.0, 0.2, 0.5f, 880.0).existsAsFile());
+
+        const auto imported = session.importOrphanedRecordings();
+        INFO ("report: " << session.getLastRecordingRecovery().summary());
+        CHECK (imported == 2);
+
+        auto* inputTrack = session.getTrack (0);
+        auto* guitarTrack = session.getTrack (1);
+        REQUIRE (inputTrack != nullptr);
+        REQUIRE (guitarTrack != nullptr);
+        REQUIRE (inputTrack->getClips().size() == 1);
+        REQUIRE (guitarTrack->getClips().size() == 1);
+
+        auto* inputClip = dynamic_cast<te::WaveAudioClip*> (inputTrack->getClips()[0]);
+        auto* guitarClip = dynamic_cast<te::WaveAudioClip*> (guitarTrack->getClips()[0]);
+        REQUIRE (inputClip != nullptr);
+        REQUIRE (guitarClip != nullptr);
+        CHECK (inputClip->getOriginalFile() == take1);
+        CHECK (guitarClip->getOriginalFile() == take2);
+
+        session.close();
+    }
+
+    if (sentinelExistedBefore)
+        sentinel.replaceWithText (sentinelContentBefore);
+    else
+        sentinel.deleteFile();
+}
+
+//==============================================================================
+// Epic 7 (NFR-P-5): the only audio-thread function we own must be allocation-free.
+// A global `operator new` probe counts allocations strictly inside the callback.
+TEST_CASE ("RT-safety: the input-callback level meter performs no allocations")
+{
+    AudioEngine audio (false);
+    Session session (audio);
+
+    auto dir = scratchDirectory ("rt-safety");
+    REQUIRE (session.createNew (dir.getChildFile ("RT.tracktionedit")));
+
+    static float left[512];
+    static float right[512];
+
+    for (int i = 0; i < 512; ++i)
+    {
+        left[i]  = 0.25f;
+        right[i] = -0.25f;
+    }
+
+    float* channels[2] = { left, right };
+    const auto view = choc::buffer::createChannelArrayView<float> (channels, 2, 512);
+
+    // Warm up once (any one-time lazy setup), then arm the probe.
+    session.acceptInputBuffer (view);
+
+    rrs_rt_probe::allocations.store (0, std::memory_order_relaxed);
+    rrs_rt_probe::armed.store (true, std::memory_order_relaxed);
+
+    for (int i = 0; i < 100000; ++i)
+        session.acceptInputBuffer (view);
+
+    rrs_rt_probe::armed.store (false, std::memory_order_relaxed);
+
+    INFO ("allocations on the audio-callback path: " << rrs_rt_probe::allocations.load());
+    CHECK (rrs_rt_probe::allocations.load() == 0);
+
+    // The meter really consumed the block (proves we measured the right path).
+    CHECK (session.getInputLevels().peak[0].load() > 0.2f);
+}
+
 
