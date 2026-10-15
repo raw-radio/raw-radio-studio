@@ -260,37 +260,98 @@ Key points:
   prints `Suppressions used: 3 320 FcInitLoadConfigAndFonts`. The suppression
   hides exactly that one upstream allocation and nothing else.
 
-### Blocking status — currently **non-required** (advisory)
+### Blocking status — flake fixed; **ready to be made required**
 
-The job runs on every PR/push but is intentionally **not** a required status
-check yet: the *pre-existing, non-sanitizer* flake below is still open, and a
-memory-safety gate should not gate merges while it can go red for an unrelated
-reason. A blanket retry (`ctest --repeat until-pass`) is deliberately **not**
-added — retrying an ASan gate can mask a genuinely nondeterministic memory bug
-(e.g. a race), which is exactly what the gate exists to catch. Promote `asan` to
-required (branch-protection) once the harness determinism fix lands.
+The job runs on every PR/push but has intentionally stayed **non-required**:
+it was held back by a *pre-existing, non-sanitizer* integration-test flake (see
+the next section), which is now **fixed**. A blanket retry
+(`ctest --repeat until-pass`) is still deliberately **not** added — retrying an
+ASan gate can mask a genuinely nondeterministic memory bug (e.g. a race), which
+is exactly what the gate exists to catch. With the harness determinism fix landed
+the `asan` job can be promoted to required (branch-protection).
 
-**Known pre-existing flakiness (not a sanitizer issue).** Running the *whole*
-integration suite, it intermittently fails one timing/order-sensitive case —
-`Epic 5: MIDI input records into a clip on the armed track`
-(`tests/test_integration.cpp:4446`, "MIDI clips: 0") or `count-in delays the
-start of recording…` (`tests/test_integration.cpp:3236`). Evidence that this is
-unrelated to the sanitizer work:
-- it reproduces with the probe change reverted, i.e. it long predates the
-  sanitizer/probe work;
-- the MIDI case, run in isolation (`--test-case="Epic 5: MIDI input records…"`),
-  passes repeatedly, i.e. it is an **inter-test isolation/ordering** problem in
-  the shared `te::Engine`/`DeviceManager` harness, not an inherent race and not a
-  sanitizer artefact;
-- it is order/timing dependent, not simply load dependent (it also occurred on
-  an idle host);
-- it did **not** recur in the 9 ASan runs recorded above (consistent with a low,
-  intermittent rate).
+### Integration-test flake — root-caused and fixed (was blocking releases)
 
-A follow-up should make the async MIDI device-list / recording setup
-deterministic (pump until the recording target is actually connected, not just
-until the device name is listed) and re-verify per-test isolation; then flip the
-check to required.
+The whole integration suite intermittently failed one *live-input* case:
+
+- `Epic 5: MIDI input records into a clip on the armed track` —
+  `CHECK_FALSE(session.getMidiClips(midiTrack).empty())` /
+  `CHECK(totalNotes >= 1)`, "MIDI clips: 0, notes: 0"; or
+- `count-in delays the start of recording and grows with the mode (measured)` —
+  the count-in click peak check.
+
+**It blocked release publication.** CI's `release` job has
+`needs: build` (`.github/workflows/ci.yml`), so the macOS `build` job going red
+on this flake skipped `publish GitHub Release`: `v0.1.3-alpha` only published on
+`run_attempt 3` — attempts 1 and 2 failed on the macOS runner
+(`CHECK_FALSE(…getMidiClips…)`, "MIDI clips: 0, notes: 0").
+
+**Root cause (confirmed in code).** Tracktion rebuilds its MIDI/wave device
+lists *asynchronously on the message thread*, and every rebuild tears down and
+recreates **all** `InputDeviceInstance`s of every active playback context:
+
+- `DeviceManager::handleAsyncUpdate()` → `clearAllContextDevices()` +
+  `reloadAllContextDevices()`
+  (`third_party/tracktion_engine/modules/tracktion_engine/playback/tracktion_DeviceManager.cpp:829`
+  and `:841`);
+- `DeviceManager::applyNewMidiDeviceList()` → the same pair (`…:487` and `:496`);
+- per-instance, `armMidiTrack` → `setTarget` → `handleDestinationChange` posts an
+  async `updateRecordingStatus`
+  (`…/playback/devices/tracktion_InputDevice.cpp:247`), and the Session's 10 Hz
+  `timerCallback` can itself `edit->restartPlayback()`
+  (`src/studio/Session.cpp:4765`-`4774`).
+
+The headless tests configure routing and then roll the transport within
+microseconds, so message-thread work that had not drained lands **inside** the
+take:
+
+- a device-list rebuild while a take rolls **stops the transport recording**; the
+  MIDI path *discards* the in-flight recording (`discardRecordings`,
+  `…/playback/devices/tracktion_MidiInputDevice.cpp:1102`), so no `MidiClip` is
+  ever created → "MIDI clips: 0, notes: 0". Reproduced deterministically by
+  injecting a `rescanMidiDeviceList()` mid-take (recording stopped, `clips: 0`);
+- before the wave input node is wired, the input track has no live-monitor node,
+  so a count-in pass rendered the click with **no monitored input** — the peak
+  check then compared a click-only pass against an input pass (or, when both were
+  dry, passed for the wrong reason). Measured on failing runs: the constant input
+  was absent from the whole pass (`peak 0.0`) while other passes had it
+  (`peak 0.5`).
+
+This is a *headless-harness synchronisation* bug, not a production defect: the GUI
+keeps a running message loop, so the same async work settles long before a human
+records.
+
+**Fix — test-only, no engine/app change** (`tests/test_integration.cpp`):
+
+- `waitForDeviceManagerIdle(audio)` — pumps the message thread until neither the
+  Tracktion `DeviceManager` nor the underlying `juce::AudioDeviceManager` has
+  broadcast a change for a full 10 Hz Session-timer period (150 ms), bounded by a
+  3 s deadline. Called after arming the MIDI track, before rolling.
+- The count-in helper probes the output **before** recording and waits (bounded,
+  `REQUIRE_MESSAGE`) until the constant input is genuinely audible — i.e. until
+  the live-monitor node is actually wired — so the assertion's premise holds.
+
+Nothing was weakened: no `SKIP`, no `#if !JUCE_MAC`, no relaxed assertion, no
+"bigger sleep". The count-in case is now **stricter** than before (it asserts the
+monitoring premise it always relied on).
+
+**Evidence.** Remote Linux (`il@192.168.2.105`), Release build:
+
+- **Before:** 3 failures in 9 consecutive whole-suite runs (~33 %), every one the
+  count-in peak check (`CHECK(beat.outputPeak > none.outputPeak + 0.1f)`) — far
+  above the historical ~0.9 % because the box is faster than the CI runner.
+- **After (final code):** 30/30 whole-suite runs green (`69/69` cases each),
+  0 failures; plus `count-in` 40/40 and the MIDI case 40/40, run in isolation.
+- An intermediate build (same count-in probe, MIDI drain with a 50 ms quiet
+  window) was also 40/40 whole-suite runs green — no regression across builds.
+
+**macOS confirmation still needed (CI).** The fix is platform-agnostic — it only
+waits for engine state on the message thread and touches no platform code — but
+the runner that failed is macOS and is not reachable from the build host. The
+remaining verification is: run the `CI` workflow on `main` via `workflow_dispatch`
+several times (the macOS `build` job plus the whole suite) and confirm the
+integration binary stays green; only then tag a release. This is a separate,
+CI-side action.
 
 ## Related
 

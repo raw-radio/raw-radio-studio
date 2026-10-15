@@ -422,6 +422,78 @@ namespace
 
         return false;
     }
+
+    //==========================================================================
+    // Engine-quiescence helpers for the live-input tests.
+    //
+    // Tracktion rebuilds its MIDI/wave device lists *asynchronously on the
+    // message thread*: `DeviceManager::handleAsyncUpdate()` and
+    // `DeviceManager::applyNewMidiDeviceList()` both call
+    // `clearAllContextDevices()` + `reloadAllContextDevices()`, which tear down
+    // and recreate every `InputDeviceInstance` of every active playback context
+    // (tracktion_DeviceManager.cpp:829/841 and :487/496). The headless tests
+    // configure routing and then roll the transport within microseconds, so an
+    // async rebuild that had not drained can land in the middle of a take — a
+    // device-list rebuild stops the transport recording and discards the take
+    // (measured: "MIDI clips: 0") — or before the wave input is wired into the
+    // graph, leaving the input track without its live-monitor node (measured:
+    // the count-in pass rendered the click with no monitored input).
+    //
+    // These helpers make a test wait until that message-thread work has settled
+    // (bounded, with a clear failure on timeout) instead of racing it. They only
+    // *wait for a condition*; they never lengthen a fixed sleep or weaken an
+    // assertion.
+    struct DeviceChangeCounter final : juce::ChangeListener
+    {
+        void changeListenerCallback (juce::ChangeBroadcaster*) override
+        {
+            lastChangeMs.store (juce::Time::getMillisecondCounter());
+        }
+
+        std::atomic<juce::uint32> lastChangeMs { 0 };
+    };
+
+    /** Pumps the message thread (dispatching the device manager's pending work)
+        until neither the Tracktion `DeviceManager` nor the underlying
+        `juce::AudioDeviceManager` has broadcast a change for `quietMs`, or
+        `deadlineMs` elapses. Returns false if it never went quiet.
+
+        The default `quietMs` is deliberately longer than the Session's 10 Hz
+        housekeeping timer (`Session::timerCallback`, `startTimerHz (10)`): that
+        timer can itself re-apply the input routing and call
+        `edit->restartPlayback()` (Session.cpp:4765-4774), which would also tear
+        down an in-flight take. Requiring a full timer period with no change
+        means that work has already run and stopped changing before we roll. */
+    bool waitForDeviceManagerIdle (AudioEngine& audio, int quietMs = 150, int deadlineMs = 3000)
+    {
+        DeviceChangeCounter counter;
+        auto& dm = audio.deviceManager();
+        auto& juceDm = dm.deviceManager;
+
+        dm.addChangeListener (&counter);
+        juceDm.addChangeListener (&counter);
+
+        const auto startMs = juce::Time::getMillisecondCounter();
+        counter.lastChangeMs.store (startMs);
+
+        bool quiet = false;
+
+        while (juce::Time::getMillisecondCounter() - startMs < (juce::uint32) deadlineMs)
+        {
+            dm.dispatchPendingUpdates();
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+            if (juce::Time::getMillisecondCounter() - counter.lastChangeMs.load() >= (juce::uint32) quietMs)
+            {
+                quiet = true;
+                break;
+            }
+        }
+
+        juceDm.removeChangeListener (&counter);
+        dm.removeChangeListener (&counter);
+        return quiet;
+    }
 }
 
 //==============================================================================
@@ -3198,6 +3270,34 @@ namespace
             for (int s = 0; s < input.getNumSamples(); ++s)
                 input.setSample (ch, s, 0.5f);
 
+        // Wait (bounded) until the constant input is genuinely monitored at the
+        // output before rolling. This test's whole premise is "the count-in click
+        // adds energy on top of the *constant input*": if the engine's async
+        // device-list rebuild (see waitForDeviceManagerIdle) has not wired the
+        // input track's live node yet, the pass renders the click with no input
+        // and the peak comparison silently compares two different things. The
+        // probe makes the premise hold deterministically — and, because it now
+        // asserts the input is live, it is stricter than before, not weaker.
+        auto monitoredInputIsAudible = [&]
+        {
+            for (int i = 0; i < 300; ++i)
+            {
+                const auto probe = player->process (input);
+
+                if (probe.getMagnitude (0, probe.getNumSamples()) > 0.4f)
+                    return true;
+
+                audio.deviceManager().dispatchPendingUpdates();
+                juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+            }
+
+            return false;
+        };
+
+        REQUIRE_MESSAGE (monitoredInputIsAudible(),
+                         "the hosted device's constant input never reached the output "
+                         "(live monitoring was not wired before recording)");
+
         REQUIRE (session.record());
 
         CountInPass result;
@@ -4399,6 +4499,20 @@ TEST_CASE ("Epic 5: MIDI input records into a clip on the armed track")
     REQUIRE (session.setSelectedMidiInput ("MIDI Input"));
     REQUIRE (session.armMidiTrack (midiTrack, true));
     CHECK (session.isTrackArmed (midiTrack));
+
+    // Let the message-thread work that arming and device-list setup queued drain
+    // *before* rolling. `armMidiTrack` -> `InputDeviceInstance::setTarget` ->
+    // `handleDestinationChange` posts an async `updateRecordingStatus`
+    // (tracktion_InputDevice.cpp:247); if it runs while the take is rolling it
+    // stops the transport recording and the take is discarded (the observed
+    // "MIDI clips: 0, notes: 0"). The same applies to a pending device-list
+    // rebuild (see waitForDeviceManagerIdle): it calls
+    // `clearAllContextDevices()`, which *discards* in-flight recordings
+    // (tracktion_MidiInputDevice.cpp:1102). Waiting for the engine to go quiet —
+    // and for the routing to still hold afterwards — removes the race.
+    REQUIRE_MESSAGE (waitForDeviceManagerIdle (audio),
+                     "the engine never settled before the MIDI take");
+    REQUIRE (session.isTrackArmed (midiTrack));
 
     session.setPositionSeconds (0.0);
     REQUIRE (session.record());
