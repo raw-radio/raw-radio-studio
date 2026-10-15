@@ -8,6 +8,18 @@ name: CI
 # Pinned dependencies are checked out as git submodules at exact commits
 # (non-recursive, see DEPENDENCIES.md).
 #
+# Compilation caching (ccache). The incremental win of CI comes almost entirely
+# from the pinned JUCE + Tracktion Engine translation units — the bulk of the
+# build — which never change as long as the submodule pinning does not. ccache is
+# wired in as the CMake compiler launcher (`-DCMAKE_CXX_COMPILER_LAUNCHER=...`,
+# injected on the command line so CMakeLists.txt stays untouched) and its
+# directory is persisted between runs with actions/cache. ccache is
+# content-addressed: a stale cache can only *miss*, never produce a wrong
+# object, so the key is only a best-effort fingerprint (submodule pinning +
+# CMakeLists.txt/DEPENDENCIES.md + branch) used to avoid restoring a cache that
+# is guaranteed to be useless after a dependency bump. restore-keys walk back to
+# an OS-only key so a branch still salvages another branch's cache.
+#
 # On branch/PR/dispatch runs the artifacts are uploaded with
 # actions/upload-artifact only. Pushing a `v*` tag additionally runs the
 # `release` job, which publishes the artifacts (with a sha256 `checksums.txt`)
@@ -41,6 +53,18 @@ jobs:
           - macos-latest
           - ubuntu-24.04
 
+    env:
+      # ccache configuration, shared by both matrix legs. CCACHE_DIR lives inside
+      # the workspace so actions/cache can persist it with a single path; the
+      # remaining knobs are the standard CI set — see the header comment.
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_COMPRESS: "true"
+      CCACHE_COMPRESSLEVEL: "6"
+      CCACHE_MAXSIZE: "2G"
+      CCACHE_SLOPPINESS: "time_macros,include_file_ctime,include_file_mtime"
+
     steps:
       - name: Checkout (with pinned submodules)
         uses: actions/checkout@v4
@@ -50,12 +74,32 @@ jobs:
           # ourselves as a separate top-level submodule. See DEPENDENCIES.md.
           submodules: true
 
+      - name: Fingerprint pinned dependencies
+        id: deps
+        shell: bash
+        # The commit SHAs live in the git tree (gitlinks), not in .gitmodules, so
+        # read them from `git submodule status` rather than hashing a file. This
+        # hash only decides *which* cache we try to restore — ccache itself
+        # guarantees correctness (content-addressed keys).
+        run: echo "pins=$(git submodule status | git hash-object --stdin | cut -c1-16)" >> "${GITHUB_OUTPUT}"
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ matrix.os }}-${{ steps.deps.outputs.pins }}-${{ hashFiles('CMakeLists.txt', 'DEPENDENCIES.md', '.gitmodules') }}-${{ github.ref_name }}
+          restore-keys: |
+            ccache-${{ matrix.os }}-${{ steps.deps.outputs.pins }}-${{ hashFiles('CMakeLists.txt', 'DEPENDENCIES.md', '.gitmodules') }}-
+            ccache-${{ matrix.os }}-${{ steps.deps.outputs.pins }}-
+            ccache-${{ matrix.os }}-
+
       - name: Install JUCE build dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential \
+            ccache \
             libasound2-dev \
             libfreetype6-dev \
             libfontconfig1-dev \
@@ -72,6 +116,26 @@ jobs:
             libwebkit2gtk-4.1-dev \
             dpkg-dev \
             fakeroot
+
+      - name: Install ccache (macOS)
+        if: runner.os == 'macOS'
+        # The macOS runner image ships Homebrew but not ccache, so install it
+        # (guarded: a no-op if the image ever starts bundling it). Auto-update is
+        # disabled — HOMEBREW_NO_AUTO_UPDATE keeps this to a bottle install.
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+        run: |
+          if command -v ccache >/dev/null 2>&1; then
+            echo "ccache already available: $(command -v ccache)"
+          else
+            brew install ccache
+          fi
+
+      - name: Reset ccache statistics
+        run: |
+          ccache --version | head -1
+          ccache --zero-stats
 
       - name: Show pinned dependency revisions
         run: git submodule status
@@ -97,13 +161,22 @@ jobs:
           echo "Packaging version: ${VERSION}"
 
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        run: >
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build
         # Bound parallelism: the amalgamated Tracktion Engine and JUCE translation
         # units are large and have been observed to OOM with unbounded `--parallel`
         # on resource-limited runners.
         run: cmake --build build --config Release --parallel 2
+
+      - name: Report ccache statistics
+        # Diagnostics only: never let a stats failure redden an otherwise green
+        # job (e.g. if ccache was never installed because a prior step failed).
+        if: always()
+        run: ccache --show-stats --verbose 2>/dev/null || ccache --show-stats || true
 
       - name: Smoke test (macOS)
         if: runner.os == 'macOS'
@@ -198,6 +271,17 @@ jobs:
     # ASan roughly doubles build/link time and the integration binary runs ~73 s
     # even un-instrumented; a generous ceiling avoids a premature kill.
     timeout-minutes: 60
+    env:
+      # Same ccache setup as `build`, but a separate directory/cache key: the
+      # instrumented RelWithDebInfo objects are keyed differently by ccache
+      # anyway, and an isolated dir keeps `ccache --show-stats` readable.
+      CCACHE_DIR: ${{ github.workspace }}/.ccache-asan
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_COMPRESS: "true"
+      CCACHE_COMPRESSLEVEL: "6"
+      CCACHE_MAXSIZE: "2G"
+      CCACHE_SLOPPINESS: "time_macros,include_file_ctime,include_file_mtime"
     steps:
       - name: Checkout (with pinned submodules)
         uses: actions/checkout@v4
@@ -205,11 +289,27 @@ jobs:
           # Non-recursive on purpose: see the build job / DEPENDENCIES.md.
           submodules: true
 
+      - name: Fingerprint pinned dependencies
+        id: deps
+        shell: bash
+        run: echo "pins=$(git submodule status | git hash-object --stdin | cut -c1-16)" >> "${GITHUB_OUTPUT}"
+
+      - name: Restore ccache (ASan)
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-asan-${{ steps.deps.outputs.pins }}-${{ hashFiles('CMakeLists.txt', 'DEPENDENCIES.md', '.gitmodules') }}-${{ github.ref_name }}
+          restore-keys: |
+            ccache-asan-${{ steps.deps.outputs.pins }}-${{ hashFiles('CMakeLists.txt', 'DEPENDENCIES.md', '.gitmodules') }}-
+            ccache-asan-${{ steps.deps.outputs.pins }}-
+            ccache-asan-
+
       - name: Install JUCE build dependencies (Linux)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential \
+            ccache \
             libasound2-dev \
             libfreetype6-dev \
             libfontconfig1-dev \
@@ -225,11 +325,18 @@ jobs:
             libxfixes-dev \
             libwebkit2gtk-4.1-dev
 
+      - name: Reset ccache statistics
+        run: |
+          ccache --version | head -1
+          ccache --zero-stats
+
       - name: Configure (ASan)
         run: >
           cmake -S . -B build-asan
           -DCMAKE_BUILD_TYPE=RelWithDebInfo
           -DRAW_RADIO_STUDIO_ENABLE_ASAN=ON
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build instrumented test targets
         # ASan/RelWithDebInfo TUs are large; bound parallelism to avoid OOM on
@@ -237,6 +344,10 @@ jobs:
         run: >
           cmake --build build-asan --parallel 2
           --target raw_radio_studio_tests raw_radio_studio_integration_tests
+
+      - name: Report ccache statistics (ASan)
+        if: always()
+        run: ccache --show-stats --verbose 2>/dev/null || ccache --show-stats || true
 
       - name: Run tests under ASan (CTest)
         # ctest applies the CMake-provided LSAN_OPTIONS=suppressions=… property
