@@ -246,7 +246,7 @@ Key points:
 - ASan roughly doubles build/link time and the integration binary runs ~73 s, so
   the job carries a generous `timeout-minutes`.
 
-### Evidence (reference host, `~/projects/raw-radio/build-asan`)
+### Evidence
 
 - 3× `ctest --test-dir build-asan --output-on-failure` → **100% tests passed,
   0 failed out of 2** each run (unit 29/29 cases; integration 69/69 cases).
