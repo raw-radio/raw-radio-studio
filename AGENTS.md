@@ -5,7 +5,7 @@ DAW on JUCE + Tracktion Engine (C++20). **[`README.md`](README.md) is the source
 
 ## Repo map
 
-- `docs/STUDIO_SPEC.md` — canonical spec + decisions (D1–D25); roadmap (Epics 0–7) is §9.
+- `docs/STUDIO_SPEC.md` — canonical spec + decisions (D1–D25); roadmap (Epics 0–8) is §9.
 - `docs/EPIC2..EPIC5_GAPS.md` — **living per-epic status** (what's delivered / still open).
 - `docs/USAGE.md` / `USAGE_RU.md` — UI guide in actual UI names.
 - `DEPENDENCIES.md` — pinned commits (JUCE, Tracktion Engine, Signalsmith Stretch).

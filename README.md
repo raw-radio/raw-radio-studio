@@ -135,7 +135,7 @@ multi-out interface) is verified manually.
 
 - **[`docs/STUDIO_SPEC.md`](docs/STUDIO_SPEC.md)** — the canonical specification:
   vision, requirements, architecture, licensing, build/CI/release plan, and the
-  Epic 0–7 roadmap.
+  Epic 0–8 roadmap.
 - **[`docs/USAGE.md`](docs/USAGE.md)** — task-oriented usage guide (plugins,
   presets, routing, cue mixes, editing, MIDI, stems/region export) using the
   actual UI names; **[`docs/USAGE_RU.md`](docs/USAGE_RU.md)** is the Russian
