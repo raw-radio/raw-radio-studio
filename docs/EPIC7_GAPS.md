@@ -260,15 +260,21 @@ Key points:
   prints `Suppressions used: 3 320 FcInitLoadConfigAndFonts`. The suppression
   hides exactly that one upstream allocation and nothing else.
 
-### Blocking status — flake fixed; **ready to be made required**
+### Blocking status — the ASan gate now blocks release publication
 
-The job runs on every PR/push but has intentionally stayed **non-required**:
-it was held back by a *pre-existing, non-sanitizer* integration-test flake (see
-the next section), which is now **fixed**. A blanket retry
+The job runs on every PR/push and the gate is now **required to publish a
+release**: the `release` job declares `needs: [build, asan]`
+(`.github/workflows/ci.yml`), so a `v*` tag cannot publish a GitHub Release while
+`asan` is red. This is enforced **in the workflow itself, so no branch-protection
+rule is used** (and none is needed): the dependency alone makes a red ASan gate
+block publication, with no external repo settings that could drift.
+
+The gate was previously non-required because of a *pre-existing, non-sanitizer*
+integration-test flake (see the next section); that flake is now **fixed**, which
+is what unblocked promotion to a release gate. A blanket retry
 (`ctest --repeat until-pass`) is still deliberately **not** added — retrying an
 ASan gate can mask a genuinely nondeterministic memory bug (e.g. a race), which
-is exactly what the gate exists to catch. With the harness determinism fix landed
-the `asan` job can be promoted to required (branch-protection).
+is exactly what the gate exists to catch.
 
 ### Integration-test flake — root-caused and fixed (was blocking releases)
 
@@ -280,11 +286,13 @@ The whole integration suite intermittently failed one *live-input* case:
 - `count-in delays the start of recording and grows with the mode (measured)` —
   the count-in click peak check.
 
-**It blocked release publication.** CI's `release` job has
-`needs: build` (`.github/workflows/ci.yml`), so the macOS `build` job going red
-on this flake skipped `publish GitHub Release`: `v0.1.3-alpha` only published on
-`run_attempt 3` — attempts 1 and 2 failed on the macOS runner
-(`CHECK_FALSE(…getMidiClips…)`, "MIDI clips: 0, notes: 0").
+**It blocked release publication.** CI's `release` job then had
+`needs: build` only (`.github/workflows/ci.yml`), so the macOS `build` job going
+red on this flake skipped `publish GitHub Release`: `v0.1.3-alpha` only published
+on `run_attempt 3` — attempts 1 and 2 failed on the macOS runner
+(`CHECK_FALSE(…getMidiClips…)`, "MIDI clips: 0, notes: 0"). The `release` job now
+requires both `build` and `asan` (see the blocking-status section above), so a
+flake that turns either job red can no longer slip a release out.
 
 **Root cause (confirmed in code).** Tracktion rebuilds its MIDI/wave device
 lists *asynchronously on the message thread*, and every rebuild tears down and
@@ -340,18 +348,22 @@ monitoring premise it always relied on).
 - **Before:** 3 failures in 9 consecutive whole-suite runs (~33 %), every one the
   count-in peak check (`CHECK(beat.outputPeak > none.outputPeak + 0.1f)`) — far
   above the historical ~0.9 % because the box is faster than the CI runner.
-- **After (final code):** 30/30 whole-suite runs green (`69/69` cases each),
-  0 failures; plus `count-in` 40/40 and the MIDI case 40/40, run in isolation.
+- **After (final code), Linux:** 30/30 whole-suite runs green (`69/69` cases
+  each), 0 failures; plus `count-in` 40/40 and the MIDI case 40/40, run in
+  isolation — **70 green runs on Linux in total, 0 failures.**
 - An intermediate build (same count-in probe, MIDI drain with a 50 ms quiet
   window) was also 40/40 whole-suite runs green — no regression across builds.
+- **After (final code), macOS runner (CI):** the fix is platform-agnostic (it
+  only waits for engine state on the message thread and touches no platform
+  code), and it is confirmed **on the runner that originally failed** — **4 full
+  green `macos-latest` runs, 0 failures**, alongside the Linux sample above.
 
-**macOS confirmation still needed (CI).** The fix is platform-agnostic — it only
-waits for engine state on the message thread and touches no platform code — but
-the runner that failed is macOS and is not reachable from the build host. The
-remaining verification is: run the `CI` workflow on `main` via `workflow_dispatch`
-several times (the macOS `build` job plus the whole suite) and confirm the
-integration binary stays green; only then tag a release. This is a separate,
-CI-side action.
+### macOS confirmation — done (CI)
+
+The fix was validated where it mattered: on `macos-latest` in CI (the runner
+whose redness skipped release publication). 4 full runs green, 0 failures, plus
+70 green whole-suite runs on Linux — see Evidence above. No further CI-side
+confirmation is outstanding for the flake.
 
 ## Related
 

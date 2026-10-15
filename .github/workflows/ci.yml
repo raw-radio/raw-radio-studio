@@ -248,13 +248,18 @@ jobs:
   # artifacts produced by `build`, emit a sha256 `checksums.txt`, and
   # create/update the matching GitHub Release.
   #
+  # `needs: [build, asan]` gates publication on the green ASan job: a red
+  # memory-safety gate must block a release, not just warn (Epic 7 / NFR-P-5).
+  # Wiring the dependency here — rather than via branch protection — means no
+  # tag can be published while `asan` is red, with no external repo settings.
+  #
   # The macOS .dmg is UNSIGNED — notarization/code-signing is deferred
   # (STUDIO_SPEC §8.5). The remaining Epic 6 work (Sparkle 2 appcast,
   # AppImageUpdate/zsync) is tracked in docs/EPIC6_GAPS.md.
   # --------------------------------------------------------------------------
   release:
     name: publish GitHub Release
-    needs: build
+    needs: [build, asan]
     # Never fire on PRs/branches/dispatch — only a `v*` tag deploys.
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
