@@ -2,17 +2,23 @@ name: CI
 
 # Epic 0: configure + build the JUCE + Tracktion Engine application on macOS and
 # Ubuntu, then produce UNSIGNED release artifacts (STUDIO_SPEC §8.2/§8.3):
-#   * macOS  -> raw-radio-studio-<version>-macos.dmg
+#   * macOS  -> raw-radio-studio-<version>-macos-arm64.dmg
 #   * Linux  -> raw-radio-studio-<version>-x86_64.AppImage
 #               raw-radio-studio-<version>-amd64.deb
 # Pinned dependencies are checked out as git submodules at exact commits
-# (non-recursive, see DEPENDENCIES.md). Artifacts are uploaded with
-# actions/upload-artifact — this workflow does NOT create a GitHub Release
-# (release automation is Epic 6).
+# (non-recursive, see DEPENDENCIES.md).
+#
+# On branch/PR/dispatch runs the artifacts are uploaded with
+# actions/upload-artifact only. Pushing a `v*` tag additionally runs the
+# `release` job, which publishes the artifacts (with a sha256 `checksums.txt`)
+# to a GitHub Release — the release-automation half of Epic 6 (§8.3; the
+# auto-update half, Sparkle/AppImageUpdate, is still open — see
+# docs/EPIC6_GAPS.md).
 
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -156,3 +162,164 @@ jobs:
             dist/*.deb
           if-no-files-found: error
           retention-days: 14
+
+  # --------------------------------------------------------------------------
+  # Epic 7 (NFR-P-5): AddressSanitizer gate. Linux-only — ASan is wired for
+  # GCC/Clang in CMakeLists.txt (RAW_RADIO_STUDIO_ENABLE_ASAN) and instruments
+  # *our* targets only; the pinned JUCE/Tracktion submodules are out of scope.
+  #
+  # Final sanitizer policy (full rationale in docs/EPIC7_GAPS.md):
+  #   * No ASan/LSan option is weakened. Every ASan detector — including
+  #     alloc-dealloc-mismatch and leak detection — runs at its default.
+  #   * The old `alloc_dealloc_mismatch=0` is gone. That report was a bug in our
+  #     RT-safety probe (tests/test_integration.cpp overrode the throwing
+  #     operator new/delete but left the *nothrow* forms at their default, so a
+  #     `std::stable_sort` buffer was freed by the wrong operator). It is fixed
+  #     at the source, so the detector stays enabled and nothing is masked.
+  #   * The old `detect_leaks=0` is gone — leak detection stays ON. The single
+  #     upstream one-shot leak (fontconfig -> juce::FTLibWrapper ->
+  #     rrs::brand::initialiseFonts; a constant 320 B that never grows) is
+  #     silenced by the narrow suppression tests/lsan.supp instead of disabling
+  #     LSan for the whole binary.
+  #   * That suppression is injected by CMakeLists.txt as a ctest *test
+  #     property* (LSAN_OPTIONS=suppressions=<repo>/tests/lsan.supp, wired only
+  #     when RAW_RADIO_STUDIO_ENABLE_ASAN=ON). This is why the gate runs the
+  #     suite via `ctest` rather than the raw binaries: ctest picks the
+  #     environment up automatically, so CI is byte-for-byte the documented
+  #     local command, and no ASAN_OPTIONS/LSAN_OPTIONS is set in the workflow
+  #     (setting one here would mask real defects).
+  # UBSan is deliberately NOT enabled: it trips on a pre-existing Tracktion
+  # Engine issue (tracktion_graph .../tracktion_Utility.h NaN -> long long)
+  # long before it reaches our code, so a combined gate could never pass.
+  # --------------------------------------------------------------------------
+  asan:
+    name: asan (linux)
+    runs-on: ubuntu-24.04
+    # ASan roughly doubles build/link time and the integration binary runs ~73 s
+    # even un-instrumented; a generous ceiling avoids a premature kill.
+    timeout-minutes: 60
+    steps:
+      - name: Checkout (with pinned submodules)
+        uses: actions/checkout@v4
+        with:
+          # Non-recursive on purpose: see the build job / DEPENDENCIES.md.
+          submodules: true
+
+      - name: Install JUCE build dependencies (Linux)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            libasound2-dev \
+            libfreetype6-dev \
+            libfontconfig1-dev \
+            libgl1-mesa-dev \
+            libx11-dev \
+            libx11-xcb-dev \
+            libxext-dev \
+            libxinerama-dev \
+            libxrandr-dev \
+            libxcursor-dev \
+            libxcomposite-dev \
+            libxi-dev \
+            libxfixes-dev \
+            libwebkit2gtk-4.1-dev
+
+      - name: Configure (ASan)
+        run: >
+          cmake -S . -B build-asan
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DRAW_RADIO_STUDIO_ENABLE_ASAN=ON
+
+      - name: Build instrumented test targets
+        # ASan/RelWithDebInfo TUs are large; bound parallelism to avoid OOM on
+        # standard runners (same rationale as the Release build job).
+        run: >
+          cmake --build build-asan --parallel 2
+          --target raw_radio_studio_tests raw_radio_studio_integration_tests
+
+      - name: Run tests under ASan (CTest)
+        # ctest applies the CMake-provided LSAN_OPTIONS=suppressions=… property
+        # automatically; the workflow sets no ASAN_OPTIONS/LSAN_OPTIONS itself.
+        run: ctest --test-dir build-asan --output-on-failure
+
+  # --------------------------------------------------------------------------
+  # Release automation (Epic 6, partial). On a `v*` tag push, collect the
+  # artifacts produced by `build`, emit a sha256 `checksums.txt`, and
+  # create/update the matching GitHub Release.
+  #
+  # The macOS .dmg is UNSIGNED — notarization/code-signing is deferred
+  # (STUDIO_SPEC §8.5). The remaining Epic 6 work (Sparkle 2 appcast,
+  # AppImageUpdate/zsync) is tracked in docs/EPIC6_GAPS.md.
+  # --------------------------------------------------------------------------
+  release:
+    name: publish GitHub Release
+    needs: build
+    # Never fire on PRs/branches/dispatch — only a `v*` tag deploys.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      # Required to create/update the Release. The token is provided by Actions
+      # (github.token / GITHUB_TOKEN); no PAT or extra secret is used.
+      contents: write
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          # macOS + Linux artifacts were uploaded under distinct names; flatten
+          # them into one directory (filenames are already unique per platform).
+          merge-multiple: true
+
+      - name: Generate checksums.txt (sha256)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd artifacts
+          # Checksum only the distributable binaries, not the manifest itself.
+          mapfile -t files < <(find . -maxdepth 1 -type f \
+            \( -name '*.dmg' -o -name '*.deb' -o -name '*.AppImage' \) \
+            -printf '%f\n' | sort)
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "error: no build artifacts found to checksum" >&2
+            exit 1
+          fi
+          sha256sum "${files[@]}" > checksums.txt
+          echo "---- checksums.txt ----"
+          cat checksums.txt
+
+      - name: Create or update the GitHub Release (idempotent)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # gh has no git checkout in this job — tell it which repo to target.
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd artifacts
+          mapfile -t assets < <(find . -maxdepth 1 -type f \
+            \( -name '*.dmg' -o -name '*.deb' -o -name '*.AppImage' \
+               -o -name 'checksums.txt' \) -printf '%f\n' | sort)
+
+          # Pre-release policy: `-alpha`/`-beta`/`-rc` tags are published as
+          # GitHub pre-releases (every historical `vX.Y.Z-alpha` release was a
+          # pre-release); any other tag is a normal release. Mirrors the manual
+          # behaviour this automation replaces.
+          prerelease=()
+          case "${TAG}" in
+            *-alpha*|*-beta*|*-rc*) prerelease=(--prerelease) ;;
+          esac
+
+          # Idempotency: re-running the workflow for an existing tag must not
+          # fail. Update the assets in place with `--clobber` instead.
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "release ${TAG} already exists — uploading assets (--clobber)"
+            gh release upload "${TAG}" "${assets[@]}" --clobber
+          else
+            echo "creating release ${TAG}"
+            gh release create "${TAG}" "${assets[@]}" \
+              --title "raw-radio-studio ${TAG}" \
+              --generate-notes \
+              "${prerelease[@]}"
+          fi

@@ -86,12 +86,22 @@ for size in 16 24 32 48 64 128 256 512; do
     install -m 0644 "${src_icon}" "${dest_dir}/raw-radio-studio.png"
 done
 
-# Ship the license texts (AGPLv3 + NOTICE) in the package.
+# Ship the license texts (AGPLv3 + NOTICE) in the package. NOTICE references the
+# verbatim third-party texts under LICENSES/, so those must be present too —
+# otherwise the package documents licenses that are not actually shipped.
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-[[ -f "${REPO_ROOT}/LICENSE" ]] && cp "${REPO_ROOT}/LICENSE" \
-    "${PKG}/usr/share/doc/raw-radio-studio/copyright"
-[[ -f "${REPO_ROOT}/NOTICE" ]] && cp "${REPO_ROOT}/NOTICE" \
-    "${PKG}/usr/share/doc/raw-radio-studio/NOTICE"
+DOC_DIR="${PKG}/usr/share/doc/raw-radio-studio"
+[[ -f "${REPO_ROOT}/LICENSE" ]] && cp "${REPO_ROOT}/LICENSE" "${DOC_DIR}/copyright"
+[[ -f "${REPO_ROOT}/NOTICE" ]] && cp "${REPO_ROOT}/NOTICE" "${DOC_DIR}/NOTICE"
+if [[ -d "${REPO_ROOT}/LICENSES" ]]; then
+    cp -R "${REPO_ROOT}/LICENSES" "${DOC_DIR}/LICENSES"
+else
+    echo "error: required license directory missing: ${REPO_ROOT}/LICENSES" >&2
+    exit 1
+fi
+# Install notes (Debian + AppImage + the libfuse2 caveat on Ubuntu 24.04).
+[[ -f "${SCRIPT_DIR}/INSTALL.txt" ]] && cp "${SCRIPT_DIR}/INSTALL.txt" \
+    "${DOC_DIR}/INSTALL.txt"
 
 INSTALLED_KB="$(du -sk "${PKG}/usr" | awk '{print $1}')"
 

@@ -5,7 +5,8 @@
 # Epic 0. Uses `linuxdeploy`, which deploys the executable together with its
 # non-core shared-library dependencies, generates AppRun, and produces the
 # AppImage in one step (appimagetool support is bundled in linuxdeploy, so no
-# second download is needed).
+# second download is needed). The AppDir also carries the AGPLv3 compliance set
+# (LICENSE + NOTICE + LICENSES/) under usr/share/doc/raw-radio-studio/.
 #
 # linuxdeploy is pinned to an exact release for reproducibility. It is itself an
 # AppImage; `APPIMAGE_EXTRACT_AND_RUN=1` lets it run on runners without FUSE
@@ -74,6 +75,32 @@ TOOLS="${WORK}/tools"
 APPDIR="${WORK}/raw-radio-studio.AppDir"
 mkdir -p "${TOOLS}" "${APPDIR}" "${OUTDIR}"
 OUTDIR="$(cd "${OUTDIR}" && pwd)"
+
+# AGPLv3 compliance: embed the license texts in the AppImage by staging them in
+# the AppDir. Placed under usr/share/doc/<app>/ — the FHS location for package
+# documentation, mirroring the .deb layout — so both Linux artifacts carry the
+# same AGPLv3 + NOTICE + LICENSES/ set. Staged *before* linuxdeploy runs: its
+# final appimagetool step packs the whole AppDir verbatim.
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+DOC_DIR="${APPDIR}/usr/share/doc/raw-radio-studio"
+mkdir -p "${DOC_DIR}/LICENSES"
+for f in LICENSE NOTICE; do
+    if [[ -f "${REPO_ROOT}/${f}" ]]; then
+        cp "${REPO_ROOT}/${f}" "${DOC_DIR}/${f}"
+    else
+        echo "error: required license file missing: ${REPO_ROOT}/${f}" >&2
+        exit 1
+    fi
+done
+if [[ -d "${REPO_ROOT}/LICENSES" ]]; then
+    cp -R "${REPO_ROOT}/LICENSES/." "${DOC_DIR}/LICENSES/"
+else
+    echo "error: required license directory missing: ${REPO_ROOT}/LICENSES" >&2
+    exit 1
+fi
+# Install notes (AppImage + the libfuse2 caveat on Ubuntu 24.04).
+[[ -f "${SCRIPT_DIR}/INSTALL.txt" ]] && cp "${SCRIPT_DIR}/INSTALL.txt" \
+    "${DOC_DIR}/INSTALL.txt"
 
 LINUXDEPLOY="${TOOLS}/linuxdeploy"
 curl -fsSL -o "${LINUXDEPLOY}" "${LINUXDEPLOY_URL}"

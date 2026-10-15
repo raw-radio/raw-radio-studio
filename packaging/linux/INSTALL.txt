@@ -1,0 +1,78 @@
+raw-radio-studio — Linux install notes (UNSIGNED build)
+======================================================
+
+Two portable formats are built from the same binary; pick one.
+
+  raw-radio-studio-<version>-amd64.deb        (Debian/Ubuntu package)
+  raw-radio-studio-<version>-x86_64.AppImage  (portable, no install)
+
+Neither is code-signed (Linux artifacts ship no signature; integrity is
+provided by the sha256 checksums.txt attached to the GitHub Release).
+
+A. Debian / Ubuntu package (.deb)  — recommended for Ubuntu 24.04+
+------------------------------------------------------------------
+Install (`apt install ./file.deb` resolves the runtime dependencies for you):
+
+    sudo apt install ./raw-radio-studio-<version>-amd64.deb
+
+If `apt install ./file.deb` is unavailable, use dpkg and fix up dependencies:
+
+    sudo dpkg -i raw-radio-studio-<version>-amd64.deb
+    sudo apt-get -f install
+
+Launch it from the applications menu ("raw-radio-studio") or from a terminal:
+
+    raw-radio-studio
+
+Uninstall:
+
+    sudo apt remove raw-radio-studio
+
+B. Portable AppImage (no installation)
+--------------------------------------
+Make it executable and run it:
+
+    chmod +x raw-radio-studio-<version>-x86_64.AppImage
+    ./raw-radio-studio-<version>-x86_64.AppImage
+
+Ubuntu 24.04 FUSE caveat  (IMPORTANT)
+-------------------------------------
+A type-2 AppImage mounts itself with FUSE. Ubuntu 24.04 does NOT ship FUSE 2 by
+default (the package was renamed: libfuse2 -> libfuse2t64), so a bare
+`./…AppImage` fails with a FUSE error. Two ways to fix it:
+
+Option 1 — install FUSE 2 once:
+
+    sudo apt install libfuse2t64        # Ubuntu 24.04+
+    # older releases:  sudo apt install libfuse2
+
+Option 2 — run WITHOUT FUSE (no install; slower first start): the AppImage
+runtime extracts itself to a temp dir when this variable is set:
+
+    APPIMAGE_EXTRACT_AND_RUN=1 ./raw-radio-studio-<version>-x86_64.AppImage
+    # equivalent CLI form:
+    ./raw-radio-studio-<version>-x86_64.AppImage --appimage-extract-and-run
+
+Requirements
+------------
+  * Ubuntu 24.04+ (or a compatible glibc distribution), x86_64.
+  * Audio uses ALSA `hw` directly with NO fallback: while PipeWire/PulseAudio
+    holds the device, opening it fails with EBUSY — stop/quiesce the other
+    server (or pick the correct ALSA device in the app). One audio device is
+    used at a time (single clock).
+
+License
+-------
+raw-radio-studio is free software under the GNU AGPLv3. The full licence set
+(LICENSE, NOTICE and the verbatim third-party texts in LICENSES/) ships with
+both artifacts:
+
+  * .deb:     /usr/share/doc/raw-radio-studio/   (copyright, NOTICE,
+              INSTALL.txt, LICENSES/)
+  * AppImage: usr/share/doc/raw-radio-studio/ inside the image, e.g.
+
+        ./raw-radio-studio-<version>-x86_64.AppImage \
+            --appimage-extract 'usr/share/doc/*'
+
+Source and corresponding source for each tag:
+https://github.com/raw-radio/raw-radio-studio

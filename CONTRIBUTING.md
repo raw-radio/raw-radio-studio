@@ -46,33 +46,48 @@ git rebase --signoff HEAD~N            # last N commits
 
 ## Code style
 
-> **Placeholder** — the C++ style guide will be finalized when the engine
-> integration lands (Epic 0, C++ specialist). Until then:
-
 - C++20. Prefer RAII, `const` correctness, and the standard library.
 - Match the style of the surrounding file; keep diffs minimal.
-- No allocations, locks, or I/O on the real-time audio callback.
-- No floating dependency branches — dependencies are pinned to exact commits.
-- The exact formatter/linter config (e.g. `.clang-format`) will be added and
-  enforced in CI.
+- **RT-safety:** no allocations, locks, or I/O on the real-time audio callback —
+  hand off to the message thread.
+- No floating dependency branches — dependencies are pinned to exact commits
+  (`DEPENDENCIES.md`).
+- A dedicated formatter/linter config (e.g. `.clang-format`) is not committed
+  yet; if you add one, wire it into CI in the same PR.
 
 ## Build prerequisites
 
 - **CMake ≥ 3.22**
 - A **C++20** compiler: Apple Clang / Clang / GCC
-- Git (for future pinned submodules)
+- Git, with the pinned submodules initialised (below)
 
-Configure and build:
+Dependencies (JUCE, Tracktion Engine, Signalsmith Stretch) are pinned to exact
+commits via git submodules (`DEPENDENCIES.md`). Initialise them
+**non-recursively** — Tracktion's nested `modules/juce` submodule uses an SSH URL
+and is deliberately not used:
+
+```bash
+git submodule update --init
+```
+
+Configure, build and run:
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
-./build/raw_radio_studio
+# built binary (macOS/Linux):
+build/raw_radio_studio_artefacts/Release/raw-radio-studio --version
 ```
 
-> Engine dependencies (JUCE, Tracktion Engine) are **not** part of this
-> skeleton — they are added as pinned git submodules by the C++ specialist
-> (Epic 0). Do not add floating branches.
+Run the tests:
+
+```bash
+ctest --test-dir build -C Release --output-on-failure
+```
+
+> Never float the dependency pins — the exact commits live in
+> [`DEPENDENCIES.md`](DEPENDENCIES.md). The [`README.md`](README.md) is the
+> source of truth for build/run commands and the delivered-epic overview.
 
 ## Licensing of contributions
 
