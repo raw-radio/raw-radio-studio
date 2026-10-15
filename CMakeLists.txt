@@ -49,6 +49,46 @@ find_package(Threads REQUIRED)
 option(RAW_RADIO_STUDIO_ENABLE_LV2
     "Enable LV2 plugin hosting (Epic 3, opt-in)" OFF)
 
+# Epic 7 (NFR-P-5): build our own targets with AddressSanitizer for the
+# RT-safety / QA gate. Off by default. This instruments only raw-radio-studio's
+# own sources (not the pinned JUCE/Tracktion submodules), which is enough to
+# catch memory errors on the audio-callback and handoff paths that this project
+# owns. Enable with
+#   cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+#         -DRAW_RADIO_STUDIO_ENABLE_ASAN=ON
+# ASan only on purpose: UBSan trips on a pre-existing Tracktion Engine issue
+# (`tracktion_graph/.../tracktion_Utility.h:27`, NaN -> long long) long before it
+# reaches our code, so a combined gate cannot pass. UBSan over *our* sources is a
+# separate follow-up (see docs/EPIC7_GAPS.md). CI wiring lives outside this
+# repository's build files (the CI workflow is owned by another change); build
+# and run locally for now.
+#
+# The gate keeps *all* ASan detectors (including `alloc-dealloc-mismatch` and
+# leak detection) at their defaults — nothing is weakened via ASAN_OPTIONS. The
+# single upstream one-shot leak (fontconfig, see tests/lsan.supp) is silenced
+# through a narrow LSan suppression file applied to the test environment below,
+# so LSan still fails the gate on real leaks in our code.
+option(RAW_RADIO_STUDIO_ENABLE_ASAN
+    "Build raw-radio-studio targets with AddressSanitizer (Epic 7 QA gate)" OFF)
+
+function(raw_radio_studio_apply_sanitizers target)
+    if(RAW_RADIO_STUDIO_ENABLE_ASAN)
+        if(MSVC)
+            message(WARNING
+                "RAW_RADIO_STUDIO_ENABLE_ASAN is only wired for GCC/Clang; "
+                "ignoring on MSVC for target ${target}.")
+            return()
+        endif()
+
+        target_compile_options(${target} PRIVATE
+            -fsanitize=address
+            -fno-omit-frame-pointer
+            -g)
+        target_link_options(${target} PRIVATE
+            -fsanitize=address)
+    endif()
+endfunction()
+
 # -----------------------------------------------------------------------------
 # Pinned dependencies (git submodules — exact commits recorded in DEPENDENCIES.md)
 #
@@ -166,6 +206,7 @@ target_sources(raw_radio_studio PRIVATE
     src/studio/StemsExport.cpp
     src/studio/TimeStretch.cpp
     src/studio/WavExport.cpp
+    src/studio/WavRepair.cpp
     src/ui/DevicePanel.cpp
     src/ui/InputMeter.cpp
     src/ui/MixerPanel.cpp
@@ -277,6 +318,7 @@ target_sources(raw_radio_studio_tests PRIVATE
     src/studio/LastDirectoryStore.cpp
     src/studio/PluginPresets.cpp
     src/studio/TimeStretch.cpp
+    src/studio/WavRepair.cpp
     src/ui/BrandFonts.cpp
     src/ui/IconCache.cpp)
 
@@ -327,6 +369,7 @@ target_sources(raw_radio_studio_integration_tests PRIVATE
     src/studio/StemsExport.cpp
     src/studio/TimeStretch.cpp
     src/studio/WavExport.cpp
+    src/studio/WavRepair.cpp
     # UI sources needed by the plugin-browser layout regression test (BUG 2): the
     # browser is a real component laid out at the minimum window size.
     src/ui/PluginBrowser.cpp
@@ -374,3 +417,31 @@ endif()
 juce_generate_juce_header(raw_radio_studio_integration_tests)
 
 add_test(NAME raw_radio_studio_integration_tests COMMAND raw_radio_studio_integration_tests)
+
+# --- Epic 7 (NFR-P-5) sanitizer gate ----------------------------------------
+# Independent of the CI runner: enable RAW_RADIO_STUDIO_ENABLE_ASAN (above) to
+# instrument our own targets for the RT-safety / crash-path QA pass. Tests that
+# are meaningful under ASan (the RT-safety allocation probe, the WAV-recovery
+# round trip, the plugin-host save/restore) are executed by ctest either way.
+raw_radio_studio_apply_sanitizers(raw_radio_studio)
+raw_radio_studio_apply_sanitizers(raw_radio_studio_tests)
+raw_radio_studio_apply_sanitizers(raw_radio_studio_integration_tests)
+
+# LSan suppressions for the ASan gate: applied to the test environment so `ctest`
+# runs the sanitized binaries with the one-shot fontconfig allocation silenced
+# (fontconfig never frees its process-global caches — full rationale in
+# tests/lsan.supp). Only wired when the gate is on, so a plain Release `ctest` is
+# untouched.
+#
+# Reproduce the gate with a single command:
+#   cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+#         -DRAW_RADIO_STUDIO_ENABLE_ASAN=ON \
+#   && cmake --build build-asan --parallel \
+#   && ctest --test-dir build-asan --output-on-failure
+if(RAW_RADIO_STUDIO_ENABLE_ASAN AND NOT MSVC)
+    set(RAW_RADIO_STUDIO_LSAN_SUPPRESSIONS
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/lsan.supp")
+    set_tests_properties(raw_radio_studio_tests raw_radio_studio_integration_tests
+        PROPERTIES ENVIRONMENT
+            "LSAN_OPTIONS=suppressions=${RAW_RADIO_STUDIO_LSAN_SUPPRESSIONS}")
+endif()

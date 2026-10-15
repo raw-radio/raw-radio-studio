@@ -1,0 +1,32 @@
+# LeakSanitizer suppressions for the Epic 7 (NFR-P-5) ASan gate.
+#
+# Wired into the test environment by CMakeLists.txt (`LSAN_OPTIONS=suppressions=...`)
+# only when `-DRAW_RADIO_STUDIO_ENABLE_ASAN=ON`, so the Release build is unaffected.
+#
+# Why this file exists (the *only* suppression in the gate):
+#
+#   `raw_radio_studio_tests` reports a fixed, one-shot 320-byte leak whose
+#   allocation stack is entirely inside fontconfig:
+#
+#       FcInitLoadConfigAndFonts (libfontconfig)
+#         <- juce::FTLibWrapper::FTLibWrapper()   (juce_Fonts_freetype.cpp:75)
+#           <- juce::Typeface::createSystemTypefaceFor(...)
+#             <- rrs::brand::initialiseFonts()    (src/ui/BrandFonts.cpp:59)
+#
+#   JUCE creates one FreeType library + one fontconfig config per process
+#   (the `FTTypefaceList` singleton, src/.../juce_Fonts_freetype.cpp:388) and
+#   holds them until shutdown. fontconfig keeps process-global caches for its
+#   whole lifetime and never frees them (its own `FcFini` is effectively a
+#   no-op), so this is the well-known "allocate once, never free" fontconfig
+#   behaviour — not a leak in raw-radio-studio, not attributable to our code, and
+#   it does **not** grow per call (it is a constant, independent of session
+#   length or buffer count).
+#
+# The suppression matches the allocation *path*, so LSan stays fully enabled and
+# still fails the gate on any real leak (per-call growth) in our own code. Both
+# frames below appear in every fontconfig-init leak stack; matching either is
+# enough (LSan matches a frame substring of the leak's stack trace).
+#
+# Format: https://github.com/google/sanitizers/wiki/AddressSanitizerLeakSanitizer#suppressions
+leak:FcInitLoadConfigAndFonts
+leak:juce::FTLibWrapper
