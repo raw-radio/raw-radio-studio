@@ -4,7 +4,7 @@ This directory holds the project documentation for `raw-radio-studio`.
 
 ## Specification
 
-The canonical specification is **`STUDIO_SPEC.md`** (document version 1.6.0). It
+The canonical specification is **`STUDIO_SPEC.md`** (document version 1.7.0). It
 defines the product vision, functional and non-functional requirements,
 architecture, licensing, build/CI/release plan, and the Epic 0–8 roadmap with
 acceptance criteria.
@@ -38,6 +38,11 @@ licensing/corresponding-source section).
 - [`EPIC5_GAPS.md`](EPIC5_GAPS.md) — Epic 5 items still open (real MIDI
   controller / real VST3 instrument manual verification, basic piano-roll UX,
   asynchronous MIDI device list).
+- [`EPIC6_GAPS.md`](EPIC6_GAPS.md) — Epic 6 (auto-update + packaging) still open.
+- [`EPIC7_GAPS.md`](EPIC7_GAPS.md) — Epic 7 hardening / hardware acceptance; the
+  ASan-before-release gate and the integration-suite flake.
+- [`EPIC8_GAPS.md`](EPIC8_GAPS.md) — Epic 8 (Arrangement UX) phase plan and live
+  status; **phase 1a delivered**, phases 1b/2/3/4/5 open.
 
 Build runbook, compatibility notes, and CI/release notes will be expanded as
 later epics land.

@@ -45,7 +45,6 @@ namespace rrs
         selectionLabel.setText ("No region selected", juce::dontSendNotification);
 
         addAndMakeVisible (titleLabel);
-        addAndMakeVisible (devicePanel);
         addAndMakeVisible (inputMeter);
         addAndMakeVisible (mixerPanel);
         addAndMakeVisible (timeline);
@@ -236,6 +235,43 @@ namespace rrs
                                "Saved with the session; only affects recording, not plain playback.");
         countInLabel.setTooltip ("Count-in before recording (see the combo)");
 
+        // --- Epic 8 phase 1a: sidebar, lane scrollbar, lane-height preset --------
+        // The device panel now lives inside the sidebar's «Device» section; the
+        // section re-lays out when the panel's error state changes its height.
+        devicePanel.onLayoutChanged = [this] { resized(); repaint(); };
+
+        sidebarPanel.channelsSummaryProvider = [this] { return channelsSummaryText(); };
+        sidebarPanel.statusTextProvider     = [this] { return statusText(); };
+        // Live drag frames: re-layout + repaint only. Committing to disk happens
+        // on mouse-up / on a toggle via onStateChanged (spec §1.7).
+        sidebarPanel.onLayoutChanged        = [this] { resized(); repaint(); };
+        sidebarPanel.onStateChanged         = [this] { persistUiState(); resized(); repaint(); };
+        addAndMakeVisible (sidebarPanel);
+
+        // The mixer's manual collapse (header click) re-lays out the bottom row
+        // and persists the state; the auto-hide-by-height fallback in resized()
+        // still takes priority when the window is too short.
+        mixerPanel.onCollapsedChanged = [this] { persistUiState(); resized(); repaint(); };
+
+        // Owner decision R-B: the lane-height switcher is a compact icon-dropdown
+        // at the right edge of the edit row (not inside the sidebar).
+        heightPresetButton.setIconName ("arrows-horizontal");
+        heightPresetButton.setIconOnly (true, 32);
+        heightPresetButton.setTooltip ("Track height: compact 56 / normal 72 / large 96 px");
+        heightPresetButton.onClick = [this] { showHeightPresetMenu(); };
+        addAndMakeVisible (heightPresetButton);
+
+        // One vertical scrollbar for the track lanes (replaces the old
+        // compress-to-1-px behaviour when many tracks share a short window).
+        laneScrollBar = std::make_unique<juce::ScrollBar> (true);
+        laneScrollBar->setAutoHide (false);
+        laneScrollBar->setColour (juce::ScrollBar::thumbColourId, brand::bgElevated);
+        laneScrollBar->setColour (juce::ScrollBar::trackColourId, brand::bgWindow);
+        laneScrollBar->setColour (juce::ScrollBar::backgroundColourId, brand::bgWindow);
+        laneScrollBar->addListener (this);
+        addAndMakeVisible (*laneScrollBar);
+        laneScrollBar->setVisible (false);
+
         // Shorter labels (the "Count-in: " prefix was redundant with the
         // tooltip and made the combo wider than the transport row could spare
         // at the minimum window size).
@@ -402,6 +438,9 @@ namespace rrs
     {
         stopTimer();
         session.removeChangeListener (this);
+
+        if (laneScrollBar != nullptr)
+            laneScrollBar->removeListener (this);
 
         // A render holds a raw `Edit*` on a background thread. Cancel and join it
         // before `session` (a member declared before `exportHandle`) is destroyed,
@@ -686,6 +725,13 @@ namespace rrs
 
         transportLabel.setText (state + "   " + formatTime (position),
                                 juce::dontSendNotification);
+
+        // Epic 8 phase 1a: the lane scrollbar / hit-rect cache must follow the
+        // track set (this runs on every Session change and at ~10 Hz), not just a
+        // window resize — otherwise adding/opening tracks would leave the lanes
+        // scrolled-but-unscrollable or the scrollbar hidden.
+        updateLaneScrollBar();
+        rebuildTrackLaneRects();
 
         repaint();
     }
@@ -1442,6 +1488,9 @@ namespace rrs
         settings = std::make_unique<juce::PropertiesFile> (options);
         settingsStorage = std::make_unique<SettingsStorage> (*settings);
         lastDirectories = std::make_unique<LastDirectoryStore> (*settingsStorage);
+
+        // Epic 8 phase 1a: restore the sidebar / mixer / lane-height UI state.
+        applyLoadedUiState();
     }
 
     void MainComponent::saveSettings()
@@ -1603,6 +1652,145 @@ namespace rrs
         refreshTransportUi();
     }
 
+    //==============================================================================
+    // Epic 8 phase 1a — sidebar / lane scroll / height preset state.
+    //==============================================================================
+    void MainComponent::scrollBarMoved (juce::ScrollBar*, double newRangeStart)
+    {
+        if (updatingLaneScrollBar)
+            return;
+
+        const int numTracks = session.getEdit() != nullptr ? session.getNumAudioTracks() : 0;
+        const int laneHeight = track_lane::uniformLaneHeight (trackLaneArea.getHeight(), numTracks,
+                                                              trackHeightPreset);
+        laneScrollOffsetY = track_lane::clampScrollOffset ((int) std::lround (newRangeStart),
+                                                           trackLaneArea.getHeight(), numTracks, laneHeight);
+        rebuildTrackLaneRects();
+        repaint();
+    }
+
+    void MainComponent::updateLaneScrollBar()
+    {
+        if (laneScrollBar == nullptr)
+            return;
+
+        const int numTracks = session.getEdit() != nullptr ? session.getNumAudioTracks() : 0;
+        const int laneHeight = track_lane::uniformLaneHeight (trackLaneArea.getHeight(), numTracks,
+                                                              trackHeightPreset);
+        const int maxOffset = track_lane::maxScrollOffset (trackLaneArea.getHeight(), numTracks, laneHeight);
+
+        laneScrollOffsetY = juce::jlimit (0, maxOffset, laneScrollOffsetY);
+
+        const bool scroll = maxOffset > 0;
+        laneScrollBar->setVisible (scroll);
+
+        const juce::ScopedValueSetter<bool> guard (updatingLaneScrollBar, true);
+
+        if (scroll)
+        {
+            laneScrollBar->setRangeLimits (0.0, (double) (maxOffset + juce::jmax (0, trackLaneArea.getHeight())));
+            laneScrollBar->setCurrentRange ((double) laneScrollOffsetY,
+                                            (double) juce::jmax (1, trackLaneArea.getHeight()));
+            laneScrollBar->setSingleStepSize (juce::jmax (8, laneHeight / 2));
+        }
+        else
+        {
+            laneScrollBar->setRangeLimits (0.0, 1.0);
+            laneScrollBar->setCurrentRange (0.0, 1.0);
+        }
+    }
+
+    void MainComponent::setTrackHeightPreset (int preset)
+    {
+        const int clamped = juce::jlimit (0, 2, preset);
+
+        if (clamped == trackHeightPreset)
+            return;
+
+        trackHeightPreset = clamped;
+        laneScrollOffsetY = 0;
+
+        updateLaneScrollBar();
+        rebuildTrackLaneRects();
+        persistUiState();
+        resized(); // the Channels summary text and the lane geometry both change
+        repaint();
+    }
+
+    void MainComponent::showHeightPresetMenu()
+    {
+        juce::PopupMenu menu;
+        menu.addSectionHeader ("Track height");
+        menu.addItem (1, "Compact  -  56 px", true, trackHeightPreset == 0);
+        menu.addItem (2, "Normal  -  72 px", true, trackHeightPreset == 1);
+        menu.addItem (3, "Large  -  96 px", true, trackHeightPreset == 2);
+
+        juce::Component::SafePointer<MainComponent> safe (this);
+
+        menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&heightPresetButton),
+                            [safe] (int result)
+                            {
+                                if (auto* self = safe.getComponent())
+                                    if (result >= 1 && result <= 3)
+                                        self->setTrackHeightPreset (result - 1);
+                            });
+    }
+
+    juce::String MainComponent::channelsSummaryText() const
+    {
+        const int numTracks = session.getNumAudioTracks();
+        const int laneHeight = track_lane::uniformLaneHeight (trackLaneArea.getHeight(), numTracks,
+                                                              trackHeightPreset);
+
+        // Show the *effective* lane height (what the lanes actually get), not just
+        // the preset — with the 56 px floor + scroll they can differ.
+        juce::String text;
+        text << "Lane height: " << laneHeight << " px\n"
+             << numTracks << (numTracks == 1 ? " track" : " tracks");
+
+        if (track_lane::needsScroll (trackLaneArea.getHeight(), numTracks, laneHeight))
+            text << " \u00b7 scroll";
+
+        return text;
+    }
+
+    juce::String MainComponent::statusText() const
+    {
+        juce::String text;
+        text << "Tracks: " << session.getNumAudioTracks()
+             << " \u00b7 Active inputs: " << audio.getNumActiveInputChannels() << "\n"
+             << "Buffer " << audio.getCurrentBufferSize() << " \u00b7 "
+             << juce::String ((int) audio.getCurrentSampleRate()) << " Hz\n"
+             << "Latency ~" << juce::String (audio.getEstimatedRoundTripLatencyMs(), 1) << " ms";
+        return text;
+    }
+
+    void MainComponent::persistUiState()
+    {
+        if (settings == nullptr)
+            return;
+
+        settings->setValue ("ui.sidebarWidth", sidebarPanel.getWidthValue());
+        settings->setValue ("ui.sidebarCollapsed", sidebarPanel.isCollapsed());
+        settings->setValue ("ui.sidebarSections", sidebar::encodeSections (sidebarPanel.getSections()));
+        settings->setValue ("ui.trackHeightPreset", trackHeightPreset);
+        settings->setValue ("ui.mixerCollapsed", mixerPanel.isCollapsed());
+        settings->saveIfNeeded();
+    }
+
+    void MainComponent::applyLoadedUiState()
+    {
+        if (settings == nullptr)
+            return;
+
+        sidebarPanel.setWidthValue (settings->getIntValue ("ui.sidebarWidth", sidebar::defaultWidth));
+        sidebarPanel.setCollapsed (settings->getBoolValue ("ui.sidebarCollapsed", false));
+        sidebarPanel.setSections (sidebar::decodeSections (settings->getValue ("ui.sidebarSections")));
+        trackHeightPreset = juce::jlimit (0, 2, settings->getIntValue ("ui.trackHeightPreset", 1));
+        mixerPanel.setCollapsed (settings->getBoolValue ("ui.mixerCollapsed", false));
+    }
+
+    //==============================================================================
     void MainComponent::timerCallback()
     {
         // One clock for the ruler and the lanes (Epic 4 playhead fix). The ruler
@@ -1615,6 +1803,9 @@ namespace rrs
         {
             uiRefreshTicks = 0;
             refreshTransportUi(); // repaints the lanes as a side effect
+            // The sidebar Status section reads live device values (rate/buffer/
+            // latency), so refresh its own paint at the same ~10 Hz cadence.
+            sidebarPanel.repaint();
         }
         else
         {
@@ -1652,6 +1843,13 @@ namespace rrs
             g.setColour (brand::bgPanel);
             g.fillRoundedRectangle (trackLaneArea.toFloat(), 8.0f);
 
+            // Epic 8 phase 1a: with vertical scrolling, a lane (or a clip that
+            // spills past a scrolled lane) must never be drawn over the ruler
+            // above or the mixer below — clip every lane/clip draw to the
+            // arrangement area.
+            g.saveState();
+            g.reduceClipRegion (trackLaneArea);
+
             auto lanes = trackLaneArea.reduced (8, 6);
 
             if (auto* edit = session.getEdit())
@@ -1665,10 +1863,10 @@ namespace rrs
                     g.drawText ("No session loaded", lanes, juce::Justification::centred);
                 }
 
-                // Lane rects were computed in rebuildTrackLaneRects(); each one is
-                // clickable (arm/disarm its track) in mouseDown().
-                rebuildTrackLaneRects();
-
+                // Lane rects are kept up to date by rebuildTrackLaneRects() on
+                // every path that can change the geometry (resized, session
+                // change / refreshTransportUi, wheel, scrollbar, preset change) —
+                // NOT here, so paint() does no per-frame allocation.
                 int index = 0;
 
                 for (auto* track : tracks)
@@ -1853,6 +2051,8 @@ namespace rrs
                 g.fillRect (juce::Rectangle<float> (x - 1.0f, (float) trackLaneArea.getY() + 2.0f,
                                                     2.0f, (float) trackLaneArea.getHeight() - 4.0f));
             }
+
+            g.restoreState();
         }
     }
 
@@ -1861,18 +2061,36 @@ namespace rrs
         // Spacing scale: 4 / 8 / 12 / 16 / 24 / 32.
         auto area = getLocalBounds().reduced (12);
 
+        // Title spans the full window width.
         titleLabel.setBounds (area.removeFromTop (26));
         area.removeFromTop (4);
 
-        devicePanel.setBounds (area.removeFromTop (devicePanelHeight));
-        area.removeFromTop (8);
+        // The status line and the action row are bottom-anchored full-width, so
+        // the sidebar column (Epic 8 phase 1a) can run down to the action row.
+        auto outer = area;
+        statusLabel.setBounds (outer.removeFromBottom (22));
+        outer.removeFromBottom (4);
+
+        const auto actionHeight = layoutActionRow (outer);
+        outer.removeFromBottom (actionHeight);
+        outer.removeFromBottom (8);
+
+        // Left sidebar column + right work column. Cap the sidebar so the fixed
+        // transport row (icons + count-in/MIDI + timecode) is never clipped at the
+        // minimum window width (owner R: effectiveMax = f(window width)).
+        auto mainRow = outer;
+        sidebarPanel.setMaxWidthForWindow (sidebar::effectiveMaxWidth (getWidth()));
+        sidebarPanel.setBounds (mainRow.removeFromLeft (sidebarPanel.getTotalWidth()));
+        mainRow.removeFromLeft (8);
+
+        auto right = mainRow;
 
         // Transport row: icon-only squares (>= 32x32) with consistent 8 px gaps.
         // Record is 40x40 to keep its emphasis; the rest are 36x36, vertically
         // centred in the 40 px row. The Click button is icon-only (metronome),
         // followed by a "Count-in" caption + compact combo, so the row never
         // overflows at the minimum window size.
-        auto transportRow = area.removeFromTop (40);
+        auto transportRow = right.removeFromTop (40);
 
         auto placeTransport = [&transportRow] (BrandButton& b, int size)
         {
@@ -1909,13 +2127,13 @@ namespace rrs
         // (the fixed controls above already fit at the 1100 px minimum window).
         transportLabel.setBounds (transportRow.withWidth (juce::jmax (0, transportRow.getWidth())));
 
-        area.removeFromTop (8);
+        right.removeFromTop (8);
 
         // Epic 4: arrangement edit row (Undo/Redo + clip operations). Icon-only
         // 32x32 squares with the same 4 px grouping as before; `iconOnly` makes
         // `getPreferredWidth()` return the square size, so the old text-width
         // clamp (jmax ..., 68) is gone.
-        auto editRow = area.removeFromTop (32);
+        auto editRow = right.removeFromTop (32);
 
         for (auto* b : { &undoButton, &redoButton, &splitClipButton, &deleteClipButton,
                          &duplicateClipButton, &loopClipButton, &crossfadeButton,
@@ -1925,24 +2143,24 @@ namespace rrs
             editRow.removeFromLeft (4);
         }
 
-        area.removeFromTop (8);
+        // Epic 8 phase 1a (owner R-B): compact lane-height dropdown at the right
+        // edge of the edit row.
+        heightPresetButton.setBounds (editRow.removeFromRight (32).withSizeKeepingCentre (32, 32));
 
-        // Bottom-anchored: status line, then the action row (which may wrap to a
-        // second line when the window is narrow — layoutActionRow reports the
-        // height it consumed).
-        auto bottom = area;
-        statusLabel.setBounds (bottom.removeFromBottom (22));
-        bottom.removeFromBottom (4);
+        right.removeFromTop (8);
 
-        const auto actionHeight = layoutActionRow (bottom);
-        bottom.removeFromBottom (actionHeight);
-        bottom.removeFromBottom (8);
+        auto bottom = right;
 
-        // Mixer strip below the arrangement lanes.
+        // Mixer strip below the arrangement lanes. The auto-hide-by-window-height
+        // behaviour is kept as a fallback (priority); otherwise the manual
+        // collapse shows only the 22 px header strip (Epic 8 phase 1a).
+        const int mixerHeight = mixerPanel.isCollapsed() ? MixerPanel::headerHeight
+                                                         : MixerPanel::preferredHeight;
+
         if (bottom.getHeight() > MixerPanel::preferredHeight + 80)
         {
             mixerPanel.setVisible (true);
-            mixerPanel.setBounds (bottom.removeFromBottom (MixerPanel::preferredHeight));
+            mixerPanel.setBounds (bottom.removeFromBottom (mixerHeight));
             bottom.removeFromBottom (8);
         }
         else
@@ -1974,6 +2192,12 @@ namespace rrs
         inputMeter.setBounds (middle.removeFromRight (180).reduced (2));
         middle.removeFromRight (6);
 
+        // Lane scrollbar gutter on the right edge of the lanes, left of the meter
+        // (Epic 8 phase 1a). It is hidden unless the lane stack overflows. The
+        // ruler and the lanes share the reduced width so their x<->time map
+        // still lines up.
+        auto scrollGutter = middle.removeFromRight (8);
+
         // Ruler directly above the arrangement lanes, same width as the lanes so
         // a click on the ruler and the lane playhead line share one x<->time map.
         timeline.setBounds (middle.removeFromTop (Timeline::preferredHeight));
@@ -1985,6 +2209,13 @@ namespace rrs
         middle.removeFromTop (2);
         trackLaneArea = middle;
 
+        // The scrollbar sits in the gutter beside the lanes (not beside the ruler).
+        if (laneScrollBar != nullptr)
+            laneScrollBar->setBounds (scrollGutter.withY (trackLaneArea.getY())
+                                                  .withHeight (trackLaneArea.getHeight())
+                                                  .reduced (0, 2));
+
+        updateLaneScrollBar();
         rebuildTrackLaneRects();
     }
 
@@ -1998,7 +2229,10 @@ namespace rrs
         // One *uniform* height for every lane (owner bug fix): the input track and
         // every imported "minus" lane used to differ, which made the shorter
         // clips' fades/trim handles hard to hit. See ui/TrackLaneLayout.h.
-        trackLaneRects = track_lane::computeLaneRects (trackLaneArea, session.getNumAudioTracks());
+        // Epic 8 phase 1a: the lane height preset and the vertical scroll offset
+        // are baked in here, so paint() and every hit-test share one mapping.
+        trackLaneRects = track_lane::computeLaneRects (trackLaneArea, session.getNumAudioTracks(),
+                                                       laneScrollOffsetY, trackHeightPreset);
     }
 
     juce::Rectangle<int> MainComponent::clipRectFor (int trackIndex, const Session::ClipInfo& info) const
@@ -2082,6 +2316,12 @@ namespace rrs
             return juce::MouseCursor::NormalCursor;
 
         const auto position = getMouseXYRelative();
+
+        // With vertical scrolling a lane rect can extend past the arrangement
+        // area (into the selection-label strip / before the mixer); only a point
+        // actually inside `trackLaneArea` may match a lane.
+        if (! trackLaneArea.contains (position))
+            return juce::MouseCursor::NormalCursor;
 
         for (size_t i = 0; i < trackLaneRects.size(); ++i)
         {
@@ -2240,12 +2480,63 @@ namespace rrs
         return length * (double) snapThresholdPx / (double) span;
     }
 
+    void MainComponent::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel)
+    {
+        // Epic 8 phase 1a: the wheel scrolls the track lanes vertically. The
+        // ruler / header never scroll (only the pointer over `trackLaneArea`
+        // scrolls); other locations fall through so child components (mixer,
+        // scrollbar, sidebar) keep their own handling.
+        if (laneScrollBar != nullptr && laneScrollBar->isVisible()
+            && trackLaneArea.contains (e.getPosition()))
+        {
+            const int numTracks = session.getNumAudioTracks();
+            const int laneHeight = track_lane::uniformLaneHeight (trackLaneArea.getHeight(), numTracks,
+                                                                  trackHeightPreset);
+            const int step = juce::jmax (1, (int) std::round ((double) laneHeight * 2.0));
+
+            int delta = (int) std::round (-wheel.deltaY * (float) step);
+
+            // `deltaY != 0` would flag -Wfloat-equal; use strict ordering instead.
+            if (delta == 0 && (wheel.deltaY > 0.0f || wheel.deltaY < 0.0f))
+                delta = wheel.deltaY > 0.0f ? -step : step;
+
+            if (delta != 0)
+            {
+                laneScrollOffsetY = track_lane::clampScrollOffset (laneScrollOffsetY + delta,
+                                                                   trackLaneArea.getHeight(),
+                                                                   numTracks, laneHeight);
+
+                {
+                    const juce::ScopedValueSetter<bool> guard (updatingLaneScrollBar, true);
+                    laneScrollBar->setCurrentRange ((double) laneScrollOffsetY,
+                                                    (double) juce::jmax (1, trackLaneArea.getHeight()));
+                }
+
+                rebuildTrackLaneRects();
+                repaint();
+            }
+
+            return;
+        }
+
+        juce::Component::mouseWheelMove (e, wheel);
+    }
+
     void MainComponent::mouseDown (const juce::MouseEvent& e)
     {
         if (exportInProgress)
             return;
 
         grabKeyboardFocus();
+
+        // A scrolled lane rect can stick out past `trackLaneArea` (gaps by the
+        // selection label / above the mixer); only clicks inside the arrangement
+        // area may hit a lane. Outside it, drop the clip selection as before.
+        if (! trackLaneArea.contains (e.getPosition()))
+        {
+            selectClip (-1, -1);
+            return;
+        }
 
         for (size_t i = 0; i < trackLaneRects.size(); ++i)
         {
@@ -2460,6 +2751,13 @@ namespace rrs
         if (code == juce::KeyPress::deleteKey || code == juce::KeyPress::backspaceKey)
         {
             deleteSelectedClip();
+            return true;
+        }
+
+        // Epic 8 phase 1a: backslash toggles the left sidebar (Reaper-style).
+        if (code == '\\' && ! mods.isCommandDown())
+        {
+            sidebarPanel.toggleCollapsed();
             return true;
         }
 

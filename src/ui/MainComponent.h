@@ -27,6 +27,7 @@
 #include "ui/PianoRollPanel.h"
 #include "ui/PluginBrowser.h"
 #include "ui/RoutingPanel.h"
+#include "ui/SidebarPanel.h"
 #include "ui/Timeline.h"
 
 #include <vector>
@@ -35,6 +36,7 @@ namespace rrs
 {
     class MainComponent final : public juce::Component,
                                 private juce::ChangeListener,
+                                private juce::ScrollBar::Listener,
                                 private juce::Timer
     {
     public:
@@ -46,6 +48,7 @@ namespace rrs
         void mouseDown (const juce::MouseEvent&) override;
         void mouseDrag (const juce::MouseEvent&) override;
         void mouseUp (const juce::MouseEvent&) override;
+        void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
         bool keyPressed (const juce::KeyPress&) override;
 
         /** Hover cursor feedback over the arrangement: resize cursors on a clip's
@@ -62,6 +65,7 @@ namespace rrs
 
     private:
         void changeListenerCallback (juce::ChangeBroadcaster*) override;
+        void scrollBarMoved (juce::ScrollBar*, double newRangeStart) override;
         void timerCallback() override;
 
         void buildTransportUi();
@@ -117,6 +121,25 @@ namespace rrs
 
         void loadSettings();
         void saveSettings();
+
+        /** Reads the persisted arrangement-UX UI state from the settings file and
+            applies it to the sidebar, the mixer and the lane-height preset
+            (Epic 8 phase 1a). */
+        void applyLoadedUiState();
+        /** Writes the current sidebar/mixer/preset UI state to the settings file. */
+        void persistUiState();
+
+        /** Clamps/hides the lane scrollbar to the current content and viewport. */
+        void updateLaneScrollBar();
+        /** Sets the global lane-height preset (0 compact / 1 normal / 2 large),
+            resets the scroll, re-lays the lanes and persists the choice. */
+        void setTrackHeightPreset (int preset);
+        /** Opens the compact lane-height dropdown from the edit row (owner R-B). */
+        void showHeightPresetMenu();
+        /** Summary line for the sidebar «Channels» section. */
+        juce::String channelsSummaryText() const;
+        /** Multi-line body for the sidebar «Status» section. */
+        juce::String statusText() const;
 
         void runStartupRecovery();
         void onSessionOpened();
@@ -191,6 +214,11 @@ namespace rrs
                                 [this] { return audio.getNumActiveInputChannels(); } };
         MixerPanel mixerPanel { session };
 
+        /** Epic 8 phase 1a: the device panel moves from a full-width top region
+            into a left collapsible sidebar with Device / Channels / Status
+            accordion sections. Owns (and lays out) the DevicePanel. */
+        SidebarPanel sidebarPanel { devicePanel };
+
         /** Epic 3: plugin hosting + routing/cue-mix overlays. */
         PluginHost pluginHost { audio.engine() };
         PluginBrowser pluginBrowser { pluginHost, session };
@@ -224,6 +252,10 @@ namespace rrs
         BrandButton splitClipButton { "Split" }, deleteClipButton { "Delete" };
         BrandButton duplicateClipButton { "Duplicate" }, loopClipButton { "Loop" };
         BrandButton crossfadeButton { "Crossfade" }, stretchClipButton { "Stretch" };
+
+        /** Epic 8 phase 1a (owner R-B): compact lane-height switcher at the right
+            edge of the edit row — an icon-only button opening a 56/72/96 dropdown. */
+        BrandButton heightPresetButton { "Track height", BrandButton::Style::Secondary };
 
         BrandButton armButton { "Arm", BrandButton::Style::Chip };
         BrandButton recordButton { "Record", BrandButton::Style::Record };
@@ -300,8 +332,20 @@ namespace rrs
         juce::Rectangle<int> trackLaneArea;
 
         /** Lane rectangles in `trackLaneArea`, engine-track order (FR-REC-2:
-            click a lane to arm/disarm it). */
+            click a lane to arm/disarm it). Computed with `laneScrollOffsetY` and
+            `trackHeightPreset` so paint() and every hit-test share one mapping. */
         std::vector<juce::Rectangle<int>> trackLaneRects;
+
+        /** Epic 8 phase 1a — vertical lane scrolling. `scrollOffsetY` shifts the
+            lane stack up (see ui/TrackLaneLayout.h); a single ScrollBar on the
+            right edge of the arrangement drives it. */
+        std::unique_ptr<juce::ScrollBar> laneScrollBar;
+        int laneScrollOffsetY = 0;
+        /** Re-entrancy guard while updateLaneScrollBar() moves the scrollbar. */
+        bool updatingLaneScrollBar = false;
+
+        /** Global lane-height preset: 0 compact (56) / 1 normal (72) / 2 large (96). */
+        int trackHeightPreset = 1;
 
         //--- Epic 4 clip-edit selection + drag state ---
         int selectedTrackIndex = -1;

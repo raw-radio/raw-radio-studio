@@ -27,6 +27,11 @@ namespace rrs
         /** Fixed panel height so MainComponent can reserve the space. */
         static constexpr int preferredHeight = 220;
 
+        /** Height of the always-visible mixer header. Collapsed manually, the
+            mixer keeps this 22 px strip so it is never more than one click away
+            (Epic 8 phase 1a — distinct from the auto-hide-by-height fallback). */
+        static constexpr int headerHeight = 22;
+
         explicit MixerPanel (Session&);
         ~MixerPanel() override;
 
@@ -37,6 +42,17 @@ namespace rrs
         void mouseDrag (const juce::MouseEvent&) override;
         void mouseUp (const juce::MouseEvent&) override;
         void mouseDoubleClick (const juce::MouseEvent&) override;
+
+        /** True while the mixer is manually collapsed to its header strip. */
+        bool isCollapsed() const noexcept { return collapsed; }
+
+        /** Manual collapse/expand; repaints and notifies onCollapsedChanged so the
+            host can re-layout (22 px header vs. the full 220 px panel) and persist
+            the state. */
+        void setCollapsed (bool shouldBeCollapsed);
+
+        /** Fired when the mixer is collapsed/expanded from the UI (header click). */
+        std::function<void()> onCollapsedChanged;
 
     private:
         void changeListenerCallback (juce::ChangeBroadcaster*) override;
@@ -73,6 +89,10 @@ namespace rrs
                         float pan, bool muted, bool soloed, bool armed);
         void drawMeter (juce::Graphics&, juce::Rectangle<int>, const MeterVisual&);
 
+        /** The full-width header strip at the top of the panel (always the same
+            rectangle whether collapsed or expanded; clicking it toggles). */
+        juce::Rectangle<int> headerBounds() const;
+
         /** Opens the per-track input-assignment popup (channel + layout, FR-REC-3). */
         void showInputMenu (int trackIndex);
 
@@ -97,6 +117,9 @@ namespace rrs
 
         /** Timestamp of the previous meter update, for dt-based ballistics. */
         double lastMeterMs = 0.0;
+
+        /** Manually collapsed to the header strip (Epic 8 phase 1a). */
+        bool collapsed = false;
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MixerPanel)
     };

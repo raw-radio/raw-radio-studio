@@ -218,6 +218,7 @@ target_sources(raw_radio_studio PRIVATE
     src/ui/BrandLookAndFeel.cpp
     src/ui/BrandFonts.cpp
     src/ui/IconCache.cpp
+    src/ui/SidebarPanel.cpp
     src/ui/MainComponent.cpp)
 
 # macOS app icon: the raster `.icns` generated from assets/brand/app-icon.svg by

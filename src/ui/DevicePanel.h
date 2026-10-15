@@ -30,13 +30,25 @@ namespace rrs
         /** Called after the active device changes so the session can re-bind inputs. */
         std::function<void()> onDeviceChanged;
 
+        /** The height this panel wants right now: the full
+            `devicePanelHeight` while an error is shown, the compact height
+            otherwise (Epic 8 phase 1a — no space is reserved for an empty error
+            label). The sidebar reads this to size the Device section. */
+        int getPreferredHeight() const;
+
+        /** Fired when the error state toggles empty <-> non-empty, so the host
+            (the sidebar) can re-layout to give the message room (or reclaim it).
+            Deliberately NOT fired on every status/error text change. */
+        std::function<void()> onLayoutChanged;
+
     private:
         void refreshAll();
         void refreshDevices();
         void refreshRatesAndBuffers();
         void applySelection();
         void updateStatus();
-        void showError (const juce::String&);
+        void setError (const juce::String&);
+        bool hasError() const;
         void changeListenerCallback (juce::ChangeBroadcaster*) override;
 
         AudioEngine& audio;

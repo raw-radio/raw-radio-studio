@@ -1,7 +1,9 @@
 # Epic 8 — open gaps (explicit)
 
-> Status: **Epic 8 is NOT started.** This file records the owner-agreed, phase-ordered plan for
-> the arrangement/UX rework and what is still open in each phase, so the epic is not silently
+> Status: **Epic 8 in progress — phase 1a delivered.** Phase 1a (device panel → left collapsible
+> sidebar; manual mixer collapse; lane-height floor 56 px + vertical scroll + 56/72/96 preset) is
+> implemented on `main`; phases **1b / 2 / 3 / 4 / 5 are not started**. This file records the
+> owner-agreed, phase-ordered plan and what is still open in each phase, so the epic is not silently
 > marked done as it is implemented. It is not a substitute for the epic definition in
 > [`STUDIO_SPEC.md`](STUDIO_SPEC.md) §9 (Epic 8 — Arrangement UX).
 >
@@ -77,31 +79,46 @@ this file is the record of what was agreed.
 
 ## Phase 1a — device panel → left collapsible sidebar; lane height + scroll
 
-**Not started.**
+**Delivered** (Epic 8 phase 1a — `src/ui/SidebarPanel.{h,cpp}`, `src/ui/SidebarLayout.h`,
+`src/ui/TrackLaneLayout.h`, `src/ui/MixerPanel.{h,cpp}`, `src/ui/MainComponent.{h,cpp}`,
+`src/ui/DevicePanelLayout.h`).
 
-**What to do.** Move the device panel from its dedicated top region into a **left sidebar column**
-holding **accordion sections: Device / Channels / Status**; make the column width resizable and
-**remember the collapse state** across runs. Add a **manual mixer-collapse** button (the existing
-**auto-hide-the-mixer-by-window-height** behaviour stays as a fallback). Give the track lanes a
-**minimum height of 56 px** with **vertical scrolling** instead of the current compression to
-1–3 px, and a global **lane-height preset** (compact **56** / normal **72** / large **96**).
+**What was done.** The device panel moved from its dedicated top region into a **left collapsible
+sidebar column** holding **accordion sections: Device / Channels / Status**; the column width is
+resizable (default 320 / min 240 / max 420, rail 44) and its **collapse state + width + open sections
+are remembered** across runs (`ui.sidebar*` in the existing `juce::PropertiesFile`). A **manual
+mixer collapse** was added (header 22 px; the existing **auto-hide-the-mixer-by-window-height**
+behaviour is retained as the fallback/priority). The device panel now reclaims the empty
+`errorLabel` space when there is no error (320 → 224 px). Track lanes have a **minimum height of
+56 px** with **vertical scrolling** (offset + one `ScrollBar` + `mouseWheelMove`; no `Viewport`) and
+a global **lane-height preset** (compact **56** / normal **72** / large **96**, switcher at the right
+edge of the edit row per **R-B**).
 
-**Integration points.**
+**Open / deferred (1a):**
 
-- Layout is a single **linear** `MainComponent::resized()`
-  (`src/ui/MainComponent.cpp:1859-1989`) — no sidebar column exists today.
-- Device panel geometry/height: `src/ui/DevicePanelLayout.h:20` (`devicePanelHeight = 320`); inside
-  the panel **~96 px is reserved for an empty `errorLabel`** even when there is no error
-  (`src/ui/DevicePanelLayout.h:80-85`) — a candidate to reclaim when re-homing the panel.
-- Mixer height: `src/ui/MixerPanel.h:28` (`preferredHeight = 220`) + the auto-hide-by-height logic
-  in `resized()`.
-- Lane geometry: `src/ui/TrackLaneLayout.h` — `uniformLaneHeight` (`:47-54`, clamps to
-  `jlimit(1, preferredHeight, …)` — the 1–3 px squeeze), `computeLaneRects` (`:58-75`), constants
-  `preferredHeight = 72` (`:36`), `vMargin = 6` (`:42`), `hMargin = 8` (`:39`).
-- There is **no `Viewport`/scroll container** anywhere in `src/ui/` today — the lane area must be
-  wrapped for vertical scrolling.
+- **Sidebar content scroll** (UX spec §3.3, wheel over the sidebar) is **not** implemented: the
+  three sections fit inside the minimum 820 px window, so it was not needed for 1a.
+- **Transport-row relayout / wrapping** is **not** done (deliberately — a separate task for **1b/4**).
+  To avoid clipping the fixed ~700 px transport row at the 1100 px minimum window, the sidebar width
+  is now capped by `sidebar::effectiveMaxWidth(windowWidth)` (= 360 px at 1100, instead of 420).
+- The **device-panel compact path** (224 px with no error) is covered by a unit test only — the
+  capture environment always surfaces an ALSA "no hardware device" error, so the 320 px path is what
+  is exercised live.
 
-**Estimate:** **M.**
+**Integration points (as implemented).**
+
+- Layout is no longer a single linear `MainComponent::resized()`: it is title (full width) →
+  status + action rows (full width, bottom-anchored) → `mainRow` = sidebar + right work column.
+- Device panel geometry/height: `src/ui/DevicePanelLayout.h` — `devicePanelHeight = 320` with an
+  error, `devicePanelHeightCompact = 224` without (`devicePanelHeightFor`); the error label only gets
+  space while an error exists.
+- Mixer height: `MixerPanel::preferredHeight = 220`, `headerHeight = 22` (manual collapse).
+- Lane geometry: `src/ui/TrackLaneLayout.h` — `uniformLaneHeight` floors at `minHeight = 56`,
+  `computeLaneRects(area, numTracks, scrollOffsetY, preset)`, plus the pure scroll helpers
+  (`maxScrollOffset`, `clampScrollOffset`, `visibleLaneRange`, `laneIndexAtY`).
+- Still **no `Viewport`** in `src/ui/`: scrolling is a `scrollOffsetY` baked into the lane rects.
+
+**Estimate:** **M** (as planned).
 
 **UX spec:** `docs/EPIC8_UX_SPEC.md` (sidebar + presets design).
 

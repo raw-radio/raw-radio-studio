@@ -29,6 +29,7 @@
 #include "ui/MeterBallistics.h"
 #include "ui/MixerLayout.h"
 #include "ui/TrackLaneLayout.h"
+#include "ui/SidebarLayout.h"
 
 #include <vector>
 
@@ -468,7 +469,7 @@ TEST_CASE ("input mapping resolves arbitrary channel counts and layouts")
 TEST_CASE ("a simulated busy-device error is representable and visible")
 {
     // Simulate the exact error the ALSA open path surfaces when PipeWire holds the
-    // device; this is what DevicePanel::showError puts in the error label.
+    // device; this is what DevicePanel::setError puts in the error label.
     const auto info = classifyDeviceError ("ALSA: cannot open device: Device or resource busy (EBUSY)");
 
     CHECK (info.isBusy);
@@ -1199,24 +1200,30 @@ TEST_CASE ("track lanes share one uniform height with clips filling them")
         CHECK (rects[1].getHeight() == rects[2].getHeight());
     }
 
-    // A cramped arrangement still yields identical lanes (all fit, all equal).
+    // A cramped arrangement no longer compresses lanes below the floor (Epic 8
+    // phase 1a): every lane keeps the 56 px minimum and the stack overflows, so
+    // the arrangement scrolls instead of squeezing lanes to 1–3 px.
     {
         const auto rects = computeLaneRects ({ 0, 0, 900, 120 }, 4);
         REQUIRE (rects.size() == 4);
 
         for (const auto& r : rects)
-            CHECK (r.getHeight() == rects[0].getHeight());
+            CHECK (r.getHeight() == minHeight);
 
-        CHECK (rects.back().getBottom() <= 120);
+        const auto laneHeight = uniformLaneHeight (120, 4);
+        CHECK (laneHeight == minHeight);
+        CHECK (needsScroll (120, 4, laneHeight));
+        CHECK (laneStackHeight (4, laneHeight) > 120);
     }
 
     // Degenerate inputs are handled without producing lanes.
     CHECK (computeLaneRects ({ 0, 0, 900, 300 }, 0).empty());
     CHECK (computeLaneRects ({ 0, 0, 0, 0 }, 3).empty());
 
-    // The shared height is capped at the preferred DAW default.
+    // The shared height is capped at the preferred DAW default and floored at the
+    // scroll minimum (never the old 1 px squeeze).
     CHECK (uniformLaneHeight (10000, 1) == preferredHeight);
-    CHECK (uniformLaneHeight (0, 3) == 1);
+    CHECK (uniformLaneHeight (0, 3) == minHeight);
 
     // The clip fills its lane (uniform `clipInset` all round) and the name row is
     // an overlay INSIDE the clip band, not a reserved strip that would squeeze a
@@ -1232,6 +1239,229 @@ TEST_CASE ("track lanes share one uniform height with clips filling them")
         CHECK (nameRow.getY() >= clipBand.getY());
         CHECK (nameRow.getBottom() <= clipBand.getBottom());
     }
+}
+
+//==============================================================================
+// Epic 8 phase 1a: lane-height presets (56/72/96, floor 56) and the vertical
+// scroll model (offset clamp + the y->lane mapping that paint()/hit-tests share).
+TEST_CASE ("lane-height presets and vertical scroll geometry (Epic 8 phase 1a)")
+{
+    using namespace rrs::track_lane;
+
+    // Presets: compact 56 / normal 72 / large 96. Compact is 56, NOT 40 (R-A).
+    CHECK (presetHeight (0) == 56);
+    CHECK (presetHeight (1) == 72);
+    CHECK (presetHeight (2) == 96);
+    CHECK (presetCompact == minHeight);
+    CHECK (isValidPreset (0));
+    CHECK (isValidPreset (2));
+    CHECK_FALSE (isValidPreset (3));
+    CHECK_FALSE (isValidPreset (-1));
+
+    // A non-normal preset overrides the auto height even in a short area.
+    CHECK (uniformLaneHeight (200, 8, 2) == presetLarge);
+    CHECK (uniformLaneHeight (200, 8, 0) == presetCompact);
+
+    // Roomy -> full 72; many tracks in a short window -> the 56 floor, then scroll.
+    CHECK (uniformLaneHeight (600, 3) == preferredHeight);
+    CHECK (uniformLaneHeight (120, 8) == minHeight);
+
+    // Content height + scroll clamping: 0 when it fits, else content - viewport.
+    {
+        const int laneH = uniformLaneHeight (300, 8);
+        const int content = laneStackHeight (8, laneH);
+
+        CHECK (laneH == minHeight);
+        CHECK (content == 2 * vMargin + 8 * laneH);
+        CHECK (maxScrollOffset (300, 8, laneH) == content - 300);
+        CHECK (clampScrollOffset (-5, 300, 8, laneH) == 0);
+        CHECK (clampScrollOffset (100000, 300, 8, laneH) == content - 300);
+        CHECK_FALSE (needsScroll (10000, 8, preferredHeight));
+        CHECK (needsScroll (300, 8, laneH));
+    }
+
+    // computeLaneRects applies the scroll offset; laneIndexAtY is its exact
+    // inverse for every drawn lane, at any offset (this is what keeps the drawn
+    // clip and its click hit-test in agreement).
+    {
+        const juce::Rectangle<int> area { 0, 0, 900, 300 };
+        const int laneH = uniformLaneHeight (area.getHeight(), 8);
+        const int maxOff = maxScrollOffset (area.getHeight(), 8, laneH);
+
+        REQUIRE (laneH == minHeight);
+        REQUIRE (maxOff > 0);
+
+        for (const int offset : { 0, maxOff / 2, maxOff })
+        {
+            const auto rects = computeLaneRects (area, 8, offset);
+            REQUIRE (rects.size() == 8);
+
+            for (int i = 0; i < 8; ++i)
+            {
+                CHECK (rects[(size_t) i].getHeight() == laneH);
+                const int yInArea = rects[(size_t) i].getCentreY() - area.getY();
+                CHECK (laneIndexAtY (yInArea, 8, laneH, offset) == i);
+            }
+        }
+
+        // The scrolled stack moves up by the offset.
+        const auto atTop = computeLaneRects (area, 8, 0);
+        const auto scrolled = computeLaneRects (area, 8, 40);
+        CHECK (scrolled[0].getY() == atTop[0].getY() - 40);
+    }
+
+    // Visible range: from the top the first lane is visible; mid-scroll a later
+    // lane becomes the first visible and the earlier lanes drop out.
+    {
+        const auto top = visibleLaneRange (300, 8, minHeight, 0);
+        CHECK (top.first == 0);
+        CHECK (top.second > 0);
+
+        const auto mid = visibleLaneRange (300, 8, minHeight, 240);
+        CHECK (mid.first > 0);
+        CHECK (mid.second > mid.first);
+    }
+
+    // Degenerate inputs never crash.
+    CHECK (computeLaneRects ({ 0, 0, 900, 300 }, 8, -10).size() == 8);
+    CHECK (visibleLaneRange (0, 8, minHeight, 0).first == 0);
+    CHECK (visibleLaneRange (0, 8, minHeight, 0).second == 0);
+    CHECK (laneIndexAtY (0, 0, minHeight, 0) == -1);
+}
+
+//==============================================================================
+// Epic 8 phase 1a: sidebar width clamps, section bitmask round-trip and the
+// window-width-dependent effective maximum (so the transport row is never
+// clipped at the 1100 px minimum window).
+TEST_CASE ("sidebar geometry and section-state codec (Epic 8 phase 1a)")
+{
+    using namespace rrs::sidebar;
+
+    // Width clamp.
+    CHECK (clampWidth (-100) == minWidth);
+    CHECK (clampWidth (9999) == maxWidth);
+    CHECK (clampWidth (300) == 300);
+
+    // Effective maximum is a function of the window width: at the 1100 px minimum
+    // the sidebar may only take 360 px (not 420) so the 700 px transport row and
+    // its timecode stay fully visible.
+    CHECK (effectiveMaxWidth (1100) == 360);
+    CHECK (effectiveMaxWidth (10000) == maxWidth);
+    CHECK (effectiveMaxWidth (400) == minWidth); // never below the minimum
+
+    // The per-window clamp also respects an explicit effective max.
+    CHECK (clampWidth (420, 360) == 360);
+    CHECK (clampWidth (200, 360) == minWidth);
+    CHECK (clampWidth (300, 360) == 300);
+
+    // encode/decode round-trip.
+    for (const bool d : { true, false })
+        for (const bool c : { true, false })
+            for (const bool s : { true, false })
+            {
+                Sections in { d, c, s };
+                const auto decoded = decodeSections (encodeSections (in));
+                CHECK (decoded.device == d);
+                CHECK (decoded.channels == c);
+                CHECK (decoded.status == s);
+            }
+
+    // Defaults: Device + Channels open, Status collapsed.
+    const auto def = Sections {};
+    CHECK (def.device);
+    CHECK (def.channels);
+    CHECK_FALSE (def.status);
+
+    // Malformed / short input falls back to the defaults.
+    const auto empty = decodeSections ("");
+    CHECK (empty.device);
+    CHECK (empty.channels);
+    CHECK_FALSE (empty.status);
+    const auto shortIn = decodeSections ("XY"); // only 2 chars
+    CHECK (shortIn.device);
+    CHECK (shortIn.channels);
+    CHECK_FALSE (shortIn.status);
+    const auto junk = decodeSections ("DCcXY"); // extra chars: first 3 used
+    CHECK (junk.device);
+    CHECK (junk.channels);
+    CHECK_FALSE (junk.status);
+}
+
+//==============================================================================
+// Epic 8 phase 1a: the y -> lane inverse and the scroll bounds at their edges.
+TEST_CASE ("laneIndexAtY and scroll bounds at the edges (Epic 8 phase 1a)")
+{
+    using namespace rrs::track_lane;
+
+    const int numTracks = 4;
+    const int laneH = minHeight; // 56
+    const int offset = 0;
+
+    // Just above the first lane's top (inside the vMargin band) -> -1.
+    CHECK (laneIndexAtY (vMargin - 1, numTracks, laneH, offset) == -1);
+    // The first lane's top pixel.
+    CHECK (laneIndexAtY (vMargin, numTracks, laneH, offset) == 0);
+    // Last pixel of lane 0.
+    CHECK (laneIndexAtY (vMargin + laneH - 1, numTracks, laneH, offset) == 0);
+    // First pixel of lane 1.
+    CHECK (laneIndexAtY (vMargin + laneH, numTracks, laneH, offset) == 1);
+    // Below the last lane -> -1.
+    CHECK (laneIndexAtY (vMargin + numTracks * laneH, numTracks, laneH, offset) == -1);
+
+    // With an offset the whole stack shifts up; a y above the (shifted) top
+    // (y < vMargin - offset) is outside.
+    CHECK (laneIndexAtY (vMargin - 21, numTracks, laneH, 20) == -1); // -15 +20 -6 = -1
+    CHECK (laneIndexAtY (vMargin + 20, numTracks, laneH, 20) == 0);
+    CHECK (laneIndexAtY (vMargin + 20 + laneH, numTracks, laneH, 20) == 1);
+
+    // maxScrollOffset boundaries: at exactly maxOffset the clamp is unchanged;
+    // one past it clamps back to maxOffset.
+    const int content = laneStackHeight (numTracks, laneH);
+    const int areaHeight = content - 30; // guarantees a positive overflow
+    const int maxOff = maxScrollOffset (areaHeight, numTracks, laneH);
+    CHECK (maxOff == 30);
+    CHECK (clampScrollOffset (maxOff, areaHeight, numTracks, laneH) == maxOff);
+    CHECK (clampScrollOffset (maxOff + 1, areaHeight, numTracks, laneH) == maxOff);
+
+    // computeLaneRects at the boundaries of the track count.
+    const juce::Rectangle<int> area { 0, 0, 900, 600 };
+
+    {
+        const auto one = computeLaneRects (area, 1);
+        REQUIRE (one.size() == 1);
+        CHECK (one[0].getHeight() == preferredHeight);
+        CHECK (one[0].getWidth() == area.getWidth() - 2 * hMargin);
+    }
+
+    {
+        const auto many = computeLaneRects ({ 0, 0, 900, 300 }, 16);
+        REQUIRE (many.size() == 16);
+        for (const auto& r : many)
+            CHECK (r.getHeight() == minHeight);
+        CHECK (needsScroll (300, 16, minHeight));
+    }
+}
+
+//==============================================================================
+// Epic 8 phase 1a: the device panel only reserves space for an error while one
+// is shown (the empty ~96 px error label is reclaimed in the sidebar).
+TEST_CASE ("device panel reclaims the empty error space (Epic 8 phase 1a)")
+{
+    CHECK (devicePanelHeightFor (false) < devicePanelHeightFor (true));
+
+    // At the compact height the status label is still laid out (not collapsed).
+    const auto compact = computeDevicePanelLayout ({ 0, 0, 900, devicePanelHeightCompact }, false);
+    CHECK (compact.statusLabel.getHeight() > 0);
+
+    const auto noError = computeDevicePanelLayout ({ 0, 0, 900, devicePanelHeightCompact }, false);
+    CHECK (noError.statusLabel.getHeight() > 0);
+    CHECK (noError.errorLabel.isEmpty());
+    CHECK (noError.inputBox.getBottom() <= noError.statusLabel.getY());
+
+    // With an error the full panel keeps a multi-line error label.
+    const auto withError = computeDevicePanelLayout ({ 0, 0, 900, devicePanelHeight }, true);
+    CHECK (withError.errorLabel.getHeight() >= 80);
+    CHECK (withError.errorLabel.getY() >= withError.statusLabel.getBottom());
 }
 
 //==============================================================================

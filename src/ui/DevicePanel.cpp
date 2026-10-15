@@ -190,25 +190,39 @@ namespace rrs
         }
 
         if (audio.getLastError().isNotEmpty())
-            showError (audio.getLastError());
+            setError (audio.getLastError());
         else
-            errorLabel.setText ({}, juce::dontSendNotification);
+            setError ({});
     }
 
-    void DevicePanel::showError (const juce::String& message)
+    int DevicePanel::getPreferredHeight() const
     {
+        return devicePanelHeightFor (hasError());
+    }
+
+    bool DevicePanel::hasError() const
+    {
+        return errorLabel.getText().isNotEmpty();
+    }
+
+    void DevicePanel::setError (const juce::String& message)
+    {
+        const bool wasError = hasError();
         errorLabel.setText (message, juce::dontSendNotification);
+
+        if (wasError != hasError() && onLayoutChanged != nullptr)
+            onLayoutChanged();
     }
 
     void DevicePanel::applySelection()
     {
-        errorLabel.setText ({}, juce::dontSendNotification);
+        setError ({});
 
         if (typeBox.getText() != audio.getCurrentDeviceTypeName())
         {
             if (auto error = audio.setDeviceType (typeBox.getText()); error.isNotEmpty())
             {
-                showError (error);
+                setError (error);
                 return;
             }
 
@@ -220,7 +234,7 @@ namespace rrs
 
         if (inputName.isEmpty() && outputName.isEmpty())
         {
-            showError ("Select an input or output device first.");
+            setError ("Select an input or output device first.");
             return;
         }
 
@@ -233,7 +247,7 @@ namespace rrs
             if (auto error = audio.applyDeviceSetup (inputName, outputName, sampleRate, bufferSize);
                 error.isNotEmpty())
             {
-                showError (error);
+                setError (error);
 
                 // The failed selection did not take effect: reflect the device
                 // that is still open (an input-only mic keeps the output, and a
@@ -275,7 +289,7 @@ namespace rrs
 
     void DevicePanel::resized()
     {
-        const auto layout = computeDevicePanelLayout (getLocalBounds());
+        const auto layout = computeDevicePanelLayout (getLocalBounds(), hasError());
 
         typeLabel.setBounds (layout.typeLabel);
         typeBox.setBounds (layout.typeBox);

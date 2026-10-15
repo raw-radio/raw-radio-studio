@@ -18,6 +18,33 @@ namespace rrs
         // meters.
         constexpr float meterFloorDb = MeterBallistics::meterFloorDb;
         constexpr float meterCeilDb  = MeterBallistics::meterCeilDb;
+
+        /** Small chevron for the mixer header collapse toggle. `pointingUp` is
+            drawn when the mixer is collapsed (click to expand); the down chevron
+            when it is expanded (click to collapse). */
+        void drawHeaderChevron (juce::Graphics& g, juce::Rectangle<int> area, bool pointingUp,
+                                juce::Colour colour)
+        {
+            auto r = area.toFloat().reduced (5.0f, 6.0f);
+            juce::Path p;
+
+            if (pointingUp)
+            {
+                p.startNewSubPath (r.getX(), r.getBottom());
+                p.lineTo (r.getCentreX(), r.getY());
+                p.lineTo (r.getRight(), r.getBottom());
+            }
+            else
+            {
+                p.startNewSubPath (r.getX(), r.getY());
+                p.lineTo (r.getCentreX(), r.getBottom());
+                p.lineTo (r.getRight(), r.getY());
+            }
+
+            g.setColour (colour);
+            g.strokePath (p, juce::PathStrokeType (1.6f, juce::PathStrokeType::curved,
+                                                   juce::PathStrokeType::rounded));
+        }
     }
 
     MixerPanel::MixerPanel (Session& sessionRef)
@@ -42,6 +69,16 @@ namespace rrs
 
         const int numTracks = session.getNumAudioTracks();
 
+        // Collapsed to the header: no strips to lay out (paint() draws the header
+        // only). Keep stripCount in step so the meter timer does not rebuild on
+        // every tick.
+        if (collapsed)
+        {
+            meters.clear();
+            stripCount = numTracks;
+            return;
+        }
+
         if (numTracks <= 0 && session.getEdit() == nullptr)
         {
             stripCount = 0;
@@ -50,7 +87,7 @@ namespace rrs
         }
 
         auto area = getLocalBounds().reduced (10);
-        area.removeFromTop (16); // title
+        area.removeFromTop (headerHeight); // header strip (Epic 8 phase 1a)
 
         const int totalStrips = numTracks + 1; // + master
         const int gap = 6;
@@ -197,21 +234,65 @@ namespace rrs
     }
 
     //==============================================================================
+    juce::Rectangle<int> MixerPanel::headerBounds() const
+    {
+        return getLocalBounds().removeFromTop (headerHeight);
+    }
+
+    void MixerPanel::setCollapsed (bool shouldBeCollapsed)
+    {
+        if (collapsed == shouldBeCollapsed)
+            return;
+
+        collapsed = shouldBeCollapsed;
+        rebuildStrips();
+        repaint();
+    }
+
+    //==============================================================================
     void MixerPanel::paint (juce::Graphics& g)
     {
+        auto full = getLocalBounds();
         g.setColour (brand::bgPanel);
-        g.fillRoundedRectangle (getLocalBounds().toFloat(), 8.0f);
+        g.fillRoundedRectangle (full.toFloat(), 8.0f);
 
-        auto title = getLocalBounds().reduced (12).removeFromTop (16);
-        g.setColour (brand::textSecondary);
+        // Header strip: always visible, the whole strip is the collapse toggle.
+        // Round the top corners to follow the panel contour, then square off the
+        // bottom edge so it meets the body flush (a plain fillRect left square
+        // top corners over the rounded panel — low-6).
+        auto header = full.removeFromTop (headerHeight);
+        g.setColour (brand::bgTertiary);
+        g.fillRoundedRectangle (header.toFloat(), 8.0f);
+        g.fillRect (header.withTop (header.getBottom() - 8).toFloat());
+
+        const int numTracks = session.getNumAudioTracks();
+        const bool hasChannels = numTracks > 0;
+
+        juce::String title = "Mixer";
+
+        if (hasChannels)
+            title << " \u00b7 " << numTracks << (numTracks == 1 ? " channel" : " channels");
+        else
+            title << " \u00b7 no channels";
+
+        auto titleArea = header.reduced (12, 0);
+        auto toggleArea = titleArea.removeFromRight (18);
+
+        g.setColour (hasChannels ? brand::textSecondary : brand::textDisabled);
         g.setFont (brand::uiMedium (12.0f));
-        g.drawText ("Mixer", title, juce::Justification::centredLeft);
+        g.drawText (title, titleArea, juce::Justification::centredLeft);
+
+        drawHeaderChevron (g, toggleArea, collapsed,
+                           hasChannels ? brand::textSecondary : brand::textDisabled);
+
+        if (collapsed)
+            return;
 
         if (strips.empty())
         {
             g.setColour (brand::textTertiary);
             g.setFont (brand::uiRegular (12.0f));
-            g.drawText ("No tracks", getLocalBounds().reduced (12), juce::Justification::centred);
+            g.drawText ("No tracks", full.reduced (12), juce::Justification::centred);
             return;
         }
 
@@ -418,6 +499,24 @@ namespace rrs
     {
         dragTarget = DragTarget::None;
         dragIndex = -1;
+
+        // Header strip: the whole strip toggles the manual collapse. Disabled when
+        // there are no channels to show (spec: "Mixer · no channels").
+        if (headerBounds().contains (e.getPosition()))
+        {
+            if (session.getNumAudioTracks() > 0)
+            {
+                setCollapsed (! collapsed);
+
+                if (onCollapsedChanged != nullptr)
+                    onCollapsedChanged();
+            }
+
+            return;
+        }
+
+        if (collapsed)
+            return;
 
         for (size_t i = 0; i < strips.size(); ++i)
         {
