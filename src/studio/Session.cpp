@@ -1550,6 +1550,11 @@ namespace rrs
             info.fadeOutSeconds = audioClip->getFadeOut().inSeconds();
         }
 
+        // Epic 8 phase 2: expose the source file so the UI can draw a waveform
+        // (the live recording file during takes, the original file otherwise).
+        if (auto* wave = dynamic_cast<te::WaveAudioClip*> (&clip))
+            info.sourceFile = wave->getOriginalFile();
+
         return true;
     }
 
@@ -1564,6 +1569,25 @@ namespace rrs
         info.trackIndex = trackIndex;
         info.clipIndex = clipIndex;
         return fillClipInfo (*clip, info);
+    }
+
+    juce::File Session::getActiveRecordingFileForTrack (int trackIndex) const
+    {
+        if (edit == nullptr)
+            return {};
+
+        auto* track = getTrack (trackIndex);
+
+        if (track == nullptr)
+            return {};
+
+        // The input device instance knows which target (track itemID) is
+        // recording and the exact file it is writing to (Epic 8 phase 2).
+        for (auto* instance : edit->getAllInputDevices())
+            if (instance != nullptr && instance->isRecording (track->itemID))
+                return instance->getRecordingFile (track->itemID);
+
+        return {};
     }
 
     bool Session::moveClip (int trackIndex, int clipIndex, double newStartSeconds)

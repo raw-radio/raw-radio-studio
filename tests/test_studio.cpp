@@ -23,6 +23,7 @@
 #include "studio/WavRepair.h"
 #include "ui/BrandFonts.h"
 #include "ui/ClipSnap.h"
+#include "ui/ClipWaveform.h"
 #include "ui/DevicePanelLayout.h"
 #include "ui/FaderTaper.h"
 #include "ui/IconCache.h"
@@ -1465,6 +1466,84 @@ TEST_CASE ("sidebar collapse handle geometry (Epic 8 follow-up)")
     CHECK (rail.getRight() <= railWidth);
     CHECK (rail.getY() == railIconPadding);           // at the TOP of the rail
     CHECK (rail.getBottom() <= railWidth);            // top area, far from the bottom
+}
+
+//==============================================================================
+// Epic 8 phase 2: clip-waveform binning math (px -> time, offset/loop mapping).
+TEST_CASE ("clip waveform binning (Epic 8 phase 2)")
+{
+    using namespace rrs::clipwave;
+
+    // 2 px per bin; the last (partial) bin still counts.
+    CHECK (binCount (0) == 0);
+    CHECK (binCount (1) == 1);
+    CHECK (binCount (2) == 1);
+    CHECK (binCount (3) == 2);
+    CHECK (binCount (100) == 50);
+
+    // Bin edges tile the clip's [start, end] range linearly and monotonically.
+    const double start = 10.0, end = 14.0;
+    const int bins = binCount (8); // 4
+    CHECK (bins == 4);
+    CHECK (binStartSeconds (start, end, 0, bins) == doctest::Approx (10.0));
+    CHECK (binEndSeconds (start, end, 0, bins) == doctest::Approx (11.0));
+    CHECK (binStartSeconds (start, end, 3, bins) == doctest::Approx (13.0));
+    CHECK (binEndSeconds (start, end, 3, bins) == doctest::Approx (14.0));
+
+    for (int i = 1; i < bins; ++i)
+        CHECK (binStartSeconds (start, end, i, bins) ==
+               doctest::Approx (binEndSeconds (start, end, i - 1, bins)));
+
+    // Peak from min/max and the silence threshold (~ -60 dBFS).
+    CHECK (peakFromMinMax (-0.7f, 0.5f) == doctest::Approx (0.7f));
+    CHECK (isSilent (0.0f));
+    CHECK (isSilent (0.0005f));
+    CHECK_FALSE (isSilent (0.5f));
+
+    // Source-time mapping: linear with the clip's offset (no loop).
+    CHECK (sourceTimeForBin (10.0, 10.0, 2.0, 100.0, false) == doctest::Approx (2.0));
+    CHECK (sourceTimeForBin (10.0, 13.0, 2.0, 100.0, false) == doctest::Approx (5.0));
+    // Clamped to the file length.
+    CHECK (sourceTimeForBin (0.0, 1000.0, 0.0, 5.0, false) == doctest::Approx (5.0));
+
+    // Looped clip: wrap per iteration (iteration = fileLength - offset).
+    // offset 0, fileLength 4 -> iteration 4.
+    CHECK (sourceTimeForBin (0.0, 5.0, 0.0, 4.0, true) == doctest::Approx (1.0));
+    CHECK (sourceTimeForBin (0.0, 4.0, 0.0, 4.0, true) == doctest::Approx (0.0));
+    CHECK (sourceTimeForBin (0.0, 9.0, 0.0, 4.0, true) == doctest::Approx (1.0));
+
+    // Loop with an offset: iteration = fileLength - offset = 4 from offset 2.
+    CHECK (sourceTimeForBin (0.0, 6.0, 2.0, 6.0, true) == doctest::Approx (4.0));
+    CHECK (sourceTimeForBin (0.0, 1.0, 2.0, 6.0, true) == doctest::Approx (3.0));
+
+    // Degenerate: offset past the file length, negative timeline, zero length.
+    CHECK (sourceTimeForBin (0.0, 0.0, 10.0, 5.0, false) == doctest::Approx (5.0)); // clamped
+    CHECK (sourceTimeForBin (0.0, -3.0, 0.0, 10.0, false) == doctest::Approx (0.0)); // clamped >= 0
+    CHECK (sourceTimeForBin (0.0, 3.0, 0.0, 0.0, false) == doctest::Approx (3.0));   // unknown length: linear
+
+    // Clipping / silence via min/max (a scalar isSilent alone is not enough).
+    CHECK (peakFromMinMax (-1.0f, -1.0f) == doctest::Approx (1.0f));
+    CHECK (peakFromMinMax (0.0f, 0.0f) == doctest::Approx (0.0f));
+    CHECK (isSilent (peakFromMinMax (0.0f, 0.0f)));
+    CHECK_FALSE (isSilent (peakFromMinMax (-1.0f, 1.0f)));
+}
+
+//==============================================================================
+// Epic 8 phase 2: clip-level live-take detection (a pre-existing clip on an
+// armed track must NOT be treated as the take being recorded).
+TEST_CASE ("clip live-take detection (Epic 8 phase 2)")
+{
+    using namespace rrs::clipwave;
+
+    const juce::File a { juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("a.wav") };
+    const juce::File b { juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("b.wav") };
+
+    CHECK (isLiveTake (true, true, a, a));       // recording, wave, file matches
+    CHECK_FALSE (isLiveTake (true, true, a, b)); // a different clip on the same track
+    CHECK_FALSE (isLiveTake (false, true, a, a)); // not recording
+    CHECK_FALSE (isLiveTake (true, false, a, a)); // MIDI / non-wave
+    CHECK_FALSE (isLiveTake (true, true, a, juce::File())); // no active recording
+    CHECK_FALSE (isLiveTake (true, true, juce::File(), a)); // clip has no file
 }
 
 //==============================================================================

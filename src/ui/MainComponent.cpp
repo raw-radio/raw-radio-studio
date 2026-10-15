@@ -1631,6 +1631,12 @@ namespace rrs
         // Remove track can never target a track index from the previous edit.
         selectClip (-1, -1);
 
+        // Epic 8 phase 2: build the clip-thumbnail cache for the new session's
+        // clips now (off the paint path).
+        liveRecordingThumbnail = nullptr;
+        liveRecordingFile = juce::File();
+        preloadClipThumbnails();
+
         titleLabel.setText ("raw-radio-studio   -   " + session.getSessionName(),
                             juce::dontSendNotification);
 
@@ -1652,6 +1658,17 @@ namespace rrs
     //==============================================================================
     void MainComponent::changeListenerCallback (juce::ChangeBroadcaster*)
     {
+        // The track/clip set changed (Epic 8 phase 2): forget the live take when
+        // recording stopped, create the thumbnails we need OFF the paint path, and
+        // drop the stale ones.
+        if (! session.isRecording())
+        {
+            liveRecordingThumbnail = nullptr;
+            liveRecordingFile = juce::File();
+        }
+
+        preloadClipThumbnails();
+        pruneClipThumbnails();
         refreshTransportUi();
     }
 
@@ -1939,84 +1956,117 @@ namespace rrs
                     // gutter, so it never covers the controls.
                     nameArea = nameArea.withTrimmedLeft (track_lane::gutterWidth);
 
-                    // Epic 4: draw the track's clips on the timeline. Each clip's
-                    // rectangle comes from the same x<->time map as the ruler and
-                    // the playhead (its left edge is the gutter's right edge).
-                    const auto timelineLength = juce::jmax (1.0e-6, session.getTimelineLengthSeconds());
+                    // Epic 8 phase 2: skip lanes fully outside the visible area
+                    // so their clips cost nothing (no bins, no thumbnail reads).
+                    const bool laneOnScreen = lane.getBottom() >= trackLaneArea.getY()
+                                              && lane.getY() <= trackLaneArea.getBottom();
 
-                    for (const auto& clip : session.getClips (index))
+                    if (laneOnScreen)
                     {
-                        auto startSeconds = clip.startSeconds;
-                        auto endSeconds = clip.endSeconds;
-                        auto fadeIn = clip.fadeInSeconds;
-                        auto fadeOut = clip.fadeOutSeconds;
+                        // Epic 4: draw the track's clips on the timeline. Each clip's
+                        // rectangle comes from the same x<->time map as the ruler and
+                        // the playhead (its left edge is the gutter's right edge).
+                        const auto timelineLength = juce::jmax (1.0e-6, session.getTimelineLengthSeconds());
 
-                        const bool isDraggedClip = clipDragActive
-                                                    && dragTrackIndex == index
-                                                    && dragClipIndex == clip.clipIndex;
+                        // Clip-level live detection: only the take being written
+                        // right now (its file == the track's active recording file),
+                        // never a pre-existing clip on an armed track.
+                        const auto activeRecordingFile = recording
+                                                             ? session.getActiveRecordingFileForTrack (index)
+                                                             : juce::File();
 
-                        if (isDraggedClip)
+                        for (const auto& clip : session.getClips (index))
                         {
-                            startSeconds = dragPreviewStart;
-                            endSeconds = dragPreviewEnd;
-                            fadeIn = dragPreviewFadeIn;
-                            fadeOut = dragPreviewFadeOut;
-                        }
+                            auto startSeconds = clip.startSeconds;
+                            auto endSeconds = clip.endSeconds;
+                            auto fadeIn = clip.fadeInSeconds;
+                            auto fadeOut = clip.fadeOutSeconds;
 
-                        const auto x1 = Timeline::xForSeconds (startSeconds, timelineLength, trackTimelineArea);
-                        const auto x2 = Timeline::xForSeconds (endSeconds, timelineLength, trackTimelineArea);
-                        auto r = juce::Rectangle<int> (x1, clipBand.getY(),
-                                                       juce::jmax (3, x2 - x1),
-                                                       clipBand.getHeight());
+                            const bool isDraggedClip = clipDragActive
+                                                        && dragTrackIndex == index
+                                                        && dragClipIndex == clip.clipIndex;
 
-                        const bool selected = (index == selectedTrackIndex
-                                               && clip.clipIndex == selectedClipIndex);
+                            if (isDraggedClip)
+                            {
+                                startSeconds = dragPreviewStart;
+                                endSeconds = dragPreviewEnd;
+                                fadeIn = dragPreviewFadeIn;
+                                fadeOut = dragPreviewFadeOut;
+                            }
 
-                        g.setColour (selected ? brand::accent.withAlpha (0.55f)
-                                              : brand::accentMuted.withAlpha (0.8f));
-                        g.fillRoundedRectangle (r.toFloat(), 3.0f);
+                            const auto x1 = Timeline::xForSeconds (startSeconds, timelineLength, trackTimelineArea);
+                            const auto x2 = Timeline::xForSeconds (endSeconds, timelineLength, trackTimelineArea);
+                            auto r = juce::Rectangle<int> (x1, clipBand.getY(),
+                                                           juce::jmax (3, x2 - x1),
+                                                           clipBand.getHeight());
 
-                        // Fade ramps: a darkening triangle over each attenuated edge.
-                        g.setColour (brand::bgWindow.withAlpha (0.6f));
+                            // Horizontal cull: a clip fully outside the visible
+                            // timeline costs nothing.
+                            if (r.getRight() < trackTimelineArea.getX()
+                                || r.getX() > trackTimelineArea.getRight())
+                                continue;
 
-                        if (fadeIn > 0.0)
-                        {
-                            const auto px = juce::jmax (0, Timeline::xForSeconds (startSeconds + fadeIn,
-                                                                                  timelineLength, trackTimelineArea) - x1);
-                            juce::Path p;
-                            p.addTriangle ((float) x1, (float) r.getY(),
-                                           (float) (x1 + px), (float) r.getY(),
-                                           (float) x1, (float) r.getBottom());
-                            g.fillPath (p);
-                        }
+                            const bool selected = (index == selectedTrackIndex
+                                                   && clip.clipIndex == selectedClipIndex);
+                            const bool live = clipwave::isLiveTake (recording, clip.isWave,
+                                                                    clip.sourceFile, activeRecordingFile);
 
-                        if (fadeOut > 0.0)
-                        {
-                            const auto px = juce::jmax (0, x2 - Timeline::xForSeconds (endSeconds - fadeOut,
-                                                                                       timelineLength, trackTimelineArea));
-                            juce::Path p;
-                            p.addTriangle ((float) x2, (float) r.getY(),
-                                           (float) (x2 - px), (float) r.getY(),
-                                           (float) x2, (float) r.getBottom());
-                            g.fillPath (p);
-                        }
+                            // Epic 8 phase 2: dimmed background + waveform (replaces
+                            // the old solid accent fill). Same bounds as `r`, so the
+                            // wave follows a drag preview.
+                            drawClip (g, r, clip, startSeconds, endSeconds, selected, live);
 
-                        if (selected)
-                        {
-                            g.setColour (brand::accent);
-                            g.drawRoundedRectangle (r.toFloat().reduced (0.5f), 3.0f, 2.0f);
-                        }
+                            // Fade ramps: a darkening triangle over each attenuated edge.
+                            g.setColour (brand::bgWindow.withAlpha (0.6f));
 
-                        // The clip's own name only where the clip is roomy enough
-                        // to read it without colliding with the track-name
-                        // overlay (which now sits on top of the clip).
-                        if (r.getWidth() > 40 && r.getHeight() >= 40)
-                        {
-                            g.setColour (brand::textPrimary);
-                            g.setFont (brand::uiRegular (10.0f));
-                            g.drawText ((clip.isLooping ? juce::String ("\u21bb ") : juce::String())
-                                            + clip.name,
-                                        r.reduced (6, 0), juce::Justification::centredLeft);
+                            if (fadeIn > 0.0)
+                            {
+                                const auto px = juce::jmax (0, Timeline::xForSeconds (startSeconds + fadeIn,
+                                                                                      timelineLength, trackTimelineArea) - x1);
+                                juce::Path p;
+                                p.addTriangle ((float) x1, (float) r.getY(),
+                                               (float) (x1 + px), (float) r.getY(),
+                                               (float) x1, (float) r.getBottom());
+                                g.fillPath (p);
+                            }
+
+                            if (fadeOut > 0.0)
+                            {
+                                const auto px = juce::jmax (0, x2 - Timeline::xForSeconds (endSeconds - fadeOut,
+                                                                                           timelineLength, trackTimelineArea));
+                                juce::Path p;
+                                p.addTriangle ((float) x2, (float) r.getY(),
+                                               (float) (x2 - px), (float) r.getY(),
+                                               (float) x2, (float) r.getBottom());
+                                g.fillPath (p);
+                            }
+
+                            // Border: selection wins, then a live take's record
+                            // border. Idle clips get NO border (spec §5.4; a border
+                            // is only for the top clip in an overlap, §5.5, which we
+                            // do not detect yet).
+                            if (selected)
+                            {
+                                g.setColour (brand::accent);
+                                g.drawRoundedRectangle (r.toFloat().reduced (0.5f), 3.0f, 2.0f);
+                            }
+                            else if (live)
+                            {
+                                g.setColour (brand::record);
+                                g.drawRoundedRectangle (r.toFloat().reduced (0.5f), 3.0f, 1.5f);
+                            }
+
+                            // The clip's own name only where the clip is roomy enough
+                            // to read it without colliding with the track-name
+                            // overlay (which now sits on top of the clip).
+                            if (r.getWidth() > 40 && r.getHeight() >= 40)
+                            {
+                                g.setColour (brand::textPrimary);
+                                g.setFont (brand::uiRegular (10.0f));
+                                g.drawText ((clip.isLooping ? juce::String ("\u21bb ") : juce::String())
+                                                + clip.name,
+                                            r.reduced (6, 0), juce::Justification::centredLeft);
+                            }
                         }
                     }
 
@@ -3307,6 +3357,242 @@ namespace rrs
 
         if (showInput)
             drawMiniMeter (g, r.meter, meterIndex);
+    }
+
+    //==============================================================================
+    // Epic 8 phase 2 — clip waveforms.
+    //==============================================================================
+    te::SmartThumbnail* MainComponent::ensureClipThumbnail (const juce::File& file)
+    {
+        if (file == juce::File())
+            return nullptr;
+
+        auto it = clipThumbnails.find (file);
+
+        if (it == clipThumbnails.end())
+        {
+            auto& engine = audio.engine();
+            ThumbEntry entry;
+            entry.thumb = std::make_unique<te::SmartThumbnail> (engine,
+                                                                te::AudioFile (engine, file),
+                                                                *this,
+                                                                session.getEdit());
+            entry.lastUsed = ++thumbnailClock;
+            it = clipThumbnails.emplace (file, std::move (entry)).first;
+        }
+
+        return it->second.thumb.get();
+    }
+
+    te::SmartThumbnail* MainComponent::findClipThumbnail (const juce::File& file)
+    {
+        auto it = clipThumbnails.find (file);
+
+        if (it == clipThumbnails.end())
+            return nullptr;
+
+        it->second.lastUsed = ++thumbnailClock;
+        return it->second.thumb.get();
+    }
+
+    void MainComponent::preloadClipThumbnails()
+    {
+        // Create the thumbnails for every clip now, so paint() only ever looks
+        // them up (no SmartThumbnail construction inside a frame — it is
+        // message-thread-only and can read files).
+        for (int t = 0; t < session.getNumAudioTracks(); ++t)
+            for (const auto& clip : session.getClips (t))
+                if (clip.isWave && clip.sourceFile != juce::File())
+                    ensureClipThumbnail (clip.sourceFile);
+    }
+
+    void MainComponent::pruneClipThumbnails()
+    {
+        if (clipThumbnails.empty())
+            return;
+
+        // A change message can arrive often; a full scan + eviction a couple of
+        // times a second is plenty (and keeps clip iteration off the hot path).
+        const auto now = juce::Time::getMillisecondCounterHiRes();
+
+        if (now - lastClipPruneMs < 2000.0)
+            return;
+
+        lastClipPruneMs = now;
+
+        juce::Array<juce::File> inUse;
+
+        for (int t = 0; t < session.getNumAudioTracks(); ++t)
+            for (const auto& clip : session.getClips (t))
+                if (clip.isWave && clip.sourceFile != juce::File())
+                    inUse.addIfNotAlreadyThere (clip.sourceFile);
+
+        // 1) Drop files no longer referenced by any clip.
+        for (auto it = clipThumbnails.begin(); it != clipThumbnails.end();)
+        {
+            if (inUse.contains (it->first))
+                ++it;
+            else
+                it = clipThumbnails.erase (it);
+        }
+
+        // 2) Evict least-recently-used entries while over the cap — never clear
+        //    the whole map (that would re-read every file on the next frame).
+        constexpr int cap = 128;
+
+        while ((int) clipThumbnails.size() > cap)
+        {
+            auto victim = clipThumbnails.begin();
+
+            for (auto it = clipThumbnails.begin(); it != clipThumbnails.end(); ++it)
+                if (it->second.lastUsed < victim->second.lastUsed)
+                    victim = it;
+
+            clipThumbnails.erase (victim);
+        }
+    }
+
+    void MainComponent::drawClip (juce::Graphics& g, juce::Rectangle<int> r,
+                                  const Session::ClipInfo& clip, double startSeconds, double endSeconds,
+                                  bool selected, bool live)
+    {
+        // Dimmed background instead of the old solid accent fill (spec §5.3).
+        g.setColour (selected ? brand::clipSelected : brand::clip);
+        g.fillRoundedRectangle (r.toFloat(), 3.0f);
+
+        if (live)
+        {
+            g.setColour (brand::record.withAlpha (0.12f));
+            g.fillRoundedRectangle (r.toFloat(), 3.0f);
+        }
+
+        const auto inner = r.reduced (0, clipwave::wavePadY);
+        const auto centreY = (float) inner.getCentreY();
+        const auto halfH = (float) inner.getHeight() * 0.5f;
+
+        // Centre line (§5.2: 1 px, textTertiary @30%).
+        g.setColour (brand::textTertiary.withAlpha (0.3f));
+        g.fillRect (juce::Rectangle<float> ((float) r.getX(), centreY - 0.5f,
+                                            (float) r.getWidth(), 1.0f));
+
+        // Thumbnail: the engine's live recording thumbnail for the take being
+        // written, otherwise a cached SmartThumbnail (looked up only — created off
+        // the paint path in preloadClipThumbnails()).
+        juce::AudioThumbnailBase* thumb = nullptr;
+        double fileLength = 0.0;
+
+        if (clip.isWave)
+        {
+            if (live)
+            {
+                // Reuse the engine's live thumbnail; re-fetch only when the take
+                // file changes. (getThumbnailFor must NOT be called for non-takes:
+                // it lazily creates a Thumbnail that would be destroyed the next
+                // frame — an AudioThumbnail create/destroy churn at 30 Hz.)
+                if (liveRecordingThumbnail == nullptr || liveRecordingFile != clip.sourceFile)
+                {
+                    liveRecordingFile = clip.sourceFile;
+                    liveRecordingThumbnail = audio.engine()
+                                                 .getRecordingThumbnailManager()
+                                                 .getThumbnailFor (clip.sourceFile);
+                }
+
+                if (liveRecordingThumbnail != nullptr)
+                    thumb = liveRecordingThumbnail->thumb.get();
+            }
+            else
+            {
+                thumb = findClipThumbnail (clip.sourceFile);
+            }
+
+            if (thumb != nullptr)
+                fileLength = thumb->getTotalLength();
+        }
+
+        // Live takes use the full accent; selected uses full accent; loops 80%.
+        const auto waveColour = (live || selected) ? brand::accent
+                                                   : (clip.isLooping ? brand::accent.withAlpha (0.8f)
+                                                                     : brand::waveformIdle);
+
+        const int numChannels = (thumb != nullptr) ? thumb->getNumChannels() : 0;
+
+        if (thumb != nullptr && fileLength > 0.0 && numChannels > 0 && halfH >= 1.0f)
+        {
+            const int bins = clipwave::binCount (r.getWidth());
+
+            auto binPeak = [thumb, numChannels] (double a, double b)
+            {
+                float peak = 0.0f;
+
+                for (int ch = 0; ch < numChannels; ++ch)
+                {
+                    float mn = 0.0f, mx = 0.0f;
+                    thumb->getApproximateMinMax (a, b, ch, mn, mx);
+                    peak = juce::jmax (peak, clipwave::peakFromMinMax (mn, mx));
+                }
+
+                return peak;
+            };
+
+            for (int i = 0; i < bins; ++i)
+            {
+                const auto t0 = clipwave::binStartSeconds (startSeconds, endSeconds, i, bins);
+                const auto t1 = clipwave::binEndSeconds (startSeconds, endSeconds, i, bins);
+                const auto s0 = clipwave::sourceTimeForBin (startSeconds, t0, clip.offsetSeconds,
+                                                            fileLength, clip.isLooping);
+                const auto s1 = clipwave::sourceTimeForBin (startSeconds, t1, clip.offsetSeconds,
+                                                            fileLength, clip.isLooping);
+
+                float peak = 0.0f;
+
+                if (s1 > s0)
+                    peak = binPeak (s0, s1);
+                else if (clip.isLooping && fileLength > clip.offsetSeconds)
+                    // The bin crosses the loop-wrap point: cover the tail of this
+                    // iteration and the head of the next, so there is no 2 px gap.
+                    peak = juce::jmax (binPeak (s0, fileLength), binPeak (clip.offsetSeconds, s1));
+
+                if (clipwave::isSilent (peak))
+                    continue;
+
+                const auto x = (float) (r.getX() + i * clipwave::binWidthPx);
+
+                if (x >= (float) r.getRight())
+                    break;
+
+                // Clamp the bar to the clip's right edge (odd width -> last bin).
+                const auto w = juce::jmin ((float) clipwave::binWidthPx, (float) r.getRight() - x);
+                const auto h = juce::jlimit (1.0f, halfH, peak * halfH);
+                g.setColour (waveColour);
+                g.fillRect (juce::Rectangle<float> (x, centreY - h, w, h * 2.0f));
+            }
+        }
+
+        // Loop iteration hairlines (spec §5.1) — drawn whenever the iteration
+        // length is known, independent of the wave block above.
+        if (clip.isLooping && thumb != nullptr && fileLength > clip.offsetSeconds + 1.0e-6)
+        {
+            const auto iteration = fileLength - clip.offsetSeconds;
+            const auto length = juce::jmax (1.0e-6, session.getTimelineLengthSeconds());
+
+            g.setColour (brand::textTertiary.withAlpha (0.4f));
+
+            for (double t = startSeconds + iteration; t < endSeconds - 1.0e-6; t += iteration)
+            {
+                const auto x = (float) Timeline::xForSeconds (t, length, trackTimelineArea);
+                g.fillRect (juce::Rectangle<float> (x, (float) r.getY(), 1.0f, (float) r.getHeight()));
+            }
+        }
+
+        // Live take: a pulsing accent "growing edge" at the clip's right end.
+        if (live)
+        {
+            const double seconds = juce::Time::getMillisecondCounterHiRes() * 0.001;
+            const auto pulse = 0.5f + 0.5f * (float) std::sin (seconds * juce::MathConstants<double>::twoPi * 2.0);
+            g.setColour (brand::accent.withAlpha (0.5f + 0.5f * pulse));
+            g.fillRect (juce::Rectangle<float> ((float) r.getRight() - 2.0f, (float) r.getY(),
+                                                2.0f, (float) r.getHeight()));
+        }
     }
 
     void MainComponent::splitSelectedAtPlayhead()

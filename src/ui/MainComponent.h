@@ -12,6 +12,7 @@
 #include <JuceHeader.h>
 
 #include <functional>
+#include <map>
 #include <memory>
 
 #include "studio/AudioEngine.h"
@@ -21,6 +22,7 @@
 #include "studio/StemsExport.h"
 #include "studio/WavExport.h"
 #include "ui/BrandButton.h"
+#include "ui/ClipWaveform.h"
 #include "ui/DevicePanel.h"
 #include "ui/InputMeter.h"
 #include "ui/MeterBallistics.h"
@@ -145,6 +147,28 @@ namespace rrs
         juce::String channelsSummaryText() const;
         /** Multi-line body for the sidebar «Status» section. */
         juce::String statusText() const;
+
+        // --- Epic 8 phase 2 (clip waveforms) ---
+        /** Draws a clip's dimmed background, centre line and waveform (plus the
+            live-recording border/edge), replacing the old solid accent fill.
+            `startSeconds`/`endSeconds` are the SAME bounds used for the on-screen
+            rectangle (so the wave follows a drag preview). */
+        void drawClip (juce::Graphics&, juce::Rectangle<int> clipRect,
+                       const Session::ClipInfo&, double startSeconds, double endSeconds,
+                       bool selected, bool live);
+        /** The SmartThumbnail for an ordinary clip file, created once and cached
+            (message thread only — SmartThumbnail is not thread-safe). Called OFF
+            the paint path (session change); paint() only looks the thumbnail up. */
+        tracktion::SmartThumbnail* ensureClipThumbnail (const juce::File&);
+        /** Look-up-only (no creation) used by paint(): returns the cached
+            thumbnail and marks it as recently used, or nullptr. */
+        tracktion::SmartThumbnail* findClipThumbnail (const juce::File&);
+        /** Pre-creates thumbnails for every clip in the session (off the paint
+            path), so paint() only ever looks them up. */
+        void preloadClipThumbnails();
+        /** Drops cached thumbnails for files no longer referenced by any clip and
+            evicts the least-recently-used entries over the cap (throttled). */
+        void pruneClipThumbnails();
 
         // --- Epic 8 phase 1b (in-lane controls) ---
         /** The metering pump: OWNER of the engine's read-and-clear level meters.
@@ -381,6 +405,24 @@ namespace rrs
         /** Key codes currently held, so an auto-repeat cannot flip a transport /
             arm hotkey repeatedly. Pruned in keyStateChanged(). */
         juce::Array<int> heldHotkeyCodes;
+
+        /** Epic 8 phase 2: one SmartThumbnail per clip source file (message
+            thread; created off the paint path, LRU-evicted, pruned on session
+            change). `lastUsed` drives the LRU eviction. */
+        struct ThumbEntry
+        {
+            std::unique_ptr<tracktion::SmartThumbnail> thumb;
+            juce::uint32 lastUsed = 0;
+        };
+        std::map<juce::File, ThumbEntry> clipThumbnails;
+        juce::uint32 thumbnailClock = 0;
+        double lastClipPruneMs = 0.0;
+
+        /** Keeps the engine's live recording thumbnail alive while it is drawn
+            (the engine writes its peaks on the audio thread — RT-safe). Reused
+            across frames; reset when recording stops. */
+        tracktion::RecordingThumbnailManager::Thumbnail::Ptr liveRecordingThumbnail;
+        juce::File liveRecordingFile;
 
         /** Lane rectangles in `trackLaneArea`, engine-track order (FR-REC-2:
             click a lane to arm/disarm it). Computed with `laneScrollOffsetY` and

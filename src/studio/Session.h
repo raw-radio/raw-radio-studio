@@ -92,8 +92,7 @@ namespace rrs
         // selected MIDI input device. MIDI and audio tracks coexist in one Edit
         // and both render through the normal export path.
         /** True when `trackIndex` is a MIDI/instrument track. */
-        bool isMidiTrack (int trackIndex) const;
-        int getNumMidiTracks() const;
+        bool isMidiTrack (int trackIndex) const;        int getNumMidiTracks() const;
 
         /** Adds a new MIDI/instrument track at the end of the track list. Returns
             the new track index, or -1 on failure. The track starts empty; insert
@@ -271,12 +270,22 @@ namespace rrs
             bool isWave = false;
             bool isLooping = false;
             bool isMuted = false;
+            /** The clip's source audio file (Epic 8 phase 2 waveform): the file
+                the engine reads / writes for this clip. Empty for non-wave clips. */
+            juce::File sourceFile;
         };
 
         /** All clips on a track, sorted by timeline start. Each info records its
             real `clipIndex`, which the mutation methods below expect. */
         std::vector<ClipInfo> getClips (int trackIndex) const;
         bool getClipInfo (int trackIndex, int clipIndex, ClipInfo&) const;
+
+        /** The file the given track is recording to RIGHT NOW, or an empty File
+            when the track is not recording (Epic 8 phase 2). Used to tell which
+            specific clip is the live take — a clip is "live" only when its source
+            file equals this one, so pre-existing clips on an armed track are not
+            mistaken for the take. */
+        juce::File getActiveRecordingFileForTrack (int trackIndex) const;
 
         /** Moves a clip's start to `newStartSeconds`, keeping its length and the
             source content under the clip (offset) unchanged. */

@@ -50,6 +50,8 @@ namespace rrs::brand
     inline const juce::Colour laneArmed     { 0xff2a2a2a };
     inline const juce::Colour clip          { 0xff2a2a2a };
     inline const juce::Colour clipSelected  { 0xff333333 };
+    /** Clip waveform when idle (Epic 8 phase 2): accent @55%. */
+    inline const juce::Colour waveformIdle  { 0x8cff6b35 };
 
     // --- Record / error ------------------------------------------------------
     inline const juce::Colour record      { 0xffef4444 };

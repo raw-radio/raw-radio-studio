@@ -175,24 +175,33 @@ reserved so every lane's clip zone starts at the same x.
 
 ## Phase 2 — waveforms
 
-**Not started.**
+**Delivered** (Epic 8 phase 2 — `src/ui/ClipWaveform.h` (binning math),
+`src/ui/MainComponent.{h,cpp}` `drawClip`/thumbnail cache, `src/studio/Session.{h,cpp}`
+`ClipInfo::sourceFile`, `src/ui/BrandColours.h` `waveformIdle`).
 
-**What to do.** Draw the **live take** from
-`Engine::getRecordingThumbnailManager()->getThumbnailFor(file)` (the **engine writes peaks on the
-audio thread** — RT-safe) and **ordinary clips** via `te::SmartThumbnail`. Draw the waveform
-**instead of** the current solid `brand::accent` fill: dim the background, draw the waveform in
-the brand colour.
+**What was done.** The solid `brand::accent` clip fill is replaced by a **dimmed background
+(`brand::clip` / `clipSelected`) + waveform**: the live take from
+`Engine::getRecordingThumbnailManager()->getThumbnailFor(file)` (the engine writes peaks on the
+audio thread — RT-safe), ordinary clips from a cached `te::SmartThumbnail` per source file. Files
+come from `Session::ClipInfo::sourceFile` (filled from `WaveAudioClip::getOriginalFile()`).
+**Live detection is clip-level**: a clip is the take only when its `sourceFile` equals
+`Session::getActiveRecordingFileForTrack(track)` (from `InputDeviceInstance::getRecordingFile`) — a
+pre-existing clip on an armed track is never mistaken for the take. Thumbnails are created/cached
+off the paint path (message thread, LRU-evicted, pruned on session change); `paint()` only reads
+pre-computed peaks (no rebuild, no allocation proportional to pixels).
+Bins are 2 px, the wave is `brand::waveformIdle` (accent @55%) / `accent` when selected or live /
+`accent` @80% for loops, with a `textTertiary`@30% centre line; a ≤ −60 dBFS window draws only the
+centre line.
 
-**Integration points.**
+**Open / deferred (2):**
 
-- Today the "orange block" is a solid **fill** of `brand::accent`:
-  `src/ui/MainComponent.cpp:1739-1740`; colour defined in `src/ui/BrandColours.h:31`.
-- Arrangement painting is concentrated in one `MainComponent::paint()`
-  (`src/ui/MainComponent.cpp:1638-1805`) — the waveform draw replaces the fill there.
-- Thumbnails must be created/refreshed off the audio thread; only *reading* engine-written
-  thumbnail data is RT-safe.
+- **Clip hover outline** (spec §5.4 hover = `borderHover` contour) is **not** drawn: the
+  arrangement tracks hover only for the lane gutter controls, not for individual clips.
+- **Fine (1 px) hi-res waveforms** — we bin at the spec's 2 px step; no sub-pixel/hi-res mode.
+- Live/hardware waveform verification (a real take growing) needs an audio device — not possible
+  in the headless ALSA-broken CI environment.
 
-**Estimate:** **S/M.**
+**Estimate:** **S/M** (as planned).
 
 **UX spec:** `docs/EPIC8_UX_SPEC.md` (waveform styling).
 
