@@ -5,8 +5,8 @@
 > authoritative record of *what* was decided and *why*. Anything not marked as a hard requirement is a
 > target and may move.
 >
-> **Document version:** 1.6.0
-> **Last updated:** 2026 (Epic 5 delivered: MIDI input/routing and recording, piano-roll editor, virtual-instrument hosting; MIDI + audio coexist and export)
+> **Document version:** 1.7.0
+> **Last updated:** 2026 (Epic 8 defined: Arrangement UX — device panel → left sidebar, in-lane track controls, waveforms, runtime diagnostics, timeline zoom/snap, loop/punch recording; see [§9](#9-roadmap-epics-08) and [`docs/EPIC8_GAPS.md`](EPIC8_GAPS.md))
 > **Owner:** raw-radio project owner
 > **Repository:** https://github.com/raw-radio/raw-radio-studio
 > **Local project dir:** the repository root (`raw-radio-studio/`)
@@ -24,7 +24,7 @@
 6. [UI / UX](#6-ui--ux)
 7. [Licensing & Legal](#7-licensing--legal)
 8. [Build / CI / Release](#8-build--ci--release)
-9. [Roadmap (Epics 0–7)](#9-roadmap-epics-07)
+9. [Roadmap (Epics 0–8)](#9-roadmap-epics-08)
 10. [Risks & Open Questions](#10-risks--open-questions)
 11. [Glossary](#11-glossary)
 12. [Decisions Baseline (ADR-style table)](#12-decisions-baseline-adr-style-table)
@@ -735,7 +735,7 @@ Auto-update is **Epic 6**, not v1.
 
 ---
 
-## 9. Roadmap (Epics 0–7)
+## 9. Roadmap (Epics 0–8)
 
 The epic order below is **agreed and frozen**. Dependencies are explicit.
 
@@ -974,17 +974,80 @@ preset management, transient region selection) are tracked in
 
 **Depends on:** Epics 0–6.
 
+### Epic 8 — Arrangement UX
+
+**Status: defined, not started.** This epic records the **owner-agreed** arrangement/UX
+rework as a frozen, phase-ordered plan. It is an *interface/ergonomics* epic: it does not
+change the engine pins, the audio-core behaviour of Epics 1–5, or the licensing posture.
+Live per-phase status (delivered / open) lives in [`docs/EPIC8_GAPS.md`](EPIC8_GAPS.md); the
+detailed interaction design is being authored in **`docs/EPIC8_UX_SPEC.md`** (a companion
+plan; may not exist yet at the time of this entry).
+
+**Goal:** make the tracking workflow materially faster to operate — a place for every
+control, a readable arrangement that scrolls instead of collapsing, live waveform feedback,
+runtime health read-outs, a zoomable/snapping timeline, and loop/punch recording.
+
+**Phases (order is mandatory):**
+
+| Phase | Scope |
+|-------|-------|
+| **1a** | **Device panel → left collapsible sidebar column.** The device panel moves from its own top region into a left sidebar that holds **accordion sections: Device / Channels / Status** (resizable width; the collapse state is remembered across runs). Add a **manual mixer-collapse** button; the existing **auto-hide-the-mixer-by-window-height** behaviour is **retained as a fallback**. Track lanes: **minimum lane height 56 px** + **vertical scrolling** instead of the current compress-to-1–3 px behaviour, plus a global **lane-height preset (compact 56 / normal 72 / large 96)**. |
+| **1b** | **In-lane track controls**, at the left of each lane: **arm / mute / solo + input selector + mini level indicator**. Keyboard shortcuts for arm/record; **clicking the lane arms/disarms** (retained). |
+| **2** | **Waveform.** Live take drawn from `Engine::getRecordingThumbnailManager()->getThumbnailFor(file)` (the engine writes peaks on the audio thread — RT-safe); ordinary clips drawn via `te::SmartThumbnail`. The waveform is drawn **instead of** the current solid `brand::accent` fill (background dimmed, waveform in the brand colour). |
+| **3** | **Status-bar diagnostics**: latency (round-trip) + **xrun** + **CPU%**. Input meters show **only active channels, in L/R pairs** (today they are hard-wired to 2 channels). |
+| **4** | **Timeline**: **pixels-per-second zoom (4–400 px/s)** via Ctrl+wheel and buttons; **page auto-scroll only while playing**; **snap by seconds, off by default**, steps **0.1 / 0.25 / 1 s**. |
+| **5** | **Recording**: **loop-record first** (transport loop in/out + `record()`), **then punch-in/out** (same loop range + `edit->recordingPunchInOut = true`). **Pre-roll = the existing count-in** (FR-REC-10). |
+
+**Related requirements:** FR-ED-1 (arrangement view), FR-ED-7 (snap/grid — `[target]`,
+previously deferred in Epic 4), FR-REC-7 (punch-in/out and loop-recording — `[target]`,
+previously deferred in Epic 2/4), FR-REC-4 (per-track input meter), FR-MIX-3 (per-track
+metering), FR-MON-2 / NFR-P-3 (latency read-out), NFR-P-4 (xrun), NFR-P-6 (UI responsive).
+Epic 8 closes the Epic 4 snap/grid `[target]` for the *seconds* case and the Epic 2/4
+punch/loop-record `[target]`; both are annotated in their gaps docs.
+
+**Epic decisions (agreed with the owner):**
+
+- **Delivery.** **No per-phase git tags** — after **each phase** push to `main`. The release
+  (**`v0.1.4-alpha`**) happens **at the end**; that release also **verifies, live, that
+  `release.needs: [build, asan]`** holds (the ASan-gate-before-release rule, see
+  [`docs/EPIC7_GAPS.md`](EPIC7_GAPS.md)).
+- **Verification.** Build + `ctest` on the **remote Linux machine** (fast cycle; GUI run on its
+  `X0`). On **each phase**, a **CI `.dmg` artifact** is produced for the owner's manual check on
+  macOS. **New unit tests only for pure math** (scroll offset, zoom mapping, lane geometry) —
+  no UI-automation tests.
+- **Environment constraints.** **Do not build on macOS** (the standing prohibition); the
+  integration suite has a **historical flake** (see [`docs/EPIC7_GAPS.md`](EPIC7_GAPS.md)).
+- **Arrangement-UX resolutions (R-A…R-F).** Lane-height presets **56 / 72 / 96** (floor **56**);
+  the height switcher sits in the **edit-row** right edge as a compact icon-dropdown; the loop
+  region is dragged on the **ruler** (28 px) while the export region stays `Shift`+drag on the
+  lanes; the right `InputMeter` (180 px) is kept and shows active channels in L/R pairs;
+  xrun/CPU come from atomic counters in `AudioEngine`, read on the message thread at **30 Hz**;
+  multichannel metering is limited to active L/R pairs. Recorded in
+  [`docs/EPIC8_GAPS.md`](EPIC8_GAPS.md) §«Design decisions».
+
+> **Epic 8 — defined, not delivered.** Nothing in this section is an implemented feature yet;
+> every phase is `[ ]` in [`docs/EPIC8_GAPS.md`](EPIC8_GAPS.md). This entry freezes the scope,
+> the phase order, and the delivery/verification rules so the work is not re-litigated phase by
+> phase.
+
+**Depends on:** Epic 4 (arrangement editor) and Epic 5 (delivered baseline); build/verification
+uses the Epic 7 CI/ASan infrastructure.
+
 ### Epic dependency graph
 
 ```
 Epic 0 ──► Epic 1 ──► Epic 2 ──► Epic 3 ──► Epic 4 ──► Epic 5
                                      │           │
                                      └───────────┴──► Epic 6 ──► Epic 7
+                                                          │
+                                                          └──► Epic 8
 ```
 
 - Epic 5 (MIDI) depends on the plugin host (Epic 3) and editor patterns (Epic 4).
 - Epic 6 depends on stable artifacts (through Epic 4).
 - Epic 7 depends on everything; it is the final hardening gate.
+- Epic 8 (Arrangement UX) builds on the Epic 4 arrangement editor and uses the Epic 7
+  CI/ASan/`.dmg` infrastructure for its per-phase verification.
 
 ---
 
@@ -1197,6 +1260,32 @@ requirements. Format follows [Keep a Changelog](https://keepachangelog.com/) loo
 ### [Unreleased]
 
 - (nothing yet)
+
+### [1.7.0] — 2026 — Epic 8 defined: Arrangement UX (owner-agreed phase plan; not implemented)
+
+- **Added Epic 8 — «Arrangement UX» to §9** as a **defined, not started** epic with a **mandatory
+  phase order** (1a → 1b → 2 → 3 → 4 → 5) and the owner-agreed scope: left collapsible sidebar
+  (Device / Channels / Status) + manual mixer collapse (auto-hide retained as fallback), minimum
+  56 px lane height + vertical scroll + global lane-height preset (56 / 72 / 96), in-lane
+  arm/mute/solo + input selector + mini meter; waveform drawing (live take via the engine's
+  `RecordingThumbnailManager`, clips via `te::SmartThumbnail`) replacing the solid accent fill;
+  status-bar latency + xrun + CPU% and active-channel L/R-paired input meters; timeline
+  pixels-per-second zoom (4–400 px/s) with page auto-scroll only while playing and seconds-snap
+  (off by default; 0.1 / 0.25 / 1 s); loop-record then punch-in/out (pre-roll = existing count-in).
+  Related FRs: FR-ED-7 (Epic 4 snap/grid `[target]`), FR-REC-7 (Epic 2/4 punch + loop-record
+  `[target]`), FR-REC-4, FR-MIX-3, FR-MON-2 / NFR-P-3, NFR-P-4, NFR-P-6.
+- **Recorded the Epic 8 delivery/verification rules** as epic decisions: no per-phase tags (push to
+  `main` after each phase); release **`v0.1.4-alpha`** at the end, which also verifies live that
+  `release.needs: [build, asan]`; build + `ctest` on the remote Linux machine (GUI on its `X0`);
+  a CI `.dmg` artifact per phase for the owner's macOS check; new unit tests **only for pure math**
+  (scroll offset, zoom mapping, lane geometry); **no macOS build** and the known integration-suite
+  flake ([`docs/EPIC7_GAPS.md`](EPIC7_GAPS.md)).
+- **Added [`docs/EPIC8_GAPS.md`](EPIC8_GAPS.md)** — a per-phase gaps file in the
+  `EPIC7_GAPS.md` format, with the integration points / `file:line` implementation notes, S/M/L
+  estimates, links to the companion **`docs/EPIC8_UX_SPEC.md`** plan, and an
+  **«Open questions / verify live»** list.
+- **No code, dependency, or licensing change.** §9 roadmap heading and the dependency graph now
+  extend to **Epics 0–8**. Bumped document version to **1.7.0**.
 
 ### [1.6.0] — 2026 — Epic 5 implemented: MIDI recording/editing, piano-roll editor, virtual-instrument hosting
 
