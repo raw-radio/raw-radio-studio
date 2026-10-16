@@ -268,3 +268,43 @@ scripts/dev/alsa-loopback.sh --test      # 1 kHz round-trip (0,0 -> 1,0), prints
 scripts/dev/alsa-loopback.sh --scan      # try all 0/1 pairs
 scripts/dev/alsa-loopback.sh --tone 60   # continuous 1 kHz for 60 s (studio records it)
 ```
+
+## 9. LV2 plugins — for the plugin-browser scan
+
+LV2 hosting is **on by default** in the build (Epic 8 / LV-1;
+`RAW_RADIO_STUDIO_ENABLE_LV2=ON` maps to `JUCE_PLUGINHOST_LV2=1`; opt out with
+`-DRAW_RADIO_STUDIO_ENABLE_LV2=OFF`). JUCE's LV2 format searches `~/.lv2`,
+`/usr/local/lib/lv2` and `/usr/lib/lv2` (plus `$LV2_PATH`) **recursively**
+(`third_party/JUCE/modules/juce_audio_processors_headless/format_types/juce_LV2PluginFormatImpl.h:4296-4327`),
+so any bundle dropped in `/usr/lib/lv2` is picked up by the out-of-process scan.
+
+On **Ubuntu 24.04 (noble)** the LV2 bundles ship as `universe` packages (names
+verified against the noble archive). A small, known-good set that shows up in the
+plugin browser:
+
+```bash
+sudo apt-get install -y --no-install-recommends \
+    calf-plugins \        # calf.lv2     — Calf effects + generators
+    avldrums.lv2 \        # avldrums.lv2 — AVL drum sample player
+    mda-lv2 \             # mda.lv2      — classic MDA effects
+    swh-lv2 \             # swh.lv2      — Steve Harris (SWH) plugin set
+    lsp-plugins-lv2 \     # lsp-*.lv2    — Linux Studio Plugins
+    drumkv1-lv2 samplv1-lv2 synthv1-lv2 padthv1-lv2
+```
+
+The build box already has **57** LV2 bundles installed under `/usr/lib/lv2`
+(including the `calf.lv2` and `avldrums.lv2` above), so no extra install is needed
+to exercise the scan.
+
+Headless check (no window, no audio device — prints the hosted formats, the
+known-plugin count before/after, and the number newly found):
+
+```bash
+build/raw_radio_studio_artefacts/Release/raw-radio-studio --selftest-plugin-scan
+```
+
+To see them **in the GUI**, open the app → action row **Plugins** → **Scan**; the
+"Available effects"/"Available instruments" list and the "N plugin(s) known"
+status line are populated from the same scan. Note: `--version` and
+`--list-devices` do **not** list plugin formats — those print the app banner and
+the audio/MIDI backends only; use `--selftest-plugin-scan` or the browser.

@@ -10,7 +10,8 @@
 
 ## Delivered in Epic 3
 
-- Plugin hosting — VST3 (default), LV2 (opt-in via `JUCE_PLUGINHOST_LV2=1`), AU
+- Plugin hosting — VST3 (default), LV2 (**on by default** since Epic 8 / LV-1:
+  `JUCE_PLUGINHOST_LV2=1`, opt out with `-DRAW_RADIO_STUDIO_ENABLE_LV2=OFF`), AU
   (macOS only); no VST2 (D24), no CLAP (NG4) — FR-MIX-4.
 - Out-of-process plugin scanning (`PluginScanHelpers::PluginScanChildProcess`);
   hosting stays in-process (D23) — FR-MIX-7.
@@ -23,6 +24,47 @@
   hard gap).
 - Export stems (one 24-bit WAV per clip-bearing track + master) — FR-EXP-3 — and
   region export — FR-EXP-2.
+
+## LV2 hosting is on by default (Epic 8 / LV-1)
+
+**Delivered.** `RAW_RADIO_STUDIO_ENABLE_LV2` now defaults to **`ON`**
+(`CMakeLists.txt`), so `JUCE_PLUGINHOST_LV2=1` for **both** the app target and the
+integration-test target (`CMakeLists.txt:268`, `:397`) and the plugin browser
+scans LV2 bundles without any build flag. The opt-out is preserved —
+`-DRAW_RADIO_STUDIO_ENABLE_LV2=OFF` still drops LV2 and leaves VST3/AU untouched
+(verified in an isolated CMake project: default `:BOOL=ON`, `-D...=OFF` →
+`:BOOL=OFF`). Wording fixed in [`README.md`](../README.md) and
+[`DEPENDENCIES.md`](../DEPENDENCIES.md) ("LV2 is opt-in" → "on by default").
+
+**How the scan reaches LV2** (static chain through the pinned tree):
+`JUCE_PLUGINHOST_LV2=1` → `JUCE_INTERNAL_HAS_LV2=1`
+(`third_party/JUCE/.../format/juce_PluginFormatDefs.h:73-77`) → `LV2PluginFormat`
+registered (`third_party/JUCE/.../juce_AudioPluginFormatManagerHelpers.cpp:56-58`)
+→ Tracktion adds it (`.../tracktion_PluginManager.cpp:75`) → `PluginHost` scans
+`~/.lv2`, `/usr/local/lib/lv2`, `/usr/lib/lv2` (+ `$LV2_PATH`) recursively
+(`third_party/JUCE/.../juce_LV2PluginFormatImpl.h:4296-4327`).
+
+**Scan evidence (runtime confirmed, Epic 8 / LV-2).** On the build box
+(a fresh `~/projects/raw-radio/build-lv2` Release build with the
+default `RAW_RADIO_STUDIO_ENABLE_LV2:BOOL=ON`) the plugin browser really scans LV2:
+the scan finds **447 LV2 plugins** (every known plugin — no VST3 is installed on
+the box) from the **57 `*.lv2` bundles** under `/usr/lib/lv2` (the only LV2 search
+path present; `~/.lv2` and `/usr/local/lib/lv2` are empty, `$LV2_PATH` unset),
+including `calf.lv2` (Calf) and `avldrums.lv2` (AVL Drumkit). Examples from the
+browser list: `Calf Compressor`, `Calf Reverb`, `Calf Analyzer`, `3 Band EQ`
+(DISTRHO), `Amplitude Imposer` (ndc Plugs), `1/3 Octave Spectrum Display Mono`
+(Robin Gareus) — all with the `LV2` format badge. `--selftest-plugin-scan` prints
+`hosted formats: LV2, VST3` / `out-of-process scanning: yes` / `known after scan:
+447`. Local screenshots (not committed):
+`.opencode/epic8-lv2/a_plugin_browser_lv2.png` (unfiltered list + "447 plugin(s)
+known"), `b_plugin_browser_lv2_calf.png` (search "calf"), with the headless scan
+log in `.opencode/epic8-lv2/d_selftest_plugin_scan_header.log`.
+
+**Expected (and not a defect):** LV2 is **not** listed by `--version` or
+`--list-devices` — those print the app banner and the audio/MIDI backends only,
+never plugin formats (re-confirmed at runtime on the build box: neither flag emits
+any LV2/VST3/plugin line). The hosted formats appear via `--selftest-plugin-scan`
+and in the plugin browser.
 
 ## Open — cue-mix UI is basic
 

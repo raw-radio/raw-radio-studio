@@ -45,9 +45,12 @@ endif()
 find_package(Threads REQUIRED)
 
 # --- Options (some are consumed in later epics) ------------------------------
-# Epic 3: opt-in LV2 plugin hosting (maps to JUCE_PLUGINHOST_LV2=1).
+# Epic 3 / Epic 8 (LV-1): LV2 plugin hosting is ON by default and maps to
+# JUCE_PLUGINHOST_LV2=1 for every target. It can still be turned off explicitly
+# (opt-out preserved) with `-DRAW_RADIO_STUDIO_ENABLE_LV2=OFF`; that only drops
+# LV2 and never changes VST3/AU hosting.
 option(RAW_RADIO_STUDIO_ENABLE_LV2
-    "Enable LV2 plugin hosting (Epic 3, opt-in)" OFF)
+    "Enable LV2 plugin hosting (Epic 3/Epic 8, default ON; opt out with -DRAW_RADIO_STUDIO_ENABLE_LV2=OFF)" ON)
 
 # Epic 7 (NFR-P-5): build our own targets with AddressSanitizer for the
 # RT-safety / QA gate. Off by default. This instruments only raw-radio-studio's

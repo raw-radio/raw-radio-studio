@@ -12,7 +12,7 @@ service (finished recordings are uploaded by hand, outside the app).
 
 > **Status: pre-alpha (v0.1.3).** Epics 0–5 are **delivered**: capture/monitor/export,
 > multitrack device-agnostic I/O with software cue mixes, a mixer with routing and
-> **VST3 / LV2 (opt-in) / AU** plugin hosting, clip editing (fades, comping,
+> **VST3 / LV2 / AU** plugin hosting, clip editing (fades, comping,
 > time-stretch), and MIDI with a piano roll and virtual instruments. **Epics 6–7**
 > (auto-update + packaging polish, and hardening/hardware acceptance) are **open**.
 > The living per-epic status is in the `docs/EPIC*_GAPS.md` files (see the
@@ -26,7 +26,7 @@ service (finished recordings are uploaded by hand, outside the app).
 | **0 — Bootstrap** | Licensed (AGPLv3) CI-driven repo; C++20 + pinned JUCE/Tracktion submodules; macOS + Ubuntu CI producing unsigned `.dmg` / `.deb` / `AppImage`. | ✅ |
 | **1 — Walking skeleton** | Capture → software monitor → 24-bit WAV export on one stereo track; CoreAudio / ALSA `hw` device selection (buffer + sample rate); Tracktion-native save/open, autosave and crash recovery. | ✅ |
 | **2 — Multitrack + device-agnostic I/O** | 1..N-channel input mapping and multitrack recording/overdub (up to 16 tracks); basic mixer (fader/pan/mute per track and master, solo per track) with peak/clip metering; count-in/metronome. Punch-in/out and loop-recording remain open. | ✅ (targets open) |
-| **3 — Mixer + routing + plugin hosting** | Per-track output assignment, submix folder tracks and aux sends; **VST3** (default), **LV2** (opt-in), **AU** (macOS); out-of-process scan, in-process hosting; plugin state + named presets; software cue mixes; stems and region export. | ✅ (basic UI) |
+| **3 — Mixer + routing + plugin hosting** | Per-track output assignment, submix folder tracks and aux sends; **VST3** (default), **LV2** (on by default), **AU** (macOS); out-of-process scan, in-process hosting; plugin state + named presets; software cue mixes; stems and region export. | ✅ (basic UI) |
 | **4 — Editing** | Move/trim/split/duplicate/loop/delete/mute clips; per-clip fades and equal-power crossfades; non-destructive comping; undo/redo; time-stretch/pitch (Signalsmith Stretch, MIT). Snap/grid/markers/tempo and automation are deferred. | ✅ (targets open) |
 | **5 — MIDI + virtual instruments** | MIDI input + routing, MIDI recording, piano-roll editing, and virtual-instrument hosting (instrument slot separate from the effect chain); MIDI and audio coexist and export together. | ✅ |
 | **6 — Auto-update + packaging polish** | Sparkle (macOS) / AppImageUpdate (Linux); release automation. | ⏳ open |
@@ -45,8 +45,8 @@ service (finished recordings are uploaded by hand, outside the app).
   hardware output pair.
 - **Plugin hosting is in-process** (only *scanning* is out-of-process), so a
   crashing plugin can take down the host (decision D23).
-- **CLAP is not supported** (NG4); **LV2 is opt-in** at build time
-  (`-DRAW_RADIO_STUDIO_ENABLE_LV2=ON`); **VST2 is not shipped** (D24); **AU** is
+- **CLAP is not supported** (NG4); **LV2 hosting is on by default** (opt out with
+  `-DRAW_RADIO_STUDIO_ENABLE_LV2=OFF`); **VST2 is not shipped** (D24); **AU** is
   macOS-only.
 - **Linux uses ALSA `hw` directly with no fallback** — if PipeWire/PulseAudio holds
   the device, the open fails with `EBUSY` and a clear error is surfaced (no silent
