@@ -343,7 +343,7 @@ Nothing was weakened: no `SKIP`, no `#if !JUCE_MAC`, no relaxed assertion, no
 "bigger sleep". The count-in case is now **stricter** than before (it asserts the
 monitoring premise it always relied on).
 
-**Evidence.** Remote Linux (`il@192.168.2.105`), Release build:
+**Evidence.** On the remote Linux build machine, Release build:
 
 - **Before:** 3 failures in 9 consecutive whole-suite runs (~33 %), every one the
   count-in peak check (`CHECK(beat.outputPeak > none.outputPeak + 0.1f)`) — far
