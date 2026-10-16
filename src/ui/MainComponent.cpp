@@ -348,10 +348,23 @@ namespace rrs
             const auto index = session.addAudioTrack();
 
             if (index < 0)
+            {
                 showStatus (session.getLastError(), true);
+            }
             else
-                showStatus ("Added " + session.getTrackName (index) + " ("
-                            + juce::String (session.getNumAudioTracks()) + " tracks)");
+            {
+                const auto name = session.getTrackName (index);
+
+                // RT-2b D1: do not paper over a missing input with a plain success
+                // message — surface the concrete reason on the status line.
+                const auto problem = session.getTrackInputProblem (index);
+
+                if (problem.isNotEmpty())
+                    showStatus ("Added " + name + " \u2014 " + problem, true);
+                else
+                    showStatus ("Added " + name + " ("
+                                + juce::String (session.getNumAudioTracks()) + " tracks)");
+            }
 
             refreshTransportUi();
         };
@@ -1914,7 +1927,11 @@ namespace rrs
                     auto lane = trackLaneRects[(size_t) index];
                     const auto armed = session.isTrackArmed (index);
                     const auto isInput = inputTracks.contains (index);
-                    const auto armEnabled = isInput || session.isMidiTrack (index);
+                    // Compute the input problem ONCE per lane per frame (RT-2b #6):
+                    // reused for the arm control, the chip and the mini-meter.
+                    const auto inputProblem = session.getTrackInputProblem (index);
+                    const auto inputReady = isInput && inputProblem.isEmpty();
+                    const auto armEnabled = inputReady || session.isMidiTrack (index);
                     const auto muted = session.isTrackMuted (index);
                     const auto soloed = session.isTrackSolo (index);
 
@@ -2092,7 +2109,7 @@ namespace rrs
                     }
 
                     // Epic 8 phase 1b: arm / mute / solo / input / mini-meter.
-                    drawLaneControls (g, lane, isInput, armEnabled, armed, recording,
+                    drawLaneControls (g, lane, isInput, inputReady, armEnabled, armed, recording,
                                       muted, soloed, index);
 
                     if (dim)
@@ -3081,14 +3098,23 @@ namespace rrs
             return;
 
         const bool isInput = inputTrackIndexCache.contains (trackIndex);
-        const bool armEnabled = isInput || session.isMidiTrack (trackIndex);
+        const bool inputReady = isInput && session.getTrackInputProblem (trackIndex).isEmpty();
+        const bool armEnabled = inputReady || session.isMidiTrack (trackIndex);
 
         switch (control)
         {
             case track_lane::LaneControl::arm:
                 if (! armEnabled)
                 {
-                    selectTrack (trackIndex);
+                    // Explain WHY an input track is not armable (channel off the
+                    // device), instead of a silent no-op (RT-2b D1/D2).
+                    const auto problem = session.getTrackInputProblem (trackIndex);
+
+                    if (problem.isNotEmpty())
+                        showStatus (problem, true);
+                    else
+                        selectTrack (trackIndex);
+
                     return;
                 }
 
@@ -3264,7 +3290,8 @@ namespace rrs
     }
 
     void MainComponent::drawLaneControls (juce::Graphics& g, juce::Rectangle<int> lane,
-                                          bool isInput, bool armEnabled, bool armed, bool recording,
+                                          bool isInput, bool inputAvailable, bool armEnabled,
+                                          bool armed, bool recording,
                                           bool muted, bool soloed, int meterIndex)
     {
         const auto r = track_lane::computeLaneControlRects (lane);
@@ -3319,35 +3346,47 @@ namespace rrs
         drawSquare (r.mute, "M", muted, hMute, brand::record);
         drawSquare (r.solo, "S", soloed, hSolo, brand::warning);
 
-        // INPUT chip / mini meter: live only on audio-input tracks, and only while
-        // the chip fits (spec §4.6 degradation: hidden below 44 px — unreachable at
-        // the 56 px floor, but the rule is honoured). The empty slot is still
-        // drawn so clips on every lane line up (spec §4.1).
+        // INPUT chip / mini meter: live only on audio-input tracks that actually
+        // HAVE a usable input (RT-2b D2), and only while the chip fits (spec §4.6
+        // degradation: hidden below 44 px). The empty slot is still drawn so clips
+        // on every lane line up (spec §4.1). `inputAvailable` is computed once in
+        // paint() (#6).
         const bool showInput = isInput && track_lane::controlMetrics (lane.getHeight()).inputVisible;
+        const bool chipUsable = showInput && inputAvailable;
 
         if (showInput)
         {
             g.setColour (brand::bgPanel);
             g.fillRoundedRectangle (r.input.toFloat(), 4.0f);
-            g.setColour (hInput ? brand::borderHover : brand::border);
+            g.setColour (chipUsable && hInput ? brand::borderHover : brand::border);
             g.drawRoundedRectangle (r.input.toFloat().reduced (0.5f), 4.0f, 1.0f);
-            g.setColour (brand::textSecondary);
             g.setFont (brand::uiMedium (10.0f));
 
-            const auto mapping = session.getTrackInputMapping (meterIndex);
-            juce::String code;
-
-            switch (mapping.layout)
+            if (chipUsable)
             {
-                case InputLayout::Mono:         code = "M"; break;
-                case InputLayout::Stereo:       code = "S"; break;
-                case InputLayout::MultiChannel: code = "N"; break;
-                case InputLayout::Auto:
-                default:                        code = "A"; break;
-            }
+                g.setColour (brand::textSecondary);
 
-            g.drawText (code + juce::String (mapping.firstChannel + 1), r.input,
-                        juce::Justification::centred);
+                const auto mapping = session.getTrackInputMapping (meterIndex);
+                juce::String code;
+
+                switch (mapping.layout)
+                {
+                    case InputLayout::Mono:         code = "M"; break;
+                    case InputLayout::Stereo:       code = "S"; break;
+                    case InputLayout::MultiChannel: code = "N"; break;
+                    case InputLayout::Auto:
+                    default:                        code = "A"; break;
+                }
+
+                g.drawText (code + juce::String (mapping.firstChannel + 1), r.input,
+                            juce::Justification::centred);
+            }
+            else
+            {
+                // Dimmed em-dash: no usable input on this device.
+                g.setColour (brand::textDisabled);
+                g.drawText ("\u2014", r.input, juce::Justification::centred);
+            }
         }
         else
         {
@@ -3355,7 +3394,7 @@ namespace rrs
             g.fillRoundedRectangle (r.input.toFloat(), 4.0f);
         }
 
-        if (showInput)
+        if (chipUsable)
             drawMiniMeter (g, r.meter, meterIndex);
     }
 

@@ -178,8 +178,8 @@ namespace rrs
         void pumpMeters (double dtSeconds);
         /** Draws one lane's control band (arm / mute / solo / input / meter). */
         void drawLaneControls (juce::Graphics&, juce::Rectangle<int> lane, bool isInput,
-                               bool armEnabled, bool armed, bool recording, bool muted,
-                               bool soloed, int meterIndex);
+                               bool inputAvailable, bool armEnabled, bool armed, bool recording,
+                               bool muted, bool soloed, int meterIndex);
         void drawMiniMeter (juce::Graphics&, juce::Rectangle<int>, int meterIndex);
         /** The control under `p` for lane `trackIndex` (none when `p` is in the
             clip zone / outside the gutter). */

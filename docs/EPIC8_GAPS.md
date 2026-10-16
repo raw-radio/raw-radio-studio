@@ -172,6 +172,12 @@ Legend: **Est** ∈ {S, M, L}; `depends on` lists hard prerequisites. `RT-*` = r
 parallel from the start (it is sequenced after WV only to keep the commit train linear); `LV-2` needs
 the remote box. `LW-1`'s pure span math can be written before WV-2 but `LW-2` needs WV-2's drawing.
 
+**Known gap (deliberately deferred to RT-8).** The **mixer channel strips**
+(`MixerPanel.cpp`, the strip input chip) still draw the raw mapping (`M3`/`M4`/`M5`) even when the
+channel is off the device — unlike the **gutter** chip, which shows the dimmed `—`
+(`Session::getTrackInputProblem`). Fixing the strips needs the shared occupancy provider planned for
+**RT-8**; until then the mixer is knowingly misleading for a track whose input is unavailable.
+
 ### Commit & review sequence
 
 Each unit = **review (`code-reviewer`) → fixes → one commit** (conventional message, **DCO `-s`**,

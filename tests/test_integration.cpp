@@ -1361,6 +1361,240 @@ TEST_CASE ("input mapping: no device is resolved when the channel is off the map
     session.close();
 }
 
+//==============================================================================
+// RT-2b D1: a track whose channel is off the device reports a STABLE, concrete
+// problem (no transient device-list dependence) that survives the success path —
+// the old code cleared `lastError` and never re-surfaced it.
+TEST_CASE ("input mapping: a track beyond the device channels reports a problem (RT-2b D1)")
+{
+    auto dir = scratchDirectory ("input-problem");
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Problem.tracktionedit")));
+
+    te::HostedAudioDeviceInterface::Parameters params;
+    params.sampleRate = 48000.0;
+    params.blockSize = 256;
+    params.inputChannels = 2;   // exactly two hardware inputs
+    params.outputChannels = 2;
+
+    auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+
+    for (int i = 0; i < 200; ++i)
+    {
+        audio.deviceManager().dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+        if (session.isInputConfigured())
+            break;
+
+        session.reconfigureInputs();
+    }
+
+    REQUIRE (audio.deviceManager().getNumWaveInDevices() > 0);
+    REQUIRE (! session.getInputTrackIndices().isEmpty());
+
+    auto settle = [&]
+    {
+        for (int i = 0; i < 50; ++i)
+        {
+            audio.deviceManager().dispatchPendingUpdates();
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (5);
+        }
+    };
+
+    // Track 0 maps channel 0 -> fine.
+    CHECK (session.getTrackInputProblem (session.getInputTrackIndices()[0]).isEmpty());
+
+    // 2nd track -> channel 1 (still on the device).
+    REQUIRE (session.addAudioTrack() >= 0);
+    settle();
+
+    // 3rd track -> channel 2, beyond the 2-channel device.
+    REQUIRE (session.addAudioTrack() >= 0);
+    settle();
+
+    // 3rd track -> channel 2, beyond the 2-channel device. Checked IMMEDIATELY
+    // (before any settle): the problem must not depend on the transiently
+    // rebuilt wave-device list (RT-2b #5 / D1).
+    const int third = session.addAudioTrack();
+    REQUIRE (third >= 0);
+    CHECK (session.getTrackInputProblem (third).isNotEmpty());
+
+    settle();
+
+    const auto idxs = session.getInputTrackIndices();
+    REQUIRE (idxs.size() >= 3);
+
+    CHECK (session.getTrackInputProblem (idxs[0]).isEmpty());
+    CHECK (session.getTrackInputProblem (idxs[1]).isEmpty());
+
+    const auto problem = session.getTrackInputProblem (idxs[2]);
+    CHECK (problem.isNotEmpty());
+    CHECK (problem.contains ("Input channel"));
+    CHECK_FALSE (session.isTrackInputChannelAvailable (idxs[2]));
+
+    // Cross-check: the two predicates now agree (RT-2b #7).
+    for (auto i : idxs)
+        CHECK (session.isTrackInputChannelAvailable (i) == session.getTrackInputProblem (i).isEmpty());
+
+    // The reason is the one arming reports (deterministic — computed from the
+    // live device, not the transiently-rebuilt device list). This is the
+    // Session-level state the UI reads (RT-2b D1, option v).
+    CHECK_FALSE (session.setTrackArmed (idxs[2], true));
+    CHECK (session.getLastError().contains ("Input channel"));
+
+    session.close();
+}
+
+//==============================================================================
+// RT-2b #1: the problem accounts for the mapping's SPAN, not just its first
+// channel — a stereo pair that would run off the device (or silently degrade to
+// centred mono) is flagged.
+TEST_CASE ("input problem: a stereo pair at/over the device edge is flagged (RT-2b #1)")
+{
+    auto dir = scratchDirectory ("input-span");
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Span.tracktionedit")));
+
+    te::HostedAudioDeviceInterface::Parameters params;
+    params.sampleRate = 48000.0;
+    params.blockSize = 256;
+    params.inputChannels = 2;
+    params.outputChannels = 2;
+    auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+
+    for (int i = 0; i < 200; ++i)
+    {
+        audio.deviceManager().dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+        if (session.isInputConfigured()) break;
+        session.reconfigureInputs();
+    }
+
+    REQUIRE (audio.deviceManager().getNumWaveInDevices() > 0);
+    const int track = session.getInputTrackIndices()[0];
+
+    // Stereo on channel 1 of a 2-channel device needs channels 1-2 -> off device.
+    REQUIRE (session.setTrackInputMapping (track, InputMapping { 1, 2, InputLayout::Stereo }));
+    const auto problem = session.getTrackInputProblem (track);
+    CHECK (problem.isNotEmpty());
+    CHECK (problem.contains ("Input channels 2-3"));   // 1-based, spans to the missing channel
+    CHECK_FALSE (session.isTrackInputChannelAvailable (track));
+
+    // Stereo on channel 0 fits -> cleared (success path).
+    REQUIRE (session.setTrackInputMapping (track, InputMapping { 0, 2, InputLayout::Stereo }));
+    CHECK (session.getTrackInputProblem (track).isEmpty());
+    CHECK (session.isTrackInputChannelAvailable (track));
+
+    // Mono on the last channel (channel 1) still fits (a single channel).
+    REQUIRE (session.setTrackInputMapping (track, InputMapping { 1, 1, InputLayout::Mono }));
+    CHECK (session.getTrackInputProblem (track).isEmpty());
+
+    session.close();
+}
+
+//==============================================================================
+// RT-2b #2: stereo on a 1-channel device has no room for the pair.
+TEST_CASE ("input problem: stereo on a 1-channel device is flagged (RT-2b #2)")
+{
+    auto dir = scratchDirectory ("input-1ch");
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("OneCh.tracktionedit")));
+
+    te::HostedAudioDeviceInterface::Parameters params;
+    params.sampleRate = 48000.0;
+    params.blockSize = 256;
+    params.inputChannels = 1;
+    params.outputChannels = 2;
+    auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+
+    for (int i = 0; i < 200; ++i)
+    {
+        audio.deviceManager().dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+        if (session.isInputConfigured()) break;
+        session.reconfigureInputs();
+    }
+
+    REQUIRE (audio.deviceManager().getNumWaveInDevices() > 0);
+    const int track = session.getInputTrackIndices()[0];
+
+    // Default (Auto on a 1-channel device) is Mono -> fine.
+    CHECK (session.getTrackInputProblem (track).isEmpty());
+
+    // An explicit stereo pair cannot fit one channel.
+    REQUIRE (session.setTrackInputMapping (track, InputMapping { 0, 2, InputLayout::Stereo }));
+    CHECK (session.getTrackInputProblem (track).isNotEmpty());
+
+    session.close();
+}
+
+//==============================================================================
+// RT-2b #2/#4/#6/#7: single authoritative predicate + guard rails.
+TEST_CASE ("input problem: single predicate and guards (RT-2b)")
+{
+    auto dir = scratchDirectory ("input-guards");
+    auto wav = writeSineWav (dir.getChildFile ("take.wav"), 48000.0, 1.0);
+    REQUIRE (wav.existsAsFile());
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Guards.tracktionedit")));
+
+    te::HostedAudioDeviceInterface::Parameters params;
+    params.sampleRate = 48000.0;
+    params.blockSize = 256;
+    params.inputChannels = 2;
+    params.outputChannels = 2;
+    auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+
+    for (int i = 0; i < 200; ++i)
+    {
+        audio.deviceManager().dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+        if (session.isInputConfigured()) break;
+        session.reconfigureInputs();
+    }
+
+    REQUIRE (audio.deviceManager().getNumWaveInDevices() > 0);
+    const int inputTrack = session.getInputTrackIndices()[0];
+
+    // A playback-only (imported) track is never an input track -> no problem.
+    REQUIRE (session.importAudioFile (wav));
+    int playbackTrack = -1;
+    for (int i = 0; i < session.getNumAudioTracks(); ++i)
+        if (! session.getInputTrackIndices().contains (i))
+            playbackTrack = i;
+    REQUIRE (playbackTrack >= 0);
+    CHECK (session.getTrackInputProblem (playbackTrack).isEmpty());
+    CHECK (session.isTrackInputChannelAvailable (playbackTrack));
+
+    // #4/#7: no device open -> channels == 0 -> problem empty AND available true
+    // (the two predicates stay in agreement).
+    audio.deviceManager().deviceManager.closeAudioDevice();
+    for (int i = 0; i < 20; ++i)
+        audio.deviceManager().dispatchPendingUpdates();
+
+    if (audio.getNumActiveInputChannels() == 0)
+    {
+        CHECK (session.getTrackInputProblem (inputTrack).isEmpty());
+        CHECK (session.isTrackInputChannelAvailable (inputTrack));
+    }
+
+    CHECK (session.isTrackInputChannelAvailable (inputTrack)
+               == session.getTrackInputProblem (inputTrack).isEmpty());
+    CHECK (session.isTrackInputChannelAvailable (playbackTrack)
+               == session.getTrackInputProblem (playbackTrack).isEmpty());
+
+    session.close();
+}
+
 
 //==============================================================================
 // Epic 4 (FR-ED-1/2/6): arrangement clip edits. Every operation changes the

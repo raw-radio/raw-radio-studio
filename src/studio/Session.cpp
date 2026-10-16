@@ -4,6 +4,7 @@
 
 #include "AppPaths.h"
 #include "AudioImport.h"
+#include "InputGrouping.h"
 #include "InputRouting.h"
 #include "PluginSelection.h"
 #include "TimeStretch.h"
@@ -1019,21 +1020,26 @@ namespace rrs
                 continue;
 
             auto mapping = readTrackMapping (index);
-            auto* waveIn = resolveInputDeviceFor (mapping);
 
-            if (waveIn == nullptr)
+            // RT-2b D1: decide "channel off the device" from the LIVE device's
+            // input count (stable via getTrackInputProblem), NOT from the
+            // transiently-rebuilt wave-device list — otherwise the message was
+            // silently skipped right after add-track (list momentarily empty),
+            // `inputsConfigured` then stayed true, and the reason never appeared.
+            const auto problem = getTrackInputProblem (index);
+
+            if (problem.isNotEmpty())
             {
-                // No device carries this track's channel (RT-2). Do not silently
-                // substitute one. When there are truly no devices yet (headless /
-                // interface still opening) this is not an error — timerCallback
-                // retries; otherwise surface it for the user.
-                if (audio.deviceManager().getNumWaveInDevices() > 0
-                    && missingChannelMessage.isEmpty())
-                    missingChannelMessage = "Input channel " + juce::String (mapping.firstChannel + 1)
-                                            + " is not available on the current audio device.";
+                if (missingChannelMessage.isEmpty())
+                    missingChannelMessage = problem;
 
                 continue;
             }
+
+            auto* waveIn = resolveInputDeviceFor (mapping);
+
+            if (waveIn == nullptr)
+                continue; // device list still rebuilding — timerCallback retries
 
             waveIn->setEnabled (true);
 
@@ -1230,11 +1236,60 @@ namespace rrs
         return nullptr;
     }
 
+    // How many consecutive hardware channels a track's mapping needs (RT-2b):
+    // Mono/Auto-resolved via the RT-1 helpers (1/2); MultiChannel needs its own
+    // `numChannels`. RT-1 plans MultiChannel as a stereo pair, so it is handled
+    // explicitly here to keep the span honest.
+    static int requiredInputSpan (const InputMapping& mapping, int deviceChannels) noexcept
+    {
+        if (mapping.layout == InputLayout::MultiChannel)
+            return juce::jmax (1, mapping.numChannels);
+
+        return channelsPerLayout (planLayoutFor (mapping.layout, deviceChannels));
+    }
+
     bool Session::isTrackInputChannelAvailable (int trackIndex) const
     {
-        // RT-2: `resolveInputDeviceFor` returns null when no device carries the
-        // mapped channel — expose that as availability instead of clamping.
-        return resolveInputDeviceFor (readTrackMapping (trackIndex)) != nullptr;
+        // RT-2b #2: ONE authoritative predicate — available == "no problem".
+        // (It used to consult the transiently-rebuilt wave-device list and could
+        // disagree with getTrackInputProblem.)
+        return getTrackInputProblem (trackIndex).isEmpty();
+    }
+
+    juce::String Session::getTrackInputProblem (int trackIndex) const
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (edit == nullptr || track == nullptr || ! isInputTrack (*track))
+            return {};
+
+        // The live device's input count — NOT the wave-device list (rebuilt
+        // asynchronously). The answer is therefore stable across a wave-device
+        // rebuild; it can still blink while the AUDIO DEVICE itself reopens
+        // (`getCurrentAudioDevice()` may be momentarily null -> channels == 0 ->
+        // no problem reported), which is acceptable (RT-2b D1).
+        const int channels = audio.getNumActiveInputChannels();
+
+        if (channels <= 0)
+            return {}; // no device open yet — not a (persistent) problem
+
+        const auto mapping = readTrackMapping (trackIndex);
+        const int need = requiredInputSpan (mapping, channels);
+
+        if (channelSpanFits (mapping.firstChannel, need, channels))
+            return {}; // fits (Mono AND the stereo/pair span) — no silent degradation
+
+        // Long long so a pathological channel index cannot overflow the message.
+        const long long lo = (long long) mapping.firstChannel + 1;
+        const long long hi = (long long) mapping.firstChannel + need;
+        const auto inputsText = juce::String (channels) + " input" + (channels == 1 ? "" : "s");
+
+        if (need == 2)
+            return "Input channels " + juce::String (lo) + "-" + juce::String (hi)
+                 + " are not available: the current device has only " + inputsText + ".";
+
+        return "Input channel " + juce::String (lo)
+             + " is not available: the current device has only " + inputsText + ".";
     }
 
     //==============================================================================
@@ -1275,7 +1330,17 @@ namespace rrs
 
         if (! found)
         {
-            lastError = "The track has no input device assigned.";
+            // Prefer the concrete, stable reason (channel/pair off the device)
+            // over the generic message, so the user knows WHY (RT-2b D1).
+            const auto problem = getTrackInputProblem (trackIndex);
+
+            if (problem.isNotEmpty())
+                lastError = problem;
+            else if (audio.getNumActiveInputChannels() <= 0)
+                lastError = "No input device is open. Choose one in the Device panel.";
+            else
+                lastError = "The track has no input device assigned.";
+
             return false;
         }
 

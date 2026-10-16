@@ -97,6 +97,17 @@ namespace rrs
         return layout == InputLayout::Stereo ? 2 : 1;
     }
 
+    /** True when a run of `need` consecutive channels starting at `first` lies
+        inside [0, deviceChannels). Overflow-safe for any `first`/`need` (the
+        comparison never computes `first + need`). Single source of the check —
+        used by the planner, the mono→stereo switch test and by Session's
+        "channel off the device" predicate. */
+    inline bool channelSpanFits (int first, int need, int deviceChannels) noexcept
+    {
+        return first >= 0 && need >= 1 && deviceChannels >= need
+            && first <= deviceChannels - need;
+    }
+
     /** True when `channel` is unowned (see `channelOccupancy`). */
     inline bool isChannelFree (const std::map<int, int>& occupancy, int channel) noexcept
     {
@@ -174,8 +185,8 @@ namespace rrs
             {
                 const int first = request.requestedChannel;
 
-                // B3: compare without `first + need` (would overflow near INT_MAX).
-                if (first > deviceChannels - need)
+                // B3: overflow-safe span check (shared helper).
+                if (! channelSpanFits (first, need, deviceChannels))
                     return fail (InputGroupingError::ChannelOffDevice, request.trackIndex);
 
                 for (int i = 0; i < need; ++i)
@@ -242,8 +253,8 @@ namespace rrs
     inline bool wouldConflictOnSwitchToStereo (int trackIndex, int firstChannel, int deviceChannels,
                                                const std::map<int, int>& occupancy) noexcept
     {
-        // B3: guard without `firstChannel + 1` (would overflow near INT_MAX).
-        if (firstChannel < 0 || deviceChannels < 2 || firstChannel > deviceChannels - 2)
+        // B3: overflow-safe span check (shared helper); a stereo pair needs 2.
+        if (! channelSpanFits (firstChannel, 2, deviceChannels))
             return true;
 
         const auto owner = occupancy.find (firstChannel + 1);

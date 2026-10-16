@@ -382,6 +382,14 @@ namespace rrs
             device is silently substituted for it. */
         bool isTrackInputChannelAvailable (int trackIndex) const;
 
+        /** A stable, user-facing reason why this input track's mapped channel
+            cannot be used right now (e.g. the channel is beyond the device's
+            input count), or an empty string when it is fine. Computed from the
+            live device's channel count (not the transiently-rebuilt wave-device
+            list), so it does not flicker — the UI shows it for a track whose
+            input is missing (RT-2b D1/D2). */
+        juce::String getTrackInputProblem (int trackIndex) const;
+
         /** Re-resolves the input device and re-assigns it to the track. Call after
             the audio device changes (wave devices are rebuilt). */
         void reconfigureInputs();
