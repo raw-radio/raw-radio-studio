@@ -7,6 +7,7 @@
 //
 // A track's mapping is: starting hardware channel + channel count + layout.
 // Layouts:
+//   * None         no input assigned yet (RT-4): a valid, unassigned state.
 //   * Auto         1-ch device -> centred mono; >=2-ch -> stereo L/R (Epic 1).
 //   * Mono         device ch `firstChannel` duplicated to L+R (centred).
 //   * Stereo       device ch `firstChannel` -> L, `firstChannel+1` -> R.
@@ -29,7 +30,9 @@ namespace rrs
         Auto,          ///< 1-ch device -> centred mono; >=2-ch -> stereo L/R.
         Mono,          ///< Device channel `firstChannel` duplicated to L+R (centred).
         Stereo,        ///< Device ch `firstChannel` -> L, `firstChannel+1` -> R.
-        MultiChannel   ///< Device ch `firstChannel`..`firstChannel+N-1` -> N discrete.
+        MultiChannel,  ///< Device ch `firstChannel`..`firstChannel+N-1` -> N discrete.
+        None           ///< No input assigned (RT-4): valid; assign later. No channel,
+                       ///< no device, no problem — the track is just not fed yet.
     };
 
     /** A track's input assignment. */
@@ -107,6 +110,10 @@ namespace rrs
 
         switch (layout)
         {
+            case InputLayout::None:
+                // Unassigned: no destination channels at all (never configured).
+                return {};
+
             case InputLayout::Mono:
                 return centredMono();
 
@@ -148,6 +155,7 @@ namespace rrs
     {
         switch (layout)
         {
+            case InputLayout::None:         return "none";
             case InputLayout::Mono:         return "mono";
             case InputLayout::Stereo:       return "stereo";
             case InputLayout::MultiChannel: return "multi";
@@ -158,6 +166,7 @@ namespace rrs
 
     inline InputLayout inputLayoutFromString (const juce::String& text)
     {
+        if (text == "none")   return InputLayout::None;
         if (text == "mono")   return InputLayout::Mono;
         if (text == "stereo") return InputLayout::Stereo;
         if (text == "multi")  return InputLayout::MultiChannel;

@@ -139,12 +139,16 @@ namespace rrs
     }
 
     /** Per-track layout plan: places each request in canonical (`trackIndex`)
-        order, keeping a channel-occupancy map so two tracks never share a channel
-        and a stereo pair never takes an owned neighbour. Unlike
-        `planInputGrouping` this is NOT all-or-nothing: a track that cannot be
-        placed gets an explicit `error` (with `ownerTrackIndex`/`conflictChannel`)
-        while the others are still placed. This is the single rule both
-        `configureTracks` and the per-track "input problem" read (RT-3 M1/M2). */
+        order, keeping a channel-occupancy map. A track that cannot be placed
+        gets an explicit `error` (with `ownerTrackIndex`/`conflictChannel`) while
+        the others are still placed — unlike the all-or-nothing
+        `planInputGrouping`. This is the single rule both `configureTracks` and
+        the per-track "input problem" read (RT-3 M1/M2).
+
+        Occupancy (RT-4 refresh): tracks may **share an identical span** (same
+        `firstChannel` + same `need`) — several tracks on one channel/pair is
+        valid (the device config is identical). A *different* span overlapping an
+        owned channel is still refused. */
     inline InputLayoutPlan planInputLayout (std::span<const TrackInputRequest> requests,
                                             int deviceChannels)
     {
@@ -156,7 +160,10 @@ namespace rrs
                           { return a.trackIndex < b.trackIndex; });
 
         const bool hasDevice = deviceChannels > 0;
-        std::vector<std::optional<int>> owner (hasDevice ? (size_t) deviceChannels : 0);
+
+        // For each channel: the span that owns it (so identical spans can share).
+        struct Span { int first; int need; int repTrack; };
+        std::vector<std::optional<Span>> owner (hasDevice ? (size_t) deviceChannels : 0);
 
         auto isFreeAt = [&owner, hasDevice] (int channel) noexcept
         {
@@ -177,6 +184,13 @@ namespace rrs
             {
                 r.error = InputGroupingError::InvalidTrackIndex;
             }
+            else if (request.layout == InputLayout::None)
+            {
+                // Unassigned (RT-4): valid, consumes no channel, is not an error.
+                r.need = 0;
+                r.placed = false;
+                r.error = InputGroupingError::None;
+            }
             else if (! hasDevice)
             {
                 r.error = InputGroupingError::NoDevice;
@@ -192,19 +206,27 @@ namespace rrs
                 else
                 {
                     for (int i = 0; i < r.need; ++i)
-                        if (! isFreeAt (first + i))
-                        {
-                            r.error = r.need == 2 ? InputGroupingError::OccupiedNeighbour
-                                                  : InputGroupingError::ChannelOccupied;
-                            r.ownerTrackIndex = owner[(size_t) (first + i)].value();
-                            r.conflictChannel = first + i;
-                            break;
-                        }
+                    {
+                        const auto& slot = owner[(size_t) (first + i)];
+
+                        if (! slot.has_value())
+                            continue;
+
+                        // Same span (same start + same length): sharing is allowed.
+                        if (slot->first == first && slot->need == r.need)
+                            continue;
+
+                        r.error = (r.need == 2 || slot->need == 2) ? InputGroupingError::OccupiedNeighbour
+                                                                  : InputGroupingError::ChannelOccupied;
+                        r.ownerTrackIndex = slot->repTrack;
+                        r.conflictChannel = first + i;
+                        break;
+                    }
 
                     if (r.error == InputGroupingError::None)
                     {
                         for (int i = 0; i < r.need; ++i)
-                            owner[(size_t) (first + i)] = request.trackIndex;
+                            owner[(size_t) (first + i)] = Span { first, r.need, request.trackIndex };
 
                         r.firstChannel = first;
                         r.placed = true;
@@ -241,7 +263,7 @@ namespace rrs
                 else
                 {
                     for (int i = 0; i < r.need; ++i)
-                        owner[(size_t) (chosen + i)] = request.trackIndex;
+                        owner[(size_t) (chosen + i)] = Span { chosen, r.need, request.trackIndex };
 
                     r.firstChannel = chosen;
                     r.placed = true;
@@ -283,6 +305,11 @@ namespace rrs
 
         for (const auto& t : layout.tracks)
         {
+            // Unassigned tracks (RT-4) are not part of the grouping and are not
+            // an error — skip them.
+            if (! t.placed && t.error == InputGroupingError::None && t.layout == InputLayout::None)
+                continue;
+
             if (! t.placed)
             {
                 plan.ok = false;

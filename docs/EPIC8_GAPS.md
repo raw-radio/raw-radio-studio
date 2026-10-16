@@ -172,11 +172,24 @@ Legend: **Est** ∈ {S, M, L}; `depends on` lists hard prerequisites. `RT-*` = r
 parallel from the start (it is sequenced after WV only to keep the commit train linear); `LV-2` needs
 the remote box. `LW-1`'s pure span math can be written before WV-2 but `LW-2` needs WV-2's drawing.
 
-**Known gap (deliberately deferred to RT-8).** The **mixer channel strips**
-(`MixerPanel.cpp`, the strip input chip) still draw the raw mapping (`M3`/`M4`/`M5`) even when the
-channel is off the device — unlike the **gutter** chip, which shows the dimmed `—`
-(`Session::getTrackInputProblem`). Fixing the strips needs the shared occupancy provider planned for
-**RT-8**; until then the mixer is knowingly misleading for a track whose input is unavailable.
+**RT-4 model (owner-agreed).** Track creation is **never blocked**: input is an
+attribute assigned later. A track with no free hardware channel is created in the valid
+**`InputLayout::None`** state ("No input", name `Track N`) — not with an off-device channel. Two
+states are distinct: **unassigned** (`None`; no error; assign later) vs **invalid** (a channel/pair
+beyond the device, or a *different* span overlapping an owned one → `Session::getTrackInputProblem`
+with a concrete reason). **Sharing an identical span** (same `firstChannel` + same `need`) is allowed:
+several tracks on one channel/pair is valid (the device channel config is identical); the device is
+allocated per **span**, so sharing tracks share one `WaveInputDevice`.
+
+**Known limitations (documented, deferred).**
+
+- **Shared span = one device gain.** The record trim (FR-REC-4) is a property of the
+  `WaveInputDevice` (applied on the audio thread before monitoring/recording), so when several
+  tracks share one span the trim of the *representative* track wins — a second sharing track's trim
+  has no effect. Per-track gain would need a per-track gain stage before the input node (a semantic
+  change), so it is knowingly deferred.
+- **Channel-menu occupancy marking** (show which channels are taken/occupied) is **RT-8**; the menu
+  lists raw channels without marks for now.
 
 ### Commit & review sequence
 

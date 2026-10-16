@@ -54,6 +54,10 @@ namespace rrs
         /** Fired when the mixer is collapsed/expanded from the UI (header click). */
         std::function<void()> onCollapsedChanged;
 
+        /** Route a short message to the host's status line (e.g. why a track
+            cannot be armed — RT-4 M2). */
+        std::function<void (const juce::String& message, bool isError)> onStatus;
+
     private:
         void changeListenerCallback (juce::ChangeBroadcaster*) override;
         void timerCallback() override;

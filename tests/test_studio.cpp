@@ -1859,21 +1859,64 @@ TEST_CASE ("input grouping: deterministic — the result does not depend on inse
     for (size_t i = 0; i < a.assignments.size(); ++i)
         CHECK (a.assignments[i] == b.assignments[i]);
 
-    // Deterministic conflict resolution: two tracks claim channel 0 — the LOWER
-    // track index wins and the other is refused (ChannelOccupied), regardless of
-    // order. On failure the plan carries no half-placed assignments (High-1).
-    const std::vector<TrackInputRequest> claimA { req (1, InputLayout::Mono, 0), req (0, InputLayout::Mono, 0) };
-    const std::vector<TrackInputRequest> claimB { req (0, InputLayout::Mono, 0), req (1, InputLayout::Mono, 0) };
-    const auto pa = planInputGrouping (claimA, 4);
-    const auto pb = planInputGrouping (claimB, 4);
+    // RT-4: an IDENTICAL span may be shared — two mono tracks on channel 0 are
+    // both valid, in either order (no "last wins").
+    const std::vector<TrackInputRequest> shareA { req (1, InputLayout::Mono, 0), req (0, InputLayout::Mono, 0) };
+    const std::vector<TrackInputRequest> shareB { req (0, InputLayout::Mono, 0), req (1, InputLayout::Mono, 0) };
+    const auto sa = planInputGrouping (shareA, 4);
+    const auto sb = planInputGrouping (shareB, 4);
+    CHECK (sa.ok);
+    CHECK (sb.ok);
+    REQUIRE (sa.assignments.size() == 2);
+    CHECK (sa.assignments[(size_t) 0] == sb.assignments[(size_t) 0]);
+    CHECK (sa.assignments[(size_t) 1] == sb.assignments[(size_t) 1]);
+    for (const auto& shared : sa.assignments)
+        CHECK (shared.firstChannel == 0);
+
+    // A DIFFERENT overlapping span is still refused (deterministic; owner named).
+    const std::vector<TrackInputRequest> clashA { req (1, InputLayout::Stereo, 0), req (0, InputLayout::Mono, 0) };
+    const std::vector<TrackInputRequest> clashB { req (0, InputLayout::Mono, 0), req (1, InputLayout::Stereo, 0) };
+    const auto pa = planInputGrouping (clashA, 4);
+    const auto pb = planInputGrouping (clashB, 4);
     CHECK_FALSE (pa.ok);
     CHECK_FALSE (pb.ok);
-    CHECK (pa.error == InputGroupingError::ChannelOccupied);
-    CHECK (pb.error == InputGroupingError::ChannelOccupied);
+    CHECK (pa.error == InputGroupingError::OccupiedNeighbour);
+    CHECK (pb.error == InputGroupingError::OccupiedNeighbour);
     CHECK (pa.errorTrackIndex == 1);
     CHECK (pb.errorTrackIndex == 1);
     CHECK (pa.assignments.empty());
     CHECK (pb.assignments.empty());
+}
+
+//==============================================================================
+// RT-4: an unassigned (`InputLayout::None`) track is a valid state — it consumes
+// no channel and is not an error, but it is also not placed.
+TEST_CASE ("input grouping: an unassigned track is valid and not placed (RT-4)")
+{
+    using namespace rrs;
+
+    const std::vector<TrackInputRequest> reqs {
+        req (0, InputLayout::Mono, 0),
+        req (1, InputLayout::None),
+        req (2, InputLayout::Mono, 1) };
+
+    const auto plan = planInputLayout (reqs, 2);
+    REQUIRE (plan.tracks.size() == 3);
+
+    CHECK (plan.tracks[0].placed);
+    CHECK (plan.tracks[0].firstChannel == 0);
+
+    CHECK_FALSE (plan.tracks[1].placed);
+    CHECK (plan.tracks[1].layout == InputLayout::None);
+    CHECK (plan.tracks[1].error == InputGroupingError::None); // valid, no error
+
+    CHECK (plan.tracks[2].placed);
+    CHECK (plan.tracks[2].firstChannel == 1);
+
+    // planInputGrouping ignores the unassigned track.
+    const auto grouping = planInputGrouping (reqs, 2);
+    CHECK (grouping.ok);
+    CHECK (grouping.assignments.size() == 2);
 }
 
 //==============================================================================

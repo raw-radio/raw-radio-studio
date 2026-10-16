@@ -380,7 +380,10 @@ namespace rrs
 
         /** True when the current audio device actually carries the track's mapped
             input channel. RT-2: false means "channel not on the device" — no
-            device is silently substituted for it. */
+            device is silently substituted for it. NOTE (RT-4): an unassigned
+            (`InputLayout::None`) track has no problem, so this is **true**, yet the
+            track is not armable — check the mapping layout too (the UI shows
+            "No input" and keeps arm disabled). */
         bool isTrackInputChannelAvailable (int trackIndex) const;
 
         /** A stable, user-facing reason why this input track's mapped channel
@@ -843,6 +846,10 @@ namespace rrs
             a session with no markers treats track 0 as the input track). */
         juce::Array<int> inputTrackIndices() const;
 
+        /** True when at least one input track has an assigned (non-`None`) input
+            (RT-4): the monitoring device-0 fallback must not fire otherwise. */
+        bool hasAnyAssignedInputTrack() const;
+
         /** Resolves the wave input device that carries `channel`, or the best
             available fallback. */
         tracktion::WaveInputDevice* resolveInputDeviceFor (const InputMapping&) const;
@@ -1005,14 +1012,17 @@ namespace rrs
         bool meterAttached = false;
         bool inputsConfigured = false;
 
-        /** Layout applied by the last successful `configureTracks()` (RT-3): the
-            wave-device index each input track owns, the channel each track owns,
-            and the per-track "no input" reason. Read by `getTrackInputProblem()`
+        /** Layout applied by the last successful `configureTracks()` (RT-3/RT-4):
+            the wave-device index each input track owns (several tracks may share
+            one span's device), the device allocated per input span, a
+            representative track per span (to rebuild a shared device's config),
+            and the per-track problem reason. Read by `getTrackInputProblem()`
             (fast, message thread) and by the timer's drift-correction, which must
             never re-resolve a device by channel-contains (that could pick another
             track's device — RT-3 B1). */
-        std::map<int, int> appliedDeviceOwner;      ///< device index -> track index
         std::map<int, int> appliedTrackDevice;      ///< track index -> device index
+        std::map<std::pair<int, int>, int> appliedSpanDevice;    ///< span -> device index
+        std::map<std::pair<int, int>, int> appliedSpanRepTrack;  ///< span -> representative track
         std::map<int, juce::String> inputTrackProblems; ///< track index -> reason (absent = ok)
         int appliedWaveDeviceCount = -1;
         /** Bounded retries for the one-per-channel device split request. */

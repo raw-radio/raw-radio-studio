@@ -253,6 +253,8 @@ namespace rrs
         // and persists the state; the auto-hide-by-height fallback in resized()
         // still takes priority when the window is too short.
         mixerPanel.onCollapsedChanged = [this] { persistUiState(); resized(); repaint(); };
+        // The mixer routes e.g. "why can't I arm this?" to the status line (RT-4 M2).
+        mixerPanel.onStatus = [this] (const juce::String& message, bool isError) { showStatus (message, isError); };
 
         // Owner decision R-B: the lane-height switcher is a compact icon-dropdown
         // at the right edge of the edit row (not inside the sidebar).
@@ -1930,7 +1932,11 @@ namespace rrs
                     // Compute the input problem ONCE per lane per frame (RT-2b #6):
                     // reused for the arm control, the chip and the mini-meter.
                     const auto inputProblem = session.getTrackInputProblem (index);
-                    const auto inputReady = isInput && inputProblem.isEmpty();
+                    // RT-4: an unassigned (None) input track is valid but not
+                    // armable until an input is assigned.
+                    const auto inputAssigned = isInput
+                                               && session.getTrackInputMapping (index).layout != InputLayout::None;
+                    const auto inputReady = inputAssigned && inputProblem.isEmpty();
                     const auto armEnabled = inputReady || session.isMidiTrack (index);
                     const auto muted = session.isTrackMuted (index);
                     const auto soloed = session.isTrackSolo (index);
@@ -3098,7 +3104,9 @@ namespace rrs
             return;
 
         const bool isInput = inputTrackIndexCache.contains (trackIndex);
-        const bool inputReady = isInput && session.getTrackInputProblem (trackIndex).isEmpty();
+        const bool inputAssigned = isInput
+                                   && session.getTrackInputMapping (trackIndex).layout != InputLayout::None;
+        const bool inputReady = inputAssigned && session.getTrackInputProblem (trackIndex).isEmpty();
         const bool armEnabled = inputReady || session.isMidiTrack (trackIndex);
 
         switch (control)
@@ -3106,12 +3114,15 @@ namespace rrs
             case track_lane::LaneControl::arm:
                 if (! armEnabled)
                 {
-                    // Explain WHY an input track is not armable (channel off the
-                    // device), instead of a silent no-op (RT-2b D1/D2).
+                    // Explain WHY an input track is not armable: unassigned
+                    // ("No input") or a concrete channel problem — never a silent
+                    // no-op (RT-2b D1/D2, RT-4).
                     const auto problem = session.getTrackInputProblem (trackIndex);
 
                     if (problem.isNotEmpty())
                         showStatus (problem, true);
+                    else if (isInput && ! inputAssigned)
+                        showStatus ("No input assigned. Click the input chip to choose a channel.", true);
                     else
                         selectTrack (trackIndex);
 
@@ -3160,10 +3171,11 @@ namespace rrs
         const auto numChannels = juce::jmax (1, session.getNumInputChannels());
 
         juce::PopupMenu channelMenu;
+        const bool assigned = mapping.layout != InputLayout::None;
 
         for (int ch = 0; ch < numChannels; ++ch)
             channelMenu.addItem (100 + ch, "Input " + juce::String (ch + 1), true,
-                                 ch == mapping.firstChannel);
+                                 assigned && ch == mapping.firstChannel);
 
         juce::PopupMenu layoutMenu;
         layoutMenu.addItem (200, "Auto", true, mapping.layout == InputLayout::Auto);
@@ -3189,7 +3201,14 @@ namespace rrs
                                 auto m = self->session.getTrackInputMapping (trackIndex);
 
                                 if (result >= 100 && result < 100 + numChannels)
+                                {
                                     m.firstChannel = result - 100;
+
+                                    // RT-4: picking a channel ASSIGNS an unassigned
+                                    // track (otherwise the layout would stay None).
+                                    if (m.layout == InputLayout::None)
+                                        m.layout = InputLayout::Mono;
+                                }
                                 else if (result == 200) m.layout = InputLayout::Auto;
                                 else if (result == 201) m.layout = InputLayout::Mono;
                                 else if (result == 202) m.layout = InputLayout::Stereo;
@@ -3354,11 +3373,16 @@ namespace rrs
         const bool showInput = isInput && track_lane::controlMetrics (lane.getHeight()).inputVisible;
         const bool chipUsable = showInput && inputAvailable;
 
+        // RT-4: an unassigned track shows "No input" (valid, not an error) and can
+        // be assigned later from this chip's menu.
+        const bool unassigned = showInput
+                                && session.getTrackInputMapping (meterIndex).layout == InputLayout::None;
+
         if (showInput)
         {
             g.setColour (brand::bgPanel);
             g.fillRoundedRectangle (r.input.toFloat(), 4.0f);
-            g.setColour (chipUsable && hInput ? brand::borderHover : brand::border);
+            g.setColour ((chipUsable || unassigned) && hInput ? brand::borderHover : brand::border);
             g.drawRoundedRectangle (r.input.toFloat().reduced (0.5f), 4.0f, 1.0f);
             g.setFont (brand::uiMedium (10.0f));
 
@@ -3374,6 +3398,7 @@ namespace rrs
                     case InputLayout::Mono:         code = "M"; break;
                     case InputLayout::Stereo:       code = "S"; break;
                     case InputLayout::MultiChannel: code = "N"; break;
+                    case InputLayout::None:         code = ""; break; // unreachable here
                     case InputLayout::Auto:
                     default:                        code = "A"; break;
                 }
@@ -3381,9 +3406,16 @@ namespace rrs
                 g.drawText (code + juce::String (mapping.firstChannel + 1), r.input,
                             juce::Justification::centred);
             }
+            else if (unassigned)
+            {
+                // Valid unassigned state: suggest assignment (not an error).
+                g.setColour (brand::textTertiary);
+                g.setFont (brand::uiMedium (9.0f));
+                g.drawText ("No input", r.input, juce::Justification::centred);
+            }
             else
             {
-                // Dimmed em-dash: no usable input on this device.
+                // Dimmed em-dash: channel off the device (invalid).
                 g.setColour (brand::textDisabled);
                 g.drawText ("\u2014", r.input, juce::Justification::centred);
             }

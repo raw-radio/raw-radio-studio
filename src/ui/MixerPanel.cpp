@@ -330,15 +330,25 @@ namespace rrs
         g.drawText (strip.isMaster ? "Master" : session.getTrackName (strip.trackIndex),
                     strip.name, juce::Justification::centred, true);
 
-        // Record-arm chip (FR-REC-2). Only input tracks are armable.
+        // RT-4: unassigned / off-device input tracks are not armable; their chip
+        // shows "No input" (valid) or a dimmed dash (invalid) instead of a fake code.
+        const auto inputMapping = strip.isInput ? session.getTrackInputMapping (strip.trackIndex)
+                                                : InputMapping {};
+        const bool inputAssigned = strip.isInput && inputMapping.layout != InputLayout::None;
+        const bool inputAvailable = strip.isInput
+                                    && session.getTrackInputProblem (strip.trackIndex).isEmpty();
+
+        // Record-arm chip (FR-REC-2). Only input tracks with a usable input are
+        // armable (RT-4): unassigned / off-device tracks show a disabled arm.
         if (strip.isInput && ! strip.arm.isEmpty())
         {
+            const bool armable = inputAssigned && inputAvailable;
             const auto a = strip.arm;
             g.setColour (armed ? brand::accentMuted : brand::bgPanel);
             g.fillRoundedRectangle (a.toFloat(), 4.0f);
-            g.setColour (armed ? brand::accent : brand::border);
+            g.setColour (! armable ? brand::textDisabled : (armed ? brand::accent : brand::border));
             g.drawRoundedRectangle (a.toFloat().reduced (0.5f), 4.0f, 1.0f);
-            g.setColour (armed ? brand::accent : brand::textSecondary);
+            g.setColour (! armable ? brand::textDisabled : (armed ? brand::accent : brand::textSecondary));
             g.setFont (brand::uiSemiBold (11.0f));
             g.drawText ("R", a, juce::Justification::centred);
         }
@@ -348,26 +358,43 @@ namespace rrs
         // Input tracks only — imported/backing tracks are playback-only (BUG-2).
         if (strip.isInput && ! strip.input.isEmpty())
         {
-            const auto mapping = session.getTrackInputMapping (strip.trackIndex);
-
-            juce::String code;
-            switch (mapping.layout)
-            {
-                case InputLayout::Mono:         code = "M"; break;
-                case InputLayout::Stereo:       code = "S"; break;
-                case InputLayout::MultiChannel: code = "N"; break;
-                case InputLayout::Auto:
-                default:                        code = "A"; break;
-            }
-
             const auto i = strip.input;
             g.setColour (brand::bgPanel);
             g.fillRoundedRectangle (i.toFloat(), 4.0f);
             g.setColour (brand::border);
             g.drawRoundedRectangle (i.toFloat().reduced (0.5f), 4.0f, 1.0f);
-            g.setColour (brand::textSecondary);
             g.setFont (brand::uiMedium (10.0f));
-            g.drawText (code + juce::String (mapping.firstChannel + 1), i, juce::Justification::centred);
+
+            if (! inputAssigned)
+            {
+                // Unassigned (RT-4): a valid state, not a fake "1".
+                g.setColour (brand::textTertiary);
+                g.setFont (brand::uiMedium (9.0f));
+                g.drawText ("No input", i, juce::Justification::centred);
+            }
+            else if (inputAvailable)
+            {
+                juce::String code;
+                switch (inputMapping.layout)
+                {
+                    case InputLayout::Mono:         code = "M"; break;
+                    case InputLayout::Stereo:       code = "S"; break;
+                    case InputLayout::MultiChannel: code = "N"; break;
+                    case InputLayout::None:         code = ""; break; // unreachable here
+                    case InputLayout::Auto:
+                    default:                        code = "A"; break;
+                }
+
+                g.setColour (brand::textSecondary);
+                g.drawText (code + juce::String (inputMapping.firstChannel + 1), i,
+                            juce::Justification::centred);
+            }
+            else
+            {
+                // Off the device: concrete degradation, not a raw channel code.
+                g.setColour (brand::textDisabled);
+                g.drawText ("\u2014", i, juce::Justification::centred);
+            }
         }
 
         // Record trim (FR-REC-4): a small horizontal bar, 0 dB centred, that
@@ -529,6 +556,25 @@ namespace rrs
 
             if (strip.isInput && strip.arm.contains (e.getPosition()))
             {
+                const bool assigned = session.getTrackInputMapping (strip.trackIndex).layout
+                                      != InputLayout::None;
+                const bool ready = assigned
+                                   && session.getTrackInputProblem (strip.trackIndex).isEmpty();
+
+                if (! ready)
+                {
+                    // Never a silent refusal (RT-4 M2): explain the concrete reason.
+                    const auto problem = session.getTrackInputProblem (strip.trackIndex);
+
+                    if (onStatus)
+                        onStatus (problem.isNotEmpty()
+                                      ? problem
+                                      : juce::String ("No input assigned. Click the input chip to choose a channel."),
+                                  true);
+
+                    return;
+                }
+
                 session.setTrackArmed (strip.trackIndex, ! session.isTrackArmed (strip.trackIndex));
                 return;
             }
@@ -651,10 +697,11 @@ namespace rrs
         const auto numChannels = juce::jmax (1, session.getNumInputChannels());
 
         juce::PopupMenu channelMenu;
+        const bool assigned = mapping.layout != InputLayout::None;
 
         for (int ch = 0; ch < numChannels; ++ch)
             channelMenu.addItem (100 + ch, "Input " + juce::String (ch + 1), true,
-                                 ch == mapping.firstChannel);
+                                 assigned && ch == mapping.firstChannel);
 
         juce::PopupMenu layoutMenu;
         layoutMenu.addItem (200, "Auto", true, mapping.layout == InputLayout::Auto);
@@ -680,7 +727,15 @@ namespace rrs
                                 auto m = self->session.getTrackInputMapping (trackIndex);
 
                                 if (result >= 100 && result < 100 + numChannels)
+                                {
                                     m.firstChannel = result - 100;
+
+                                    // RT-4 B1: picking a channel ASSIGNS an
+                                    // unassigned track (otherwise the layout stays
+                                    // `None` and the channel is dropped).
+                                    if (m.layout == InputLayout::None)
+                                        m.layout = InputLayout::Mono;
+                                }
                                 else if (result == 200) m.layout = InputLayout::Auto;
                                 else if (result == 201) m.layout = InputLayout::Mono;
                                 else if (result == 202) m.layout = InputLayout::Stereo;

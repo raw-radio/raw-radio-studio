@@ -1362,10 +1362,10 @@ TEST_CASE ("input mapping: no device is resolved when the channel is off the map
 }
 
 //==============================================================================
-// RT-2b D1: a track whose channel is off the device reports a STABLE, concrete
-// problem (no transient device-list dependence) that survives the success path —
-// the old code cleared `lastError` and never re-surfaced it.
-TEST_CASE ("input mapping: a track beyond the device channels reports a problem (RT-2b D1)")
+// RT-4: extra tracks on a full device are created UNASSIGNED (valid "No input"),
+// not with an off-device channel; and an explicitly pinned off-device channel
+// still reports a concrete RT-2b problem (the two states stay distinct).
+TEST_CASE ("input mapping: extra tracks are unassigned; an off-device pin reports a problem (RT-4/RT-2b)")
 {
     auto dir = scratchDirectory ("input-problem");
 
@@ -1411,37 +1411,36 @@ TEST_CASE ("input mapping: a track beyond the device channels reports a problem 
     REQUIRE (session.addAudioTrack() >= 0);
     settle();
 
-    // 3rd track -> channel 2, beyond the 2-channel device.
-    REQUIRE (session.addAudioTrack() >= 0);
-    settle();
-
-    // 3rd track -> channel 2, beyond the 2-channel device. Checked IMMEDIATELY
-    // (before any settle): the problem must not depend on the transiently
-    // rebuilt wave-device list (RT-2b #5 / D1).
+    // 3rd track -> no free channel -> UNASSIGNED (valid), not an error. The
+    // mapping is written synchronously at creation, so this needs no settle.
     const int third = session.addAudioTrack();
     REQUIRE (third >= 0);
-    CHECK (session.getTrackInputProblem (third).isNotEmpty());
-
+    CHECK (session.getTrackInputMapping (third).layout == InputLayout::None);
     settle();
 
     const auto idxs = session.getInputTrackIndices();
     REQUIRE (idxs.size() >= 3);
 
-    CHECK (session.getTrackInputProblem (idxs[0]).isEmpty());
-    CHECK (session.getTrackInputProblem (idxs[1]).isEmpty());
+    CHECK (session.getTrackInputMapping (idxs[2]).layout == InputLayout::None);
+    CHECK (session.getTrackInputProblem (idxs[2]).isEmpty());          // valid, no error
+    CHECK (session.isTrackInputChannelAvailable (idxs[2]));            // no "problem"
+    CHECK (session.getAppliedInputDeviceIndex (idxs[2]) == -1);        // no device
+    CHECK (session.getTrackName (idxs[2]).startsWith ("Track "));      // honest name
+    CHECK_FALSE (session.setTrackArmed (idxs[2], true));
+    CHECK (session.getLastError().contains ("No input assigned"));
+
+    for (auto i : idxs)
+        CHECK (session.isTrackInputChannelAvailable (i) == session.getTrackInputProblem (i).isEmpty());
+
+    // RT-2b is preserved: a track PINNED to an off-device channel is INVALID and
+    // reports the concrete reason (distinct from the unassigned state above).
+    REQUIRE (session.setTrackInputMapping (idxs[2], InputMapping { 7, 1, InputLayout::Mono }));
+    settle();
 
     const auto problem = session.getTrackInputProblem (idxs[2]);
     CHECK (problem.isNotEmpty());
     CHECK (problem.contains ("Input channel"));
     CHECK_FALSE (session.isTrackInputChannelAvailable (idxs[2]));
-
-    // Cross-check: the two predicates now agree (RT-2b #7).
-    for (auto i : idxs)
-        CHECK (session.isTrackInputChannelAvailable (i) == session.getTrackInputProblem (i).isEmpty());
-
-    // The reason is the one arming reports (deterministic — computed from the
-    // live device, not the transiently-rebuilt device list). This is the
-    // Session-level state the UI reads (RT-2b D1, option v).
     CHECK_FALSE (session.setTrackArmed (idxs[2], true));
     CHECK (session.getLastError().contains ("Input channel"));
 
@@ -1601,7 +1600,7 @@ TEST_CASE ("input problem: single predicate and guards (RT-2b)")
 // The regression this guards: the old `setTarget(..., moveToTrack=true)` dropped
 // every other track's target, so adding a track made the previous ones lose their
 // input ("last wins").
-TEST_CASE ("input routing: one device per track; adding a track keeps the others (RT-3)")
+TEST_CASE ("input routing: one device per span; adding a track keeps the others (RT-3/RT-4)")
 {
     auto dir = scratchDirectory ("input-rt3");
 
@@ -1662,8 +1661,11 @@ TEST_CASE ("input routing: one device per track; adding a track keeps the others
 
     const auto idx3 = session.getInputTrackIndices();
     REQUIRE (idx3.size() >= 3);
+    // RT-4: the 3rd track (no free channel) is UNASSIGNED — valid, not an error.
+    CHECK (session.getTrackInputMapping (idx3[2]).layout == InputLayout::None);
+    CHECK (session.getTrackInputProblem (idx3[2]).isEmpty());
     CHECK_FALSE (session.setTrackArmed (idx3[2], true));
-    CHECK (session.getTrackInputProblem (idx3[2]).isNotEmpty());
+    CHECK (session.getLastError().contains ("No input assigned"));
 
     // Review #1 smoke: swap the two mono tracks' channels so each track's device
     // changes; the stale target must be dropped (no crash, both still placed).
@@ -1750,6 +1752,161 @@ TEST_CASE ("input routing: occupancy is per-track and a stereo device is not clo
     CHECK (session.getAppliedInputDeviceIndex (a) == aDevice);
     CHECK (session.getTrackInputProblem (a).isEmpty());
     CHECK (session.getTrackInputProblem (b).contains ("already used"));
+
+    session.close();
+}
+
+//==============================================================================
+// RT-4: tracks may SHARE an identical span (same channel/pair): several tracks on
+// one channel is valid (their device config is identical) — unlike a different
+// overlapping span, which is still refused.
+TEST_CASE ("input routing: tracks may share the same channel (RT-4)")
+{
+    auto dir = scratchDirectory ("input-share");
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Share.tracktionedit")));
+
+    te::HostedAudioDeviceInterface::Parameters params;
+    params.sampleRate = 48000.0;
+    params.blockSize = 256;
+    params.inputChannels = 2;
+    params.outputChannels = 2;
+    auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+
+    auto settle = [&]
+    {
+        for (int i = 0; i < 200; ++i)
+        {
+            audio.deviceManager().dispatchPendingUpdates();
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+            if (session.isInputConfigured())
+                break;
+
+            session.reconfigureInputs();
+        }
+    };
+
+    settle();
+    REQUIRE (! session.getInputTrackIndices().isEmpty());
+    const auto i0 = session.getInputTrackIndices()[0];
+    REQUIRE (session.setTrackInputMapping (i0, InputMapping { 0, 1, InputLayout::Mono }));
+    settle();
+
+    REQUIRE (session.addAudioTrack() >= 0);
+    settle();
+    const auto i1 = session.getInputTrackIndices()[1];
+    // Point the 2nd track at the SAME channel 0 (identical span) -> shared.
+    REQUIRE (session.setTrackInputMapping (i1, InputMapping { 0, 1, InputLayout::Mono }));
+    settle();
+
+    // Both valid, on one shared device, both armable.
+    CHECK (session.getTrackInputProblem (i0).isEmpty());
+    CHECK (session.getTrackInputProblem (i1).isEmpty());
+    CHECK (session.getAppliedInputDeviceIndex (i0) >= 0);
+    CHECK (session.getAppliedInputDeviceIndex (i0) == session.getAppliedInputDeviceIndex (i1));
+    CHECK (session.setTrackArmed (i0, true));
+    CHECK (session.setTrackArmed (i1, true));
+    CHECK (session.isAnyTrackArmed());
+
+    session.close();
+}
+
+//==============================================================================
+// RT-4 M3: adding a track must consider existing SPANS, not just first channels —
+// with a Stereo 0-1 track the next track starts at channel 2 (no collision).
+TEST_CASE ("input routing: a new track skips an existing stereo span (RT-4 M3)")
+{
+    auto dir = scratchDirectory ("input-span-pick");
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("SpanPick.tracktionedit")));
+
+    te::HostedAudioDeviceInterface::Parameters params;
+    params.sampleRate = 48000.0;
+    params.blockSize = 256;
+    params.inputChannels = 4;
+    params.outputChannels = 2;
+    auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+
+    auto settle = [&]
+    {
+        for (int i = 0; i < 200; ++i)
+        {
+            audio.deviceManager().dispatchPendingUpdates();
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+            if (session.isInputConfigured())
+                break;
+
+            session.reconfigureInputs();
+        }
+    };
+
+    settle();
+    REQUIRE (! session.getInputTrackIndices().isEmpty());
+    const int t0 = session.getInputTrackIndices()[0];
+    REQUIRE (session.setTrackInputMapping (t0, InputMapping { 0, 2, InputLayout::Stereo }));
+    settle();
+
+    // New track: must skip channels 0 and 1 (owned by the stereo span).
+    REQUIRE (session.addAudioTrack() >= 0);
+    settle();
+
+    const auto idxs = session.getInputTrackIndices();
+    REQUIRE (idxs.size() >= 2);
+    CHECK (session.getTrackInputMapping (idxs[1]).firstChannel >= 2);
+    CHECK (session.getTrackInputProblem (idxs[1]).isEmpty()); // no conflict at birth
+    CHECK (session.isTrackInputChannelAvailable (idxs[1]));
+
+    session.close();
+}
+
+//==============================================================================
+// RT-4: an unassigned ("No input") track survives save/open (round-trip) and can
+// be assigned later, in the same session.
+TEST_CASE ("input mapping: an unassigned track survives save/open and can be assigned later (RT-4)")
+{
+    auto dir = scratchDirectory ("input-unassigned");
+
+    // Device-free (mappings persist on their own; see the FR-REC-3 pattern).
+    AudioEngine audio (false);
+    Session session (audio);
+    auto file = dir.getChildFile ("Unassigned.tracktionedit");
+    REQUIRE (session.createNew (file));
+
+    REQUIRE (session.addAudioTrack() >= 0);
+    auto idxs = session.getInputTrackIndices();
+    REQUIRE (idxs.size() >= 2);
+
+    // Make the 2nd track unassigned (valid "No input").
+    const int unassigned = idxs[1];
+    REQUIRE (session.setTrackInputMapping (unassigned, InputMapping { 0, 1, InputLayout::None }));
+    CHECK (session.getTrackInputMapping (unassigned).layout == InputLayout::None);
+    CHECK (session.getTrackInputProblem (unassigned).isEmpty());
+
+    REQUIRE (session.save());
+
+    // Reopen in a fresh session: the unassigned state round-trips.
+    {
+        Session reopened (audio);
+        REQUIRE (reopened.open (file));
+
+        const auto ridx = reopened.getInputTrackIndices();
+        REQUIRE (ridx.size() >= 2);
+        CHECK (reopened.getTrackInputMapping (ridx[1]).layout == InputLayout::None);
+        CHECK (reopened.getTrackInputProblem (ridx[1]).isEmpty());
+
+        // Assign later: it becomes a normal, valid track (no device -> no problem).
+        REQUIRE (reopened.setTrackInputMapping (ridx[1], InputMapping { 1, 1, InputLayout::Mono }));
+        CHECK (reopened.getTrackInputMapping (ridx[1]).layout == InputLayout::Mono);
+        CHECK (reopened.getTrackInputProblem (ridx[1]).isEmpty());
+
+        reopened.close();
+    }
 
     session.close();
 }
