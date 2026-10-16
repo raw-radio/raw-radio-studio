@@ -1301,6 +1301,68 @@ TEST_CASE ("adding a track after removing a middle track picks a free input chan
 }
 
 //==============================================================================
+// RT-2: a channel that is not on the device must NOT resolve to a clamped
+// substitute device — it is reported as unavailable (and surfaced as an error),
+// instead of silently duplicating the last device.
+TEST_CASE ("input mapping: no device is resolved when the channel is off the map (RT-2)")
+{
+    auto dir = scratchDirectory ("input-offmap");
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("OffMap.tracktionedit")));
+
+    // A real hosted device with exactly 2 input channels so `resolveInputDeviceFor`
+    // has a device list to search.
+    te::HostedAudioDeviceInterface::Parameters params;
+    params.sampleRate = 48000.0;
+    params.blockSize = 256;
+    params.inputChannels = 2;
+    params.outputChannels = 2;
+
+    auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+
+    for (int i = 0; i < 200; ++i)
+    {
+        audio.deviceManager().dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+        if (session.isInputConfigured())
+            break;
+
+        session.reconfigureInputs();
+    }
+
+    REQUIRE (audio.deviceManager().getNumWaveInDevices() > 0);
+    REQUIRE (! session.getInputTrackIndices().isEmpty());
+
+    const int track = session.getInputTrackIndices()[0];
+
+    // Channel 0 is carried by the 2-channel device.
+    REQUIRE (session.setTrackInputMapping (track, InputMapping { 0, 1, InputLayout::Mono }));
+    CHECK (session.isTrackInputChannelAvailable (track));
+
+    // Channel 9 is off the device: no substitute device (RT-2) — reported as
+    // unavailable regardless of the transient device-list state.
+    REQUIRE (session.setTrackInputMapping (track, InputMapping { 9, 1, InputLayout::Mono }));
+    CHECK_FALSE (session.isTrackInputChannelAvailable (track));
+
+    // The failure is also surfaced to the user (RT-2): retry the reconfigure
+    // while the wave-device list settles, then expect a clear error.
+    for (int i = 0; i < 100 && session.getLastError().isEmpty(); ++i)
+    {
+        session.reconfigureInputs();
+        audio.deviceManager().dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+    }
+
+    CHECK (session.getLastError().isNotEmpty());
+
+    session.close();
+}
+
+
+//==============================================================================
 // Epic 4 (FR-ED-1/2/6): arrangement clip edits. Every operation changes the
 // clip's geometry as measured through the Session's clip model, and undo/redo
 // restores the previous edit state consistently.

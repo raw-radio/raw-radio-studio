@@ -377,6 +377,11 @@ namespace rrs
         /** Returns the wave input device currently assigned to track 0. */
         tracktion::WaveInputDevice* getSelectedWaveInputDevice() const;
 
+        /** True when the current audio device actually carries the track's mapped
+            input channel. RT-2: false means "channel not on the device" — no
+            device is silently substituted for it. */
+        bool isTrackInputChannelAvailable (int trackIndex) const;
+
         /** Re-resolves the input device and re-assigns it to the track. Call after
             the audio device changes (wave devices are rebuilt). */
         void reconfigureInputs();

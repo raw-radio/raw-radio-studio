@@ -524,8 +524,12 @@ namespace rrs
                 if (device->getChannels().containsDeviceChannel (mapping.firstChannel))
                     return device;
 
-        // Fallback: clamp to a real device index.
-        return dm.getWaveInDevice (juce::jlimit (0, numDevices - 1, mapping.firstChannel));
+        // RT-2: no device carries the channel -> return null. There used to be a
+        // silent clamp to `getWaveInDevice(jlimit(0, count-1, firstChannel))`,
+        // which made "input 3" duplicate "input 2" (and `getWaveInDevice` does no
+        // bounds check of its own). Callers must now treat null as "channel not
+        // on the device" instead of silently substituting one.
+        return nullptr;
     }
 
     InputMapping Session::readTrackMapping (int trackIndex) const
@@ -1005,6 +1009,7 @@ namespace rrs
             return false;
 
         bool anyAssigned = false;
+        juce::String missingChannelMessage; // RT-2: a channel not on the device
 
         for (auto index : indices)
         {
@@ -1017,7 +1022,18 @@ namespace rrs
             auto* waveIn = resolveInputDeviceFor (mapping);
 
             if (waveIn == nullptr)
+            {
+                // No device carries this track's channel (RT-2). Do not silently
+                // substitute one. When there are truly no devices yet (headless /
+                // interface still opening) this is not an error — timerCallback
+                // retries; otherwise surface it for the user.
+                if (audio.deviceManager().getNumWaveInDevices() > 0
+                    && missingChannelMessage.isEmpty())
+                    missingChannelMessage = "Input channel " + juce::String (mapping.firstChannel + 1)
+                                            + " is not available on the current audio device.";
+
                 continue;
+            }
 
             waveIn->setEnabled (true);
 
@@ -1028,6 +1044,10 @@ namespace rrs
             if (waveIn == nullptr)
                 continue;
 
+            // Apply the channel config. It re-resolves internally and reports the
+            // (possibly rebuilt) device through `waveIn`; reset first so a failure
+            // cannot leave a stale pointer behind.
+            waveIn = nullptr;
             applyInputChannelConfiguration (index, waveIn);
 
             if (waveIn == nullptr)
@@ -1045,14 +1065,28 @@ namespace rrs
         // An empty device list (headless tests / no interface) is not an error:
         // inputsConfigured stays false and timerCallback retries.
         if (! anyAssigned)
+        {
+            // ...but a channel that is genuinely off the device (devices exist)
+            // is, and must be reported rather than swallowed (RT-2).
+            if (missingChannelMessage.isNotEmpty())
+                lastError = missingChannelMessage;
+
             return false;
+        }
 
         edit->getTransport().ensureContextAllocated();
         edit->restartPlayback();
 
         inputsConfigured = true;
         ensureMeterAttached();
-        clearLastError();
+
+        // A channel missing from the device is a real, user-facing error (RT-2);
+        // report it instead of clearing it with the success path.
+        if (missingChannelMessage.isNotEmpty())
+            lastError = missingChannelMessage;
+        else
+            clearLastError();
+
         return true;
     }
 
@@ -1194,6 +1228,13 @@ namespace rrs
             return dm.getWaveInDevice (0);
 
         return nullptr;
+    }
+
+    bool Session::isTrackInputChannelAvailable (int trackIndex) const
+    {
+        // RT-2: `resolveInputDeviceFor` returns null when no device carries the
+        // mapped channel — expose that as availability instead of clamping.
+        return resolveInputDeviceFor (readTrackMapping (trackIndex)) != nullptr;
     }
 
     //==============================================================================
