@@ -393,19 +393,17 @@ TEST_CASE ("device selection keeps input and output independent")
 // map for arbitrary channel counts and starting channels.
 TEST_CASE ("input mapping resolves arbitrary channel counts and layouts")
 {
-    SUBCASE ("Auto keeps the Epic 1 behaviour (mono centred, stereo L/R)")
+    SUBCASE ("Auto on a 1-channel device is a single centre channel (RT-5)")
     {
         const auto mono = mappedChannelsFor ({ 0, 1, InputLayout::Auto }, 1);
-        REQUIRE (mono.size() == 2);
+        REQUIRE (mono.size() == 1);
         CHECK (mono[0].deviceChannel == 0);
-        CHECK (mono[1].deviceChannel == 0); // duplicated to both L and R
-        CHECK (mono[0].type == juce::AudioChannelSet::left);
-        CHECK (mono[1].type == juce::AudioChannelSet::right);
+        CHECK (mono[0].type == juce::AudioChannelSet::centre);
 
-        // 0 channels (no device yet) also defaults to centred, never hard-left.
+        // 0 channels (no device yet) also resolves to a single mono channel.
         const auto none = mappedChannelsFor ({ 0, 1, InputLayout::Auto }, 0);
+        REQUIRE (none.size() == 1);
         CHECK (none[0].deviceChannel == 0);
-        CHECK (none[1].deviceChannel == 0);
 
         const auto stereo = mappedChannelsFor ({ 0, 2, InputLayout::Auto }, 2);
         REQUIRE (stereo.size() == 2);
@@ -413,15 +411,13 @@ TEST_CASE ("input mapping resolves arbitrary channel counts and layouts")
         CHECK (stereo[1].deviceChannel == 1);
     }
 
-    SUBCASE ("Mono picks any hardware channel and centres it")
+    SUBCASE ("Mono picks any hardware channel as a single centre channel (RT-5)")
     {
         // The 3rd input of a 4-in interface (0-based index 2) on a mono track.
         const auto cfg = mappedChannelsFor ({ 2, 1, InputLayout::Mono }, 4);
-        REQUIRE (cfg.size() == 2);
+        REQUIRE (cfg.size() == 1);
         CHECK (cfg[0].deviceChannel == 2);
-        CHECK (cfg[1].deviceChannel == 2);
-        CHECK (cfg[0].type == juce::AudioChannelSet::left);
-        CHECK (cfg[1].type == juce::AudioChannelSet::right);
+        CHECK (cfg[0].type == juce::AudioChannelSet::centre);
     }
 
     SUBCASE ("Stereo picks any adjacent hardware pair")
@@ -457,14 +453,14 @@ TEST_CASE ("input mapping resolves arbitrary channel counts and layouts")
     SUBCASE ("an out-of-range firstChannel is clamped, never UB")
     {
         const auto cfg = mappedChannelsFor ({ 9, 1, InputLayout::Mono }, 2);
-        REQUIRE (cfg.size() == 2);
+        REQUIRE (cfg.size() == 1);
         CHECK (cfg[0].deviceChannel == 1);
-        CHECK (cfg[1].deviceChannel == 1);
     }
 
     SUBCASE ("layout string round-trips for persistence")
     {
-        for (auto layout : { InputLayout::Auto, InputLayout::Mono, InputLayout::Stereo, InputLayout::MultiChannel })
+        for (auto layout : { InputLayout::None, InputLayout::Auto, InputLayout::Mono,
+                             InputLayout::Stereo, InputLayout::MultiChannel })
             CHECK (inputLayoutFromString (inputLayoutToString (layout)) == layout);
     }
 }
@@ -2271,8 +2267,10 @@ namespace
         return dir;
     }
 
-    /** Writes a valid 24-bit stereo WAV and returns its raw bytes. */
-    juce::MemoryBlock makeValidWavBytes (const juce::File& file, double sampleRate, double seconds)
+    /** Writes a valid 24-bit WAV with `numChannels` channels and returns its raw
+        bytes. */
+    juce::MemoryBlock makeValidWavBytes (const juce::File& file, double sampleRate, double seconds,
+                                         int numChannels = 2)
     {
         file.deleteFile();
 
@@ -2282,7 +2280,7 @@ namespace
         auto writer = wav.createWriterFor (stream,
                                            juce::AudioFormatWriterOptions{}
                                                .withSampleRate (sampleRate)
-                                               .withNumChannels (2)
+                                               .withNumChannels (numChannels)
                                                .withBitsPerSample (24));
 
         juce::MemoryBlock bytes;
@@ -2291,9 +2289,9 @@ namespace
             return bytes;
 
         const auto numSamples = (int) (sampleRate * seconds);
-        juce::AudioBuffer<float> buffer (2, numSamples);
+        juce::AudioBuffer<float> buffer (numChannels, numSamples);
 
-        for (int ch = 0; ch < 2; ++ch)
+        for (int ch = 0; ch < numChannels; ++ch)
             for (int i = 0; i < numSamples; ++i)
                 buffer.setSample (ch, i, 0.5f * (float) std::sin (2.0 * juce::MathConstants<double>::pi
                                                                   * 440.0 * (double) i / sampleRate));
@@ -2303,6 +2301,26 @@ namespace
 
         file.loadFileAsData (bytes);
         return bytes;
+    }
+
+    /** Reads the `blockAlign` field from a WAV's `fmt ` chunk (robust to any
+        chunks before `fmt `). */
+    int readWavBlockAlign (const juce::File& file)
+    {
+        juce::MemoryBlock mb;
+        file.loadFileAsData (mb);
+
+        const auto n = (int) mb.getSize();
+        const auto* d = (const unsigned char*) mb.getData();
+
+        for (int i = 12; i + 8 <= n; ++i)
+            if (d[i] == 'f' && d[i + 1] == 'm' && d[i + 2] == 't' && d[i + 3] == ' ')
+                // fmt: "fmt "(4) + size(4) + audioFormat(2) + numChannels(2)
+                //      + sampleRate(4) + byteRate(4) + blockAlign(2).
+                if (i + 8 + 14 <= n)
+                    return (int) d[i + 8 + 12] | ((int) d[i + 8 + 13] << 8);
+
+        return -1;
     }
 
     /** Patches the RIFF + `data` chunk sizes to 0 (the mid-crash state) and
@@ -2370,6 +2388,42 @@ TEST_CASE ("WavRepair rebuilds a zero-length header so a crashed take becomes re
     // Re-running is idempotent: the header now matches the payload.
     const auto again = repairTruncatedHeader (broken);
     CHECK (again.status == wavrepair::Result::Status::consistent);
+}
+
+TEST_CASE ("WavRepair rebuilds a zero-length header on a 1-channel (mono) take (RT-5)")
+{
+    using namespace rrs::wavrepair;
+
+    auto dir = studioUnitScratchDir ("wavrepair-mono");
+    const auto seed = dir.getChildFile ("seed-mono.wav");
+    const auto bytes = makeValidWavBytes (seed, 48000.0, 0.25, 1); // MONO
+    REQUIRE (! bytes.isEmpty());
+
+    const auto broken = dir.getChildFile ("Crash Session_Input 1_Take_1.wav");
+    REQUIRE (writeZeroLengthHeaderWav (broken, bytes));
+
+    // The crash state really is unreadable...
+    CHECK (readWavLengthInSamples (broken) == 0);
+
+    // ...until the header is rebuilt from the 1-channel payload.
+    const auto result = repairTruncatedHeader (broken);
+    INFO ("repair detail: " << result.detail);
+    CHECK (result.wasRepaired());
+    CHECK (result.dataBytes > 0);
+    CHECK (result.sampleFrames > 0);
+
+    // It reads back as a TRUE mono WAV: one channel, and the frame count matches
+    // the repaired payload with the mono block-align (3 bytes for 24-bit mono).
+    juce::WavAudioFormat wav;
+    std::unique_ptr<juce::AudioFormatReader> reader (
+        wav.createReaderFor (new juce::FileInputStream (broken), true));
+    REQUIRE (reader != nullptr);
+    CHECK (reader->numChannels == 1);
+    CHECK (reader->lengthInSamples == result.sampleFrames);
+    CHECK (readWavBlockAlign (broken) == 3); // 24-bit mono
+
+    // Idempotent.
+    CHECK (repairTruncatedHeader (broken).status == wavrepair::Result::Status::consistent);
 }
 
 TEST_CASE ("WavRepair leaves a valid WAV and a non-WAV untouched")

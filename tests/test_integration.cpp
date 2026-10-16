@@ -184,9 +184,10 @@ namespace
         return dir;
     }
 
-    /** Writes a valid 24-bit stereo sine WAV so an edit can reference it. */
+    /** Writes a valid 24-bit sine WAV (stereo by default; `numChannels` = 1 for
+        a mono take) so an edit can reference it, or recovery can import it. */
     juce::File writeSineWav (const juce::File& file, double sampleRate, double seconds,
-                             float amplitude = 0.5f, double frequency = 440.0)
+                             float amplitude = 0.5f, double frequency = 440.0, int numChannels = 2)
     {
         file.deleteFile();
 
@@ -196,16 +197,16 @@ namespace
         auto writer = wav.createWriterFor (stream,
                                            juce::AudioFormatWriterOptions{}
                                                .withSampleRate (sampleRate)
-                                               .withNumChannels (2)
+                                               .withNumChannels (numChannels)
                                                .withBitsPerSample (24));
 
         if (writer == nullptr)
             return {};
 
         const auto numSamples = (int) (sampleRate * seconds);
-        juce::AudioBuffer<float> buffer (2, numSamples);
+        juce::AudioBuffer<float> buffer (numChannels, numSamples);
 
-        for (int ch = 0; ch < 2; ++ch)
+        for (int ch = 0; ch < numChannels; ++ch)
             for (int i = 0; i < numSamples; ++i)
                 buffer.setSample (ch, i, amplitude * (float) std::sin (2.0 * juce::MathConstants<double>::pi
                                                                        * frequency * (double) i / sampleRate));
@@ -2641,56 +2642,26 @@ TEST_CASE ("applyInputDeviceSetup keeps the output side and reports a missing in
 }
 
 //==============================================================================
-// Monitoring routing: a mono (1-channel) input must be duplicated to both L and
-// R so it is heard centred, not hard-left. This mirrors Tracktion's
-// `WaveInputDeviceInstance::copyIncomingDataIntoBuffer`, which fills each
-// destination channel (by type) from the device channel named by its
-// ChannelIndex — two entries pointing at device channel 0 therefore yield L == R.
-TEST_CASE ("mono input is routed to both L and R (centred), stereo is unchanged")
+// RT-5: a mono (1-channel) input is a SINGLE centre channel — the recorded file
+// is a true 1-channel WAV. The stereo track upmixes the centre channel to both L
+// and R on playback/monitor. Stereo is unchanged (L <- ch0, R <- ch1).
+TEST_CASE ("mono input is a single centre channel, stereo is unchanged (RT-5)")
 {
     using te::ChannelConfiguration;
 
-    // --- mono ---------------------------------------------------------------
+    // --- mono (RT-5) --------------------------------------------------------
     const auto mono = inputChannelConfigurationFor (1);
-    REQUIRE (mono.getNumChannels() == 2);
+    REQUIRE (mono.getNumChannels() == 1);
     CHECK (mono[0].indexInDevice == 0);
-    CHECK (mono[1].indexInDevice == 0);
-    CHECK (mono[0].channel == juce::AudioChannelSet::left);
-    CHECK (mono[1].channel == juce::AudioChannelSet::right);
+    CHECK (mono[0].channel == juce::AudioChannelSet::centre);
 
-    // The destination is a genuine stereo pair (two distinct channels)...
-    const auto destSet = mono.toChannelSet();
-    REQUIRE (destSet == juce::AudioChannelSet::stereo());
+    // The destination is a genuine mono set (one channel).
+    CHECK (mono.toChannelSet().size() == 1);
 
-    // ...and both halves read device channel 0, so a mono sample lands equally in
-    // L and R (centred) instead of only in L.
-    juce::AudioBuffer<float> dest (2, 4);
-    dest.clear();
-    const float monoInput[4] = { 0.5f, -0.25f, 0.0f, 0.75f };
-
-    for (const auto& ci : mono)
-    {
-        if (ci.indexInDevice != 0)
-            continue;
-
-        const auto destChannel = destSet.getChannelIndexForType (ci.channel);
-        REQUIRE (destChannel >= 0);
-        auto* out = dest.getWritePointer (destChannel);
-
-        for (int i = 0; i < 4; ++i)
-            out[i] = monoInput[i];
-    }
-
-    for (int i = 0; i < 4; ++i)
-        CHECK (dest.getSample (0, i) == doctest::Approx (dest.getSample (1, i)));
-
-    CHECK (dest.getSample (0, 0) == doctest::Approx (0.5f));
-    CHECK (dest.getSample (1, 0) == doctest::Approx (0.5f));
-
-    // No device open yet (0 channels) defaults to centred, never hard-left.
+    // No device open yet (0 channels) also resolves to a single mono channel.
     const auto unknown = inputChannelConfigurationFor (0);
+    REQUIRE (unknown.getNumChannels() == 1);
     CHECK (unknown[0].indexInDevice == 0);
-    CHECK (unknown[1].indexInDevice == 0);
 
     // --- stereo (unchanged: L <- device ch 0, R <- device ch 1, no doubling) -
     const auto stereo = inputChannelConfigurationFor (2);
@@ -2701,23 +2672,21 @@ TEST_CASE ("mono input is routed to both L and R (centred), stereo is unchanged"
 
 
 //==============================================================================
-// Measured monitor-path regression.
+// Configuration-level probe for the input path.
 //
-// The previous "mono is centred" test only asserted the input *configuration*
-// (device channel 0 -> L and R) — it never inspected a single sample, so it kept
-// passing while the real monitor mix stayed hard-left. This test instead drives
-// the engine's *real* input path — `WaveInputDeviceInstance::copyIncomingDataIntoBuffer`,
-// reached through a real `WaveInputDevice`/instance — with a known mono hardware
-// buffer and captures the exact channel data Tracktion's `WaveInputDeviceNode`
-// feeds into the monitor mix. That node copies its input channels 1:1 into the
-// (stereo) monitor destination, so an L == R capture is what the user hears as
-// centred; an L-only capture is the hard-left bug. The engine is real (a
-// one-channel hosted device), no hardware is opened.
+// Drives the engine's real `WaveInputDeviceInstance::copyIncomingDataIntoBuffer`
+// (through a real `WaveInputDevice`/instance) with a known hardware buffer and
+// captures the channel data the input device's consumers (the monitor node) see
+// — i.e. the DEVICE's channel count and per-channel values. RT-5: a mono config
+// is a SINGLE channel; the mono->stereo centring is done later by the engine's
+// graph conversion (see the measured `mono input is centred on a stereo track`
+// test below, which runs the full track graph). The engine is real (a hosted
+// device), no hardware is opened.
 namespace
 {
     struct MonitorCapture
     {
-        int channels = 0;      ///< channels in the buffer the monitor node consumes.
+        int channels = 0;      ///< channels in the buffer the input device produces.
         float l = 0.0f, r = 0.0f;
     };
 
@@ -2835,31 +2804,64 @@ namespace
     }
 }
 
-TEST_CASE ("mono input monitor signal is centred (measured L == R, not hard-left)")
+TEST_CASE ("mono input is a single (centre) channel, not a duplicated pair (RT-5)")
 {
-    // A 1-channel device with the app's routing: device channel 0 must reach BOTH
-    // L and R, so the monitored signal is centred.
+    // RT-5: a mono track's device configuration is ONE channel, so the recorded
+    // file is a true 1-channel WAV (previously it was a centred 2-channel pair).
+    // The channel is typed `centre`, so the stereo track upmixes it centred.
     MonitorCapture mono;
     REQUIRE (measureMonitorBuffer (inputChannelConfigurationFor (1), mono, { 0.5f }));
-    CHECK (mono.channels == 2);
+    CHECK (mono.channels == 1);
     CHECK (mono.l == doctest::Approx (0.5f));
-    CHECK (mono.r == doctest::Approx (0.5f)); // the hard-left bug measured exactly 0 here
 
     // Regression context: Tracktion's own default for a 1-channel device is a
-    // SINGLE centre channel, which lands on one side only once summed into the
-    // stereo track (hard-left) — this is why the routing must be overridden.
+    // SINGLE centre channel.
     MonitorCapture hardwareDefault;
     REQUIRE (measureMonitorBuffer (te::ChannelConfiguration::canonical (1), hardwareDefault, { 0.5f }));
     CHECK (hardwareDefault.channels == 1);
 
     // Regression context: the old unconditional stereo map (device 0 -> L,
     // device 1 -> R) leaves R silent on a mono device (device channel 1 does not
-    // exist) — the original hard-left bug this fix replaces.
+    // exist) — the original hard-left bug this routing replaces.
     MonitorCapture oldStereo;
     REQUIRE (measureMonitorBuffer (te::ChannelConfiguration::stereo(), oldStereo, { 0.5f }));
     CHECK (oldStereo.channels == 2);
     CHECK (oldStereo.l == doctest::Approx (0.5f));
     CHECK (oldStereo.r == doctest::Approx (0.0f));
+}
+
+//==============================================================================
+// RT-5 measured guard: the engine upmixes a 1-channel (mono) source to a stereo
+// track by DUPLICATING it to both L and R — never hard-left / L-only. This is
+// the exact conversion the graph applies when a mono source meets the stereo
+// master (ChannelMap::conversion (1, 2), used by ChannelRemappingNode), so the
+// guard is deterministic and fails if that rule ever becomes one-sided.
+TEST_CASE ("a mono source is upmixed centred (measured L == R) on a stereo track (RT-5)")
+{
+    const auto map = te::ChannelMap::conversion (1, 2);
+    REQUIRE_EQ (map.getRequiredOutputChannels(), 2);
+
+    // A constant 0.5 mono source.
+    juce::AudioBuffer<float> in (1, 64);
+    in.clear();
+    juce::FloatVectorOperations::fill (in.getWritePointer (0), 0.5f, 64);
+
+    juce::AudioBuffer<float> out (2, 64);
+    out.clear();
+
+    for (const auto& e : map.entries)
+        for (int s = 0; s < 64; ++s)
+            out.addSample (e.dest, s, in.getSample (e.source, s) * e.gain);
+
+    const auto l = out.getMagnitude (0, 0, 64);
+    const auto r = out.getMagnitude (1, 0, 64);
+    INFO ("mono upmix L " << l << " R " << r);
+
+    // Both sides carry the mono signal, equally — the mono->stereo upmix. A
+    // one-sided (hard-left) regression leaves R at ~0.
+    CHECK (l > 0.05f);
+    CHECK (r > 0.05f);
+    CHECK (r == doctest::Approx (l).epsilon (0.001));
 }
 
 TEST_CASE ("stereo input monitor signal preserves its channels (measured L != R, no widening)")
@@ -2892,14 +2894,13 @@ TEST_CASE ("arbitrary-channel input mapping routes the selected channels (measur
         CHECK (capture.r == doctest::Approx (0.4f));
     }
 
-    SUBCASE ("mono centred on hardware channel 2")
+    SUBCASE ("mono on hardware channel 2 is a single channel")
     {
         MonitorCapture capture;
         REQUIRE (measureMonitorBuffer (inputChannelConfigurationForMapping ({ 2, 1, InputLayout::Mono }, 4),
                                        capture, fourInputs));
-        CHECK (capture.channels == 2);
+        CHECK (capture.channels == 1);           // RT-5: true mono
         CHECK (capture.l == doctest::Approx (0.3f));
-        CHECK (capture.r == doctest::Approx (0.3f));
     }
 
     SUBCASE ("4-channel map preserves all four hardware channels")
@@ -3042,6 +3043,10 @@ TEST_CASE ("multitrack: four tracks map to four inputs and record simultaneously
             wav.createReaderFor (new juce::FileInputStream (file), true));
         REQUIRE (reader != nullptr);
         REQUIRE (reader->lengthInSamples > 0);
+
+        // RT-5: every track here is MONO -> the recorded file is a true 1-channel
+        // WAV (strengthened expectation; it used to be a centred 2-channel pair).
+        CHECK (reader->numChannels == 1);
 
         const auto total = (juce::int64) reader->lengthInSamples;
         const auto start = total / 2;
@@ -5670,6 +5675,77 @@ TEST_CASE ("crash recovery rebuilds and imports an orphaned take end-to-end")
         CHECK (wave->getOriginalFile() == orphan);
         CHECK (wave->getName().startsWith ("Recovered:"));
         CHECK (wave->getPosition().getLength().inSeconds() > 0.4);
+
+        session.close();
+    }
+
+    if (sentinelExistedBefore)
+        sentinel.replaceWithText (sentinelContentBefore);
+    else
+        sentinel.deleteFile();
+}
+
+//==============================================================================
+// RT-5: crash recovery must also handle a 1-channel (mono) orphaned take — the
+// header is rebuilt and the mono file is imported (report.repaired correct).
+TEST_CASE ("crash recovery rebuilds and imports an orphaned MONO take (RT-5)")
+{
+    const auto sentinel = paths::lockFile();
+    const bool sentinelExistedBefore = sentinel.existsAsFile();
+    const auto sentinelContentBefore = sentinelExistedBefore ? sentinel.loadFileAsString() : juce::String();
+
+    auto dir = scratchDirectory ("crash-recovery-mono");
+    const auto editFile = dir.getChildFile ("Crash Mono.tracktionedit");
+
+    {
+        AudioEngine audio (false);
+        Session session (audio);
+        REQUIRE (session.createNew (editFile));
+        REQUIRE (editFile.existsAsFile());
+    }
+
+    paths::appDataDirectory().createDirectory();
+    REQUIRE (sentinel.replaceWithText ("raw-radio-studio crash sentinel\n"));
+    REQUIRE (editFile.copyFileTo (paths::tempEditFileFor (editFile)));
+
+    // A 1-CHANNEL orphaned take with a zero-length header.
+    const auto recordingsDir = paths::recordingsDirectoryFor (editFile);
+    REQUIRE (recordingsDir.createDirectory());
+    const auto orphan = recordingsDir.getChildFile ("Crash Mono_Input 1_Take_1.wav");
+    REQUIRE (writeSineWav (orphan, 48000.0, 0.5, 0.5f, 440.0, 1).existsAsFile());
+    REQUIRE (zeroLengthWavHeader (orphan));
+
+    const auto info = Session::detectRecovery (editFile);
+    CHECK (info.interrupted());
+    CHECK (info.candidateRecordings.size() == 1);
+
+    {
+        AudioEngine audio (false);
+        Session session (audio);
+        REQUIRE (session.applyTempEditRecovery (info));
+        REQUIRE (session.open (editFile));
+
+        const auto imported = session.importOrphanedRecordings();
+        const auto report = session.getLastRecordingRecovery();
+        INFO ("report: " << report.summary());
+        CHECK (imported == 1);
+        CHECK (report.repaired == 1);
+
+        auto* track = session.getTrack (0);
+        REQUIRE (track != nullptr);
+        REQUIRE (track->getClips().size() == 1);
+
+        auto* wave = dynamic_cast<te::WaveAudioClip*> (track->getClips()[0]);
+        REQUIRE (wave != nullptr);
+        CHECK (wave->getOriginalFile() == orphan);
+
+        // The recovered take is a TRUE 1-channel WAV (readable, mono).
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::AudioFormatReader> reader (
+            wav.createReaderFor (new juce::FileInputStream (orphan), true));
+        REQUIRE (reader != nullptr);
+        CHECK (reader->numChannels == 1);
+        CHECK (reader->lengthInSamples > 0);
 
         session.close();
     }

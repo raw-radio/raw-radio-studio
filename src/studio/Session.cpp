@@ -1254,7 +1254,12 @@ namespace rrs
             if (mapping.layout == InputLayout::None)
                 continue;
 
-            const int need = channelsPerLayout (planLayoutFor (mapping.layout, spanChannels));
+            // The track's real span: Mono -> 1, Stereo -> 2, MultiChannel -> its
+            // own `numChannels` (`channelsPerLayout(planLayoutFor(...))` returns 2
+            // for MultiChannel, so the count must be taken from the mapping).
+            const int need = mapping.layout == InputLayout::MultiChannel
+                                 ? juce::jmax (1, mapping.numChannels)
+                                 : channelsPerLayout (planLayoutFor (mapping.layout, spanChannels));
 
             for (int c = 0; c < need; ++c)
                 usedChannels.insert (mapping.firstChannel + c);

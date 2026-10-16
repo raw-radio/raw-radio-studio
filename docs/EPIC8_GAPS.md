@@ -190,6 +190,10 @@ allocated per **span**, so sharing tracks share one `WaveInputDevice`.
   change), so it is knowingly deferred.
 - **Channel-menu occupancy marking** (show which channels are taken/occupied) is **RT-8**; the menu
   lists raw channels without marks for now.
+- **`Stereo` on a device too small for a pair** degrades to a 2-channel centred `L == R` config in
+  `mappedChannelsFor`. This is **unreachable via `configureTracks`** (the planner flags the span as
+  off-device and the track gets no input/config), but is documented so the fallback is not mistaken
+  for the RT-5 mono path.
 
 ### Commit & review sequence
 
@@ -273,9 +277,17 @@ review** (recovery/import path). The rest are ordinary UI reviews.
   two mono devices for a physical 2-in interface? This decides the I5 default mapping.
 - **`setTarget` for a shared device.** Whether `move=false` **plus** an explicit `index` is the
   correct call to keep several targets on one instance (and what `index` must be).
-- **1-channel capture.** Whether a `Mono` mapping needs a distinct single-channel
-  `ChannelConfiguration` (vs the current "duplicate to L+R" `centredMono`) to actually write a
-  mono WAV, and whether recovery/import accept it.
+- **1-channel capture — RESOLVED (RT-5).** A `Mono` mapping now uses a distinct single-channel
+  `ChannelConfiguration` (`mappedChannelsFor` returns one `centre` channel; Tracktion sizes the
+  recorded file from the config's channel count), so a mono track writes a **true 1-channel WAV**.
+  The mono→stereo centring on playback/monitor is done by the engine's channel conversion
+  (`ChannelMap::conversion (1, 2)` = duplicate to L+R, used by `ChannelRemappingNode`), not by
+  duplicating to L+R at the config; it is guarded deterministically by
+  *"a mono source is upmixed centred (measured L == R) on a stereo track (RT-5)"* (a headless
+  host-device render of the live monitor proved order-dependent/unreliable, so the guard exercises
+  the conversion rule itself). Recovery/import accept 1-channel takes (covered by the mono
+  `WavRepair` and orphan-import tests). The old "duplicate to L+R" `centredMono` survives only as
+  the (planner-unreachable) fallback for a `Stereo` request on a device too small for a pair.
 - **Loopback as a stand-in.** The `snd-aloop` card exposes two full-duplex PCM devices with eight
   subdevices each — confirm the "active input channels" count it presents, so the grouping tests use
   a valid configuration.

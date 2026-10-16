@@ -6,9 +6,9 @@
 // for the live device, and keeps the Epic 1 one-argument convenience wrapper so
 // existing call sites are unaffected.
 //
-// See Tracktion `WaveInputDeviceInstance::copyIncomingDataIntoBuffer`, which
-// fills each destination channel from `ChannelIndex::indexInDevice`; two entries
-// pointing at device channel 0 therefore yield L == R (the Epic 1 mono fix).
+// The configuration's channel count is the count of the recorded file (Tracktion
+// `WaveInputDevice::startRecording` sizes the writer from `getChannels()`), so a
+// Mono mapping produces a single channel via `mappedChannelsFor` (RT-5).
 
 #pragma once
 
@@ -33,7 +33,8 @@ namespace rrs
     }
 
     /** Epic 1 convenience wrapper: routes the whole device for the given active
-        channel count. 1 (or 0) channel -> centred mono; >=2 -> stereo L/R. */
+        channel count. 1 (or 0) channel -> a single mono channel (RT-5);
+        >=2 -> stereo L/R. */
     inline tracktion::ChannelConfiguration inputChannelConfigurationFor (int numActiveInputChannels)
     {
         return inputChannelConfigurationForMapping (

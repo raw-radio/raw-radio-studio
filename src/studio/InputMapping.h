@@ -8,13 +8,19 @@
 // A track's mapping is: starting hardware channel + channel count + layout.
 // Layouts:
 //   * None         no input assigned yet (RT-4): a valid, unassigned state.
-//   * Auto         1-ch device -> centred mono; >=2-ch -> stereo L/R (Epic 1).
-//   * Mono         device ch `firstChannel` duplicated to L+R (centred).
+//   * Auto         1-ch device -> mono; >=2-ch -> stereo L/R (Epic 1).
+//   * Mono         device ch `firstChannel` as ONE (centre) channel.
 //   * Stereo       device ch `firstChannel` -> L, `firstChannel+1` -> R.
 //   * MultiChannel device ch `firstChannel`..`firstChannel+N-1` -> N channels.
 //
-// The mono "duplicate to L and R" case is the Epic 1 hard-left fix: a 1-channel
-// source is centred rather than landing only on the left.
+// RT-5: a Mono track maps to a SINGLE channel (typed `centre`, the Tracktion
+// canonical for `ChannelConfiguration::mono()`), so the recorded take is a true
+// 1-channel WAV. The centring on playback/monitor is done by the engine's channel
+// conversion (`ChannelMap::conversion` in EditNodeBuilder / the
+// ChannelRemappingNode), which upmixes mono -> stereo; the `centre` type is
+// chosen for Tracktion-canonical consistency, not as the centring mechanism
+// itself. (Before RT-5 Mono duplicated the source to L+R, making every take a
+// centred 2-channel file — the old Epic 1 hard-left workaround.)
 
 #pragma once
 
@@ -27,8 +33,8 @@ namespace rrs
     /** How a track maps its input device's hardware channels onto its own bus. */
     enum class InputLayout
     {
-        Auto,          ///< 1-ch device -> centred mono; >=2-ch -> stereo L/R.
-        Mono,          ///< Device channel `firstChannel` duplicated to L+R (centred).
+        Auto,          ///< 1-ch device -> mono; >=2-ch -> stereo L/R.
+        Mono,          ///< Device channel `firstChannel` as one centre channel (RT-5).
         Stereo,        ///< Device ch `firstChannel` -> L, `firstChannel+1` -> R.
         MultiChannel,  ///< Device ch `firstChannel`..`firstChannel+N-1` -> N discrete.
         None           ///< No input assigned (RT-4): valid; assign later. No channel,
@@ -93,14 +99,26 @@ namespace rrs
 
         @param mapping            the track's input assignment.
         @param deviceChannelCount channels on the input device (0 = "none open
-                                  yet", treated as mono so the default is
-                                  centred, never hard-left). */
+                                  yet", treated as mono so the default is a single
+                                  channel, never hard-left). */
     inline std::vector<MappedChannel> mappedChannelsFor (const InputMapping& mapping, int deviceChannelCount)
     {
         const auto available = juce::jmax (1, deviceChannelCount);
         const auto first = juce::jlimit (0, available - 1, mapping.firstChannel);
         const auto layout = resolveInputLayout (mapping.layout, deviceChannelCount);
 
+        // RT-5: ONE channel typed `centre` — the recorded file is a TRUE mono
+        // (1-channel) WAV. The engine's channel conversion (not this type) upmixes
+        // it to L+R on playback/monitor; `centre` keeps it Tracktion-canonical
+        // (`ChannelConfiguration::mono()` uses `AudioChannelSet::centre`).
+        auto monoChannel = [first]
+        {
+            return std::vector<MappedChannel> {
+                { first, juce::AudioChannelSet::centre } };
+        };
+
+        // RT-5 leftover: still used for a Stereo request on a device too small for
+        // a pair (unreachable via configureTracks — the planner flags it first).
         auto centredMono = [first]
         {
             return std::vector<MappedChannel> {
@@ -115,7 +133,7 @@ namespace rrs
                 return {};
 
             case InputLayout::Mono:
-                return centredMono();
+                return monoChannel();
 
             case InputLayout::Stereo:
                 if (available >= 2 && first + 1 < available)
@@ -130,8 +148,9 @@ namespace rrs
             {
                 const auto n = juce::jlimit (1, available - first, juce::jmax (1, mapping.numChannels));
 
+                // RT-5: a 1-channel layout records a 1-channel file too.
                 if (n == 1)
-                    return centredMono();
+                    return monoChannel();
 
                 if (n == 2)
                     return { { first,     juce::AudioChannelSet::left },
