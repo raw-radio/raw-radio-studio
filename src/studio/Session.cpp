@@ -871,73 +871,12 @@ namespace rrs
     }
 
     //==============================================================================
-    bool Session::applyInputChannelConfiguration (int trackIndex, te::WaveInputDevice*& resolvedOut)
+    // Drops just one track's input target on every device (never another track's).
+    static void releaseInputTargets (te::Edit& edit, const te::AudioTrack& track)
     {
-        auto mapping = readTrackMapping (trackIndex);
-        auto* waveIn = resolveInputDeviceFor (mapping);
-
-        if (waveIn == nullptr)
-            return false;
-
-        // The channel indices in the mapping are *absolute hardware channels*,
-        // so the configuration must be built against the total number of active
-        // hardware inputs, not the wave device's own (possibly mono) channel
-        // count. Tracktion passes the full hardware buffer to every wave device,
-        // so an absolute index is valid even for a single-channel device.
-        const auto hardwareChannels = juce::jmax (1, audio.getNumActiveInputChannels());
-        waveIn->setChannelConfiguration (inputChannelConfigurationForMapping (mapping, hardwareChannels));
-
-        // Honour the user's monitoring preference instead of forcing monitoring
-        // on: `configureTracks()` runs on every reconfigure/add-track and used to
-        // silently re-enable monitoring the engineer had turned off.
-        waveIn->setMonitorMode (monitoringEnabled ? te::InputDevice::MonitorMode::on
-                                                  : te::InputDevice::MonitorMode::off);
-
-        // Record trim (FR-REC-4): applied to the input buffer before monitoring
-        // *and* before the take is written to disk, so what is heard is what is
-        // recorded. The engine applies it on the audio thread (a plain gain
-        // multiply); re-applied here on every (re)configure so it survives
-        // save/open. When two input tracks share one wave device the last one
-        // wins — in practice mono multitrack splits devices per channel, so the
-        // mapping is 1:1.
-        waveIn->setInputGainDb (getTrackInputGainDb (trackIndex));
-
-        resolvedOut = waveIn;
-        return true;
-    }
-
-    // Splits the wave-device grouping to one channel per device when two input
-    // tracks would otherwise share a device and the interface has enough inputs.
-    // This is what lets a 4-in interface record four independent mono tracks;
-    // a single input track (Epic 1) is never regrouped, so stereo capture keeps
-    // working.
-    static bool maybeSplitInputGrouping (rrs::AudioEngine& audio,
-                                         const juce::Array<int>& inputIndices,
-                                         const std::function<tracktion::WaveInputDevice* (int)>& resolve)
-    {
-        if (inputIndices.size() < 2)
-            return false;
-
-        auto& dm = audio.deviceManager();
-        const auto devices = dm.getNumWaveInDevices();
-        const auto totalChannels = audio.getNumActiveInputChannels();
-
-        if (totalChannels <= devices)
-            return false;
-
-        std::set<tracktion::InputDevice*> used;
-        bool duplicate = false;
-
-        for (auto index : inputIndices)
-            if (auto* device = resolve (index))
-                if (! used.insert (device).second)
-                    duplicate = true;
-
-        if (! duplicate)
-            return false;
-
-        dm.setAllWaveInputsToNumChannels (1);
-        return true;
+        for (auto* instance : edit.getAllInputDevices())
+            if (instance != nullptr)
+                juce::ignoreUnused (instance->removeTarget (track.itemID, nullptr));
     }
 
     bool Session::configureTracks()
@@ -946,6 +885,13 @@ namespace rrs
             return false;
 
         refreshMetersIfNeeded();
+
+        // RT-3: never (re)group channels, re-target devices or rebuild the
+        // wave-device list while a take is rolling — that drops or skips the
+        // recording. timerCallback retries configureTracks() once the transport
+        // stops (inputsConfigured stays false meanwhile).
+        if (isRecording())
+            return false;
 
         // Epic 1: a brand-new session starts with one input track. Note that
         // `createEmptyEdit` already adds a default track, so we mark/rename the
@@ -1001,81 +947,197 @@ namespace rrs
         }
 
         const auto indices = inputTrackIndices();
+        const int numInputTracks = indices.size();
 
-        // Splitting the device grouping rebuilds the wave-device list
-        // asynchronously; stop this pass and let timerCallback retry once the
-        // new devices exist.
-        if (maybeSplitInputGrouping (audio, indices,
-                                     [this] (int index) { return resolveInputDeviceFor (readTrackMapping (index)); }))
+        auto& dm = audio.deviceManager();
+        const int deviceChannels = juce::jmax (0, audio.getNumActiveInputChannels());
+
+        // Snapshot the previous device assignment BEFORE clearing, so a placed
+        // track whose device changed can drop its stale target (review #1: a
+        // placed track on a new device must not keep feeding from the old one).
+        const std::map<int, int> previousTrackDevice = appliedTrackDevice;
+
+        // The per-track status is rebuilt from scratch on every (re)configure.
+        inputTrackProblems.clear();
+        appliedDeviceOwner.clear();
+        appliedTrackDevice.clear();
+        appliedWaveDeviceCount = -1;
+
+        // Nothing to route until a device is open (headless / interface opening):
+        // not an error, keep retrying (timerCallback).
+        if (deviceChannels <= 0 || dm.getNumWaveInDevices() <= 0)
             return false;
 
+        // Derive the grouping from the tracks' layouts — one WaveInputDevice per
+        // track ("1 track = 1 channel or 1 stereo pair"). If the engine exposed
+        // fewer devices than we need, ask for per-channel devices (bounded, and
+        // never during a take — see the guard at the top of configureTracks).
+        const int neededDevices = juce::jmin (deviceChannels, numInputTracks);
+
+        if (dm.getNumWaveInDevices() < neededDevices)
+        {
+            if (splitRequestAttempts++ < 2)
+            {
+                dm.setAllWaveInputsToNumChannels (1);
+                return false; // async rebuild — retry next tick
+            }
+
+            lastError = "Not enough input devices on the current audio interface.";
+            return false;
+        }
+
+        splitRequestAttempts = 0;
+
+        // ONE rule (RT-1's `planInputLayout`): span validity, occupancy and the
+        // per-track reason all come from the pure planner — Session must not
+        // re-implement them (RT-3 M1/M2).
+        std::vector<TrackInputRequest> requests;
+        requests.reserve ((size_t) numInputTracks);
+
+        for (auto index : indices)
+        {
+            const auto mapping = readTrackMapping (index);
+            TrackInputRequest request;
+            request.trackIndex = index;
+            request.layout = mapping.layout;
+            request.requestedChannel = mapping.firstChannel;
+            request.needOverride = mapping.layout == InputLayout::MultiChannel ? mapping.numChannels : 0;
+            requests.push_back (request);
+        }
+
+        const auto layoutPlan = planInputLayout (requests, deviceChannels);
+
+        std::map<int, const TrackLayoutResult*> plannedByTrack;
+        for (const auto& t : layoutPlan.tracks)
+            plannedByTrack[t.trackIndex] = &t;
+
+        // Record the per-track problems first, so even a fully-failed pass surfaces
+        // the reasons (RT-2b / RT-3 B2/M2).
+        juce::String firstProblem;
+
+        for (auto index : indices)
+        {
+            const auto it = plannedByTrack.find (index);
+
+            if (it == plannedByTrack.end() || it->second->placed)
+                continue;
+
+            const auto message = describeInputProblem (*it->second);
+
+            if (message.isNotEmpty())
+            {
+                inputTrackProblems[index] = message;
+
+                if (firstProblem.isEmpty())
+                    firstProblem = message;
+            }
+        }
+
         bool anyAssigned = false;
-        juce::String missingChannelMessage; // RT-2: a channel not on the device
+
+        const int deviceCount = dm.getNumWaveInDevices();
+        std::vector<char> deviceUsed ((size_t) deviceCount, 0); // 1 track = 1 device
 
         for (auto index : indices)
         {
             auto* track = getTrack (index);
+            const auto it = plannedByTrack.find (index);
 
-            if (track == nullptr)
-                continue;
-
-            auto mapping = readTrackMapping (index);
-
-            // RT-2b D1: decide "channel off the device" from the LIVE device's
-            // input count (stable via getTrackInputProblem), NOT from the
-            // transiently-rebuilt wave-device list — otherwise the message was
-            // silently skipped right after add-track (list momentarily empty),
-            // `inputsConfigured` then stayed true, and the reason never appeared.
-            const auto problem = getTrackInputProblem (index);
-
-            if (problem.isNotEmpty())
+            if (track == nullptr || it == plannedByTrack.end() || ! it->second->placed)
             {
-                if (missingChannelMessage.isEmpty())
-                    missingChannelMessage = problem;
+                if (track != nullptr)
+                    releaseInputTargets (*edit, *track);
 
                 continue;
             }
 
-            auto* waveIn = resolveInputDeviceFor (mapping);
+            const auto& planned = *it->second;
+            const auto mapping = readTrackMapping (index);
 
-            if (waveIn == nullptr)
-                continue; // device list still rebuilding — timerCallback retries
+            // A DEDICATED device (never shared): that is the invariant the old
+            // setTarget(moveToTrack=true) destroyed.
+            int chosen = -1;
 
-            waveIn->setEnabled (true);
+            for (int d = 0; d < deviceCount && chosen < 0; ++d)
+                if (! deviceUsed[(size_t) d])
+                    if (auto* dev = dm.getWaveInDevice (d))
+                        if (dev->getChannels().containsDeviceChannel (planned.firstChannel))
+                            chosen = d;
 
-            // `setEnabled` can (asynchronously) rebuild the wave-device list,
-            // destroying this device object; re-resolve before using it.
-            waveIn = resolveInputDeviceFor (mapping);
+            for (int d = 0; d < deviceCount && chosen < 0; ++d)
+                if (! deviceUsed[(size_t) d])
+                    chosen = d;
 
-            if (waveIn == nullptr)
+            if (chosen < 0)
+            {
+                releaseInputTargets (*edit, *track);
+                inputTrackProblems[index] = "No free input device for this track.";
+
+                if (firstProblem.isEmpty())
+                    firstProblem = inputTrackProblems[index];
+
+                continue;
+            }
+
+            deviceUsed[(size_t) chosen] = 1;
+            appliedDeviceOwner[chosen] = index;
+            appliedTrackDevice[index] = chosen;
+
+            // If this track's device CHANGED (or it had none before), drop its old
+            // target first so it never feeds from two devices at once (review #1).
+            {
+                const auto prev = previousTrackDevice.find (index);
+
+                if (prev == previousTrackDevice.end() || prev->second != chosen)
+                    releaseInputTargets (*edit, *track);
+            }
+
+            auto* device = dm.getWaveInDevice (chosen);
+
+            if (device == nullptr)
                 continue;
 
-            // Apply the channel config. It re-resolves internally and reports the
-            // (possibly rebuilt) device through `waveIn`; reset first so a failure
-            // cannot leave a stale pointer behind.
-            waveIn = nullptr;
-            applyInputChannelConfiguration (index, waveIn);
+            // The channel configuration is a property of the DEVICE (global for
+            // all its targets) — built from THIS track's mapping.
+            device->setChannelConfiguration (inputChannelConfigurationForMapping (mapping, deviceChannels));
+            device->setMonitorMode (monitoringEnabled ? te::InputDevice::MonitorMode::on
+                                                      : te::InputDevice::MonitorMode::off);
+            device->setInputGainDb (getTrackInputGainDb (index));
 
-            if (waveIn == nullptr)
+            if (! device->isEnabled())
+                device->setEnabled (true); // may schedule an async device-list rebuild
+
+            if (dm.getNumWaveInDevices() != deviceCount)
+            {
+                // The list changed under us: drop the half-built map and retry with
+                // the fresh list (a FULL re-apply after a rebuild is RT-7).
+                appliedDeviceOwner.clear();
+                appliedTrackDevice.clear();
+                return false;
+            }
+
+            device = dm.getWaveInDevice (chosen);
+
+            if (device == nullptr)
                 continue;
 
+            // moveToTrack = false: never drop another track's target.
             for (auto* instance : edit->getAllInputDevices())
-                if (&instance->getInputDevice() == waveIn)
-                    if (auto result = instance->setTarget (track->itemID, true, &edit->getUndoManager(), 0);
+                if (&instance->getInputDevice() == device)
+                    if (auto result = instance->setTarget (track->itemID, false, &edit->getUndoManager(), 0);
                         ! result)
                         lastError = result.error();
 
             anyAssigned = true;
         }
 
-        // An empty device list (headless tests / no interface) is not an error:
-        // inputsConfigured stays false and timerCallback retries.
+        appliedWaveDeviceCount = dm.getNumWaveInDevices();
+
+        // An empty device list (headless tests / no interface) is not an error.
         if (! anyAssigned)
         {
-            // ...but a channel that is genuinely off the device (devices exist)
-            // is, and must be reported rather than swallowed (RT-2).
-            if (missingChannelMessage.isNotEmpty())
-                lastError = missingChannelMessage;
+            if (firstProblem.isNotEmpty())
+                lastError = firstProblem;
 
             return false;
         }
@@ -1086,10 +1148,10 @@ namespace rrs
         inputsConfigured = true;
         ensureMeterAttached();
 
-        // A channel missing from the device is a real, user-facing error (RT-2);
+        // A channel missing/occupied is a real, user-facing error (RT-2b);
         // report it instead of clearing it with the success path.
-        if (missingChannelMessage.isNotEmpty())
-            lastError = missingChannelMessage;
+        if (firstProblem.isNotEmpty())
+            lastError = firstProblem;
         else
             clearLastError();
 
@@ -1236,18 +1298,6 @@ namespace rrs
         return nullptr;
     }
 
-    // How many consecutive hardware channels a track's mapping needs (RT-2b):
-    // Mono/Auto-resolved via the RT-1 helpers (1/2); MultiChannel needs its own
-    // `numChannels`. RT-1 plans MultiChannel as a stereo pair, so it is handled
-    // explicitly here to keep the span honest.
-    static int requiredInputSpan (const InputMapping& mapping, int deviceChannels) noexcept
-    {
-        if (mapping.layout == InputLayout::MultiChannel)
-            return juce::jmax (1, mapping.numChannels);
-
-        return channelsPerLayout (planLayoutFor (mapping.layout, deviceChannels));
-    }
-
     bool Session::isTrackInputChannelAvailable (int trackIndex) const
     {
         // RT-2b #2: ONE authoritative predicate — available == "no problem".
@@ -1263,33 +1313,65 @@ namespace rrs
         if (edit == nullptr || track == nullptr || ! isInputTrack (*track))
             return {};
 
-        // The live device's input count — NOT the wave-device list (rebuilt
-        // asynchronously). The answer is therefore stable across a wave-device
-        // rebuild; it can still blink while the AUDIO DEVICE itself reopens
-        // (`getCurrentAudioDevice()` may be momentarily null -> channels == 0 ->
-        // no problem reported), which is acceptable (RT-2b D1).
-        const int channels = audio.getNumActiveInputChannels();
+        // RT-3 M1/M2: the per-track reason is computed once per configureTracks
+        // from the SAME planner that places the tracks (occupancy aware), so the
+        // predicate can never disagree with the applied layout. Absent => ok.
+        const auto it = inputTrackProblems.find (trackIndex);
+        return it != inputTrackProblems.end() ? it->second : juce::String();
+    }
 
-        if (channels <= 0)
-            return {}; // no device open yet — not a (persistent) problem
+    int Session::getAppliedInputDeviceIndex (int trackIndex) const
+    {
+        if (edit == nullptr)
+            return -1; // closed session: never report a stale index (review #4)
 
-        const auto mapping = readTrackMapping (trackIndex);
-        const int need = requiredInputSpan (mapping, channels);
+        const auto it = appliedTrackDevice.find (trackIndex);
+        return it != appliedTrackDevice.end() ? it->second : -1;
+    }
 
-        if (channelSpanFits (mapping.firstChannel, need, channels))
-            return {}; // fits (Mono AND the stereo/pair span) — no silent degradation
+    juce::String Session::describeInputProblem (const rrs::TrackLayoutResult& r) const
+    {
+        switch (r.error)
+        {
+            case InputGroupingError::ChannelOffDevice:
+            {
+                const int channels = juce::jmax (0, audio.getNumActiveInputChannels());
+                const auto inputsText = juce::String (channels) + " input"
+                                      + (channels == 1 ? "" : "s");
+                // Long long so a pathological channel index cannot overflow.
+                const long long lo = (long long) r.conflictChannel + 1;
+                const long long hi = lo + juce::jmax (0, r.need - 1);
 
-        // Long long so a pathological channel index cannot overflow the message.
-        const long long lo = (long long) mapping.firstChannel + 1;
-        const long long hi = (long long) mapping.firstChannel + need;
-        const auto inputsText = juce::String (channels) + " input" + (channels == 1 ? "" : "s");
+                if (r.need == 2)
+                    return "Input channels " + juce::String (lo) + "-" + juce::String (hi)
+                         + " are not available: the current device has only " + inputsText + ".";
 
-        if (need == 2)
-            return "Input channels " + juce::String (lo) + "-" + juce::String (hi)
-                 + " are not available: the current device has only " + inputsText + ".";
+                return "Input channel " + juce::String (lo)
+                     + " is not available: the current device has only " + inputsText + ".";
+            }
 
-        return "Input channel " + juce::String (lo)
-             + " is not available: the current device has only " + inputsText + ".";
+            case InputGroupingError::ChannelOccupied:
+            case InputGroupingError::OccupiedNeighbour:
+            {
+                const long long ch = (long long) r.conflictChannel + 1;
+                juce::String owner;
+
+                if (juce::isPositiveAndBelow (r.ownerTrackIndex, getNumAudioTracks()))
+                    owner = " (track \"" + getTrackName (r.ownerTrackIndex) + "\")";
+
+                return "Input channel " + juce::String (ch)
+                     + " is already used by another track" + owner + ".";
+            }
+
+            case InputGroupingError::NoFreeChannel:
+                return "No free input channel on the current device.";
+
+            case InputGroupingError::NoDevice:
+            case InputGroupingError::InvalidTrackIndex:
+            case InputGroupingError::None:
+            default:
+                return {}; // no persistent problem to show
+        }
     }
 
     //==============================================================================
@@ -4365,6 +4447,7 @@ namespace rrs
 
         editFile = file;
         audio.behaviour().setRecordingsDirectory (paths::recordingsDirectoryFor (file));
+        splitRequestAttempts = 0; // fresh session: reset the split-retry budget
         sendChangeMessage();
         clearLastError();
         return true;
@@ -4414,6 +4497,15 @@ namespace rrs
         inputsConfigured = false;
         masterGainDb = 0.0f;
         masterMuted = false;
+
+        // Drop the applied input layout (review #4/#5): getAppliedInputDeviceIndex
+        // must not return a stale index for a closed session, and a new session
+        // must not start with an exhausted split-retry budget.
+        appliedDeviceOwner.clear();
+        appliedTrackDevice.clear();
+        inputTrackProblems.clear();
+        appliedWaveDeviceCount = -1;
+        splitRequestAttempts = 0;
 
         // The session is gone: clear the sentinel so a crash while empty does not
         // masquerade as an interrupted session.
@@ -4898,34 +4990,60 @@ namespace rrs
         }
         else
         {
-            // The device can (re)open or be rebuilt after the session was
-            // configured, leaving the input routing at the hardware default (a
-            // mono source would then be hard-left). Re-apply whenever the live
-            // routing differs from the mapping's route for this device.
-            bool changed = false;
+            // RT-3 B1: the drift-correction MUST NOT re-resolve a device by
+            // channel-contains — that returns the FIRST device carrying a channel
+            // and lets a stereo device (channels c,c+1) shadow the device of a
+            // track on c+1, so one track's config could be overwritten with
+            // another's. Use the APPLIED layout (device -> owner track) instead.
+            //
+            // Never mutate anything while a take is rolling (the take would be
+            // lost). A device rebuild is detected and triggers a full
+            // re-configure on the next tick (the full re-apply is RT-7).
+            const bool deviceListChanged =
+                audio.deviceManager().getNumWaveInDevices() != appliedWaveDeviceCount;
 
-            for (auto index : inputTrackIndices())
+            if (deviceListChanged)
+                inputsConfigured = false;
+
+            // NOTE: this is a plain guard, NOT a `return` — the rest of
+            // timerCallback (FR-REC-8 header finalise, autosave, notifications)
+            // must keep running during a take.
+            if (! isRecording() && ! deviceListChanged)
             {
-                auto mapping = readTrackMapping (index);
-                auto* waveIn = resolveInputDeviceFor (mapping);
-
-                if (waveIn == nullptr)
-                    continue;
-
+                bool changed = false;
                 const auto hardwareChannels = juce::jmax (1, audio.getNumActiveInputChannels());
 
-                if (waveIn->getChannels() != inputChannelConfigurationForMapping (mapping, hardwareChannels))
+                for (const auto& entry : appliedDeviceOwner)
                 {
-                    applyInputChannelConfiguration (index, waveIn);
-                    changed = true;
-                }
-            }
+                    // Explicit bounds check (review #7): the count guard above
+                    // makes this safe today, but do not rely on it.
+                    if (! juce::isPositiveAndBelow (entry.first, audio.deviceManager().getNumWaveInDevices()))
+                        continue;
 
-            if (changed)
-            {
-                edit->restartPlayback();
-                save();
-                sendChangeMessage();
+                    auto* device = audio.deviceManager().getWaveInDevice (entry.first);
+
+                    if (device == nullptr)
+                        continue;
+
+                    const auto mapping = readTrackMapping (entry.second);
+                    const auto wanted = inputChannelConfigurationForMapping (mapping, hardwareChannels);
+
+                    if (device->getChannels() != wanted)
+                    {
+                        // Only THIS track owns THIS device (1 track = 1 device), so
+                        // re-applying its config cannot clobber another track (B1).
+                        device->setChannelConfiguration (wanted);
+                        device->setInputGainDb (getTrackInputGainDb (entry.second));
+                        changed = true;
+                    }
+                }
+
+                if (changed)
+                {
+                    edit->restartPlayback();
+                    save();
+                    sendChangeMessage();
+                }
             }
         }
 

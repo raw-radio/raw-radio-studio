@@ -40,13 +40,15 @@ namespace rrs
 
     /** One track's input request. `layout` may be `Auto` (resolved by the device
         default, see `InputMapping.h`); `requestedChannel` is an explicit hardware
-        channel, or -1 to let the planner pick the first free run. `trackIndex`
-        MUST be >= 0. */
+        channel, or -1 to let the planner pick the first free run. `needOverride`
+        (>0) forces the span (used for a MultiChannel track's `numChannels`);
+        0 means "derive it from the resolved layout". `trackIndex` MUST be >= 0. */
     struct TrackInputRequest
     {
         int trackIndex = -1;
         InputLayout layout = InputLayout::Auto;
         int requestedChannel = -1;
+        int needOverride = 0;
     };
 
     /** A planned assignment: `firstChannel` (and `firstChannel + 1` for stereo). */
@@ -72,6 +74,28 @@ namespace rrs
         InputGroupingError error = InputGroupingError::None;
         int errorTrackIndex = -1;   ///< the offending track, or -1 (no track concept)
         std::vector<GroupAssignment> assignments;
+    };
+
+    /** One track's result in a per-track layout plan (see `planInputLayout`). */
+    struct TrackLayoutResult
+    {
+        int trackIndex = -1;
+        int firstChannel = 0;
+        int need = 1;                            ///< resolved span
+        InputLayout layout = InputLayout::Mono;  ///< resolved Mono/Stereo
+        bool placed = false;
+        InputGroupingError error = InputGroupingError::None; ///< set when !placed (None for placed)
+        int ownerTrackIndex = -1;                ///< for occupancy errors: the track that owns the channel
+        int conflictChannel = -1;                ///< the offending channel (0-based), or the requested start
+    };
+
+    /** A per-track layout plan: `tracks` is in canonical (`trackIndex`) order; a
+        track that could not be placed carries an explicit `error` (no silent
+        clamp). Session reads `tracks`; the occupancy it applies is derived from
+        the placed track's `firstChannel`/`need`. */
+    struct InputLayoutPlan
+    {
+        std::vector<TrackLayoutResult> tracks;
     };
 
     /** Resolves a request's layout for planning: `Auto` -> device default
@@ -114,6 +138,122 @@ namespace rrs
         return channel >= 0 && occupancy.find (channel) == occupancy.end();
     }
 
+    /** Per-track layout plan: places each request in canonical (`trackIndex`)
+        order, keeping a channel-occupancy map so two tracks never share a channel
+        and a stereo pair never takes an owned neighbour. Unlike
+        `planInputGrouping` this is NOT all-or-nothing: a track that cannot be
+        placed gets an explicit `error` (with `ownerTrackIndex`/`conflictChannel`)
+        while the others are still placed. This is the single rule both
+        `configureTracks` and the per-track "input problem" read (RT-3 M1/M2). */
+    inline InputLayoutPlan planInputLayout (std::span<const TrackInputRequest> requests,
+                                            int deviceChannels)
+    {
+        InputLayoutPlan plan;
+
+        std::vector<TrackInputRequest> ordered (requests.begin(), requests.end());
+        std::stable_sort (ordered.begin(), ordered.end(),
+                          [] (const TrackInputRequest& a, const TrackInputRequest& b)
+                          { return a.trackIndex < b.trackIndex; });
+
+        const bool hasDevice = deviceChannels > 0;
+        std::vector<std::optional<int>> owner (hasDevice ? (size_t) deviceChannels : 0);
+
+        auto isFreeAt = [&owner, hasDevice] (int channel) noexcept
+        {
+            return hasDevice && channel >= 0 && channel < (int) owner.size()
+                && ! owner[(size_t) channel].has_value();
+        };
+
+        for (const auto& request : ordered)
+        {
+            TrackLayoutResult r;
+            r.trackIndex = request.trackIndex;
+            r.layout = planLayoutFor (request.layout, deviceChannels);
+            r.need = request.needOverride > 0 ? request.needOverride
+                                              : channelsPerLayout (r.layout);
+            r.conflictChannel = request.requestedChannel;
+
+            if (request.trackIndex < 0)
+            {
+                r.error = InputGroupingError::InvalidTrackIndex;
+            }
+            else if (! hasDevice)
+            {
+                r.error = InputGroupingError::NoDevice;
+            }
+            else if (request.requestedChannel >= 0)
+            {
+                const int first = request.requestedChannel;
+
+                if (! channelSpanFits (first, r.need, deviceChannels))
+                {
+                    r.error = InputGroupingError::ChannelOffDevice;
+                }
+                else
+                {
+                    for (int i = 0; i < r.need; ++i)
+                        if (! isFreeAt (first + i))
+                        {
+                            r.error = r.need == 2 ? InputGroupingError::OccupiedNeighbour
+                                                  : InputGroupingError::ChannelOccupied;
+                            r.ownerTrackIndex = owner[(size_t) (first + i)].value();
+                            r.conflictChannel = first + i;
+                            break;
+                        }
+
+                    if (r.error == InputGroupingError::None)
+                    {
+                        for (int i = 0; i < r.need; ++i)
+                            owner[(size_t) (first + i)] = request.trackIndex;
+
+                        r.firstChannel = first;
+                        r.placed = true;
+                    }
+                }
+            }
+            else
+            {
+                int chosen = -1;
+
+                // Overflow-safe span bound (same helper as everywhere else).
+                for (int start = 0; channelSpanFits (start, r.need, deviceChannels); ++start)
+                {
+                    bool free = true;
+
+                    for (int i = 0; i < r.need; ++i)
+                        if (! isFreeAt (start + i))
+                        {
+                            free = false;
+                            break;
+                        }
+
+                    if (free)
+                    {
+                        chosen = start;
+                        break;
+                    }
+                }
+
+                if (chosen < 0)
+                {
+                    r.error = InputGroupingError::NoFreeChannel;
+                }
+                else
+                {
+                    for (int i = 0; i < r.need; ++i)
+                        owner[(size_t) (chosen + i)] = request.trackIndex;
+
+                    r.firstChannel = chosen;
+                    r.placed = true;
+                }
+            }
+
+            plan.tracks.push_back (r);
+        }
+
+        return plan;
+    }
+
     /** Plans the grouping for `requests` on a device with `deviceChannels`
         inputs.
 
@@ -130,100 +270,31 @@ namespace rrs
                                              int deviceChannels)
     {
         InputGroupPlan plan;
+        const auto layout = planInputLayout (requests, deviceChannels);
 
-        // Canonical order up front (also used by the no-device branch: High-2).
-        std::vector<TrackInputRequest> ordered (requests.begin(), requests.end());
-        std::stable_sort (ordered.begin(), ordered.end(),
-                          [] (const TrackInputRequest& a, const TrackInputRequest& b)
-                          { return a.trackIndex < b.trackIndex; });
-
-        auto fail = [&plan] (InputGroupingError error, int trackIndex)
-        {
-            plan.ok = false;
-            plan.error = error;
-            plan.errorTrackIndex = trackIndex;
-            plan.assignments.clear(); // High-1: never expose a half-placed plan
-            return plan;
-        };
-
+        // No device at all is its own error, even with no requests (High-2).
         if (deviceChannels <= 0)
         {
             plan.ok = false;
             plan.error = InputGroupingError::NoDevice;
-            plan.errorTrackIndex = ordered.empty() ? -1 : ordered.front().trackIndex;
+            plan.errorTrackIndex = layout.tracks.empty() ? -1 : layout.tracks.front().trackIndex;
             return plan;
         }
 
-        // B1: a track index is required up front — never rely on a `-1` sentinel
-        // meaning "free channel".
-        for (const auto& request : ordered)
-            if (request.trackIndex < 0)
-                return fail (InputGroupingError::InvalidTrackIndex, request.trackIndex);
-
-        std::vector<std::optional<int>> owner ((size_t) deviceChannels); // B1: real emptiness
-
-        auto isFreeAt = [&owner] (int channel) noexcept
+        for (const auto& t : layout.tracks)
         {
-            return channel >= 0 && channel < (int) owner.size()
-                && ! owner[(size_t) channel].has_value();
-        };
-
-        for (const auto& request : ordered)
-        {
-            const auto layout = planLayoutFor (request.layout, deviceChannels);
-            const int need = channelsPerLayout (layout);
-
-            auto place = [&] (int first)
+            if (! t.placed)
             {
-                for (int i = 0; i < need; ++i)
-                    owner[(size_t) (first + i)] = request.trackIndex;
-
-                plan.assignments.push_back ({ request.trackIndex, first, layout });
-            };
-
-            if (request.requestedChannel >= 0)
-            {
-                const int first = request.requestedChannel;
-
-                // B3: overflow-safe span check (shared helper).
-                if (! channelSpanFits (first, need, deviceChannels))
-                    return fail (InputGroupingError::ChannelOffDevice, request.trackIndex);
-
-                for (int i = 0; i < need; ++i)
-                    if (! isFreeAt (first + i))
-                        return fail (layout == InputLayout::Stereo
-                                         ? InputGroupingError::OccupiedNeighbour
-                                         : InputGroupingError::ChannelOccupied, // High-3
-                                     request.trackIndex);
-
-                place (first);
-                continue;
+                plan.ok = false;
+                plan.error = t.error;
+                plan.errorTrackIndex = t.trackIndex;
+                plan.assignments.clear(); // High-1: never expose a half-placed plan
+                return plan;
             }
 
-            int chosen = -1;
-
-            for (int start = 0; start + need <= deviceChannels; ++start)
-            {
-                bool free = true;
-
-                for (int i = 0; i < need; ++i)
-                    if (! isFreeAt (start + i))
-                    {
-                        free = false;
-                        break;
-                    }
-
-                if (free)
-                {
-                    chosen = start;
-                    break;
-                }
-            }
-
-            if (chosen < 0)
-                return fail (InputGroupingError::NoFreeChannel, request.trackIndex);
-
-            place (chosen);
+            plan.assignments.push_back ({ t.trackIndex, t.firstChannel,
+                                          t.layout == InputLayout::Stereo ? InputLayout::Stereo
+                                                                          : InputLayout::Mono });
         }
 
         return plan;

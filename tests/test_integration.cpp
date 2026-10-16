@@ -1597,6 +1597,165 @@ TEST_CASE ("input problem: single predicate and guards (RT-2b)")
 
 
 //==============================================================================
+// RT-3: grouping is derived from the tracks' layouts with ONE device per track.
+// The regression this guards: the old `setTarget(..., moveToTrack=true)` dropped
+// every other track's target, so adding a track made the previous ones lose their
+// input ("last wins").
+TEST_CASE ("input routing: one device per track; adding a track keeps the others (RT-3)")
+{
+    auto dir = scratchDirectory ("input-rt3");
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Rt3.tracktionedit")));
+
+    te::HostedAudioDeviceInterface::Parameters params;
+    params.sampleRate = 48000.0;
+    params.blockSize = 256;
+    params.inputChannels = 2;   // one device per hardware channel is expected
+    params.outputChannels = 2;
+    auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+
+    auto settle = [&]
+    {
+        for (int i = 0; i < 200; ++i)
+        {
+            audio.deviceManager().dispatchPendingUpdates();
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+            if (session.isInputConfigured())
+                break;
+
+            session.reconfigureInputs();
+        }
+    };
+
+    settle();
+    REQUIRE (! session.getInputTrackIndices().isEmpty());
+
+    // A second input track.
+    REQUIRE (session.addAudioTrack() >= 0);
+    settle();
+
+    const auto idx = session.getInputTrackIndices();
+    REQUIRE (idx.size() >= 2);
+
+    // Both tracks are armable (each owns a device) and use DIFFERENT channels.
+    CHECK (session.setTrackArmed (idx[0], true));
+    CHECK (session.setTrackArmed (idx[1], true));
+    CHECK (session.getTrackInputMapping (idx[0]).firstChannel
+               != session.getTrackInputMapping (idx[1]).firstChannel);
+
+    // ... on DIFFERENT WaveInputDevices (RT-3: 1 track = 1 device).
+    CHECK (session.getAppliedInputDeviceIndex (idx[0]) >= 0);
+    CHECK (session.getAppliedInputDeviceIndex (idx[1]) >= 0);
+    CHECK (session.getAppliedInputDeviceIndex (idx[0])
+               != session.getAppliedInputDeviceIndex (idx[1]));
+
+    // Adding a third track (off a 2-channel device) must NOT drop the first two
+    // tracks' targets (the "last wins" regression).
+    REQUIRE (session.addAudioTrack() >= 0);
+    settle();
+
+    CHECK (session.setTrackArmed (idx[0], true));
+    CHECK (session.setTrackArmed (idx[1], true));
+
+    const auto idx3 = session.getInputTrackIndices();
+    REQUIRE (idx3.size() >= 3);
+    CHECK_FALSE (session.setTrackArmed (idx3[2], true));
+    CHECK (session.getTrackInputProblem (idx3[2]).isNotEmpty());
+
+    // Review #1 smoke: swap the two mono tracks' channels so each track's device
+    // changes; the stale target must be dropped (no crash, both still placed).
+    REQUIRE (session.setTrackInputMapping (idx[0], InputMapping { 1, 1, InputLayout::Mono }));
+    REQUIRE (session.setTrackInputMapping (idx[1], InputMapping { 0, 1, InputLayout::Mono }));
+    settle();
+    CHECK (session.getAppliedInputDeviceIndex (idx[0]) >= 0);
+    CHECK (session.getAppliedInputDeviceIndex (idx[1]) >= 0);
+    CHECK (session.setTrackArmed (idx[0], true));
+    CHECK (session.setTrackArmed (idx[1], true));
+
+    session.close();
+}
+
+//==============================================================================
+// RT-3 B1/B2: a stereo pair on a 2-channel device must NOT be clobbered by a
+// mono track pinned to its right channel, and the pinning track must report the
+// occupancy per-track (the timer must not re-resolve the device by
+// channel-contains and overwrite the stereo config).
+TEST_CASE ("input routing: occupancy is per-track and a stereo device is not clobbered (RT-3 B1/B2)")
+{
+    auto dir = scratchDirectory ("input-rt3-b1");
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Rt3b1.tracktionedit")));
+
+    te::HostedAudioDeviceInterface::Parameters params;
+    params.sampleRate = 48000.0;
+    params.blockSize = 256;
+    params.inputChannels = 2;
+    params.outputChannels = 2;
+    auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+
+    auto settle = [&]
+    {
+        for (int i = 0; i < 200; ++i)
+        {
+            audio.deviceManager().dispatchPendingUpdates();
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+            if (session.isInputConfigured())
+                break;
+
+            session.reconfigureInputs();
+        }
+    };
+
+    settle();
+    REQUIRE (! session.getInputTrackIndices().isEmpty());
+    const int a = session.getInputTrackIndices()[0];
+
+    // Track A: a stereo pair on channels 0-1.
+    REQUIRE (session.setTrackInputMapping (a, InputMapping { 0, 2, InputLayout::Stereo }));
+    settle();
+    CHECK (session.getTrackInputProblem (a).isEmpty());
+    const int aDevice = session.getAppliedInputDeviceIndex (a);
+    CHECK (aDevice >= 0);
+
+    // Track B: mono pinned to channel 1 (A's right channel) -> refused.
+    REQUIRE (session.addAudioTrack() >= 0);
+    settle();
+    const auto idxs = session.getInputTrackIndices();
+    REQUIRE (idxs.size() >= 2);
+    const int b = idxs[1];
+    REQUIRE (session.setTrackInputMapping (b, InputMapping { 1, 1, InputLayout::Mono }));
+    settle();
+
+    const auto bProblem = session.getTrackInputProblem (b);
+    CHECK (bProblem.isNotEmpty());
+    CHECK (bProblem.contains ("already used"));
+    CHECK_FALSE (session.isTrackInputChannelAvailable (b));
+    CHECK (session.getAppliedInputDeviceIndex (b) == -1);
+
+    // B1: A's device assignment is untouched; A stays available and armable.
+    CHECK (session.getAppliedInputDeviceIndex (a) == aDevice);
+    CHECK (session.getTrackInputProblem (a).isEmpty());
+    CHECK (session.setTrackArmed (a, true));
+
+    // Re-running the configure/reconfigure pass (as the timer would) must not
+    // clobber A either (the applied layout, not a channel-contains resolver).
+    session.reconfigureInputs();
+    settle();
+    CHECK (session.getAppliedInputDeviceIndex (a) == aDevice);
+    CHECK (session.getTrackInputProblem (a).isEmpty());
+    CHECK (session.getTrackInputProblem (b).contains ("already used"));
+
+    session.close();
+}
+
+
+//==============================================================================
 // Epic 4 (FR-ED-1/2/6): arrangement clip edits. Every operation changes the
 // clip's geometry as measured through the Session's clip model, and undo/redo
 // restores the previous edit state consistently.

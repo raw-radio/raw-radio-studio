@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "AudioEngine.h"
+#include "InputGrouping.h"
 #include "InputMapping.h"
 #include "MeterCache.h"
 #include "PluginPresets.h"
@@ -389,6 +390,10 @@ namespace rrs
             list), so it does not flicker — the UI shows it for a track whose
             input is missing (RT-2b D1/D2). */
         juce::String getTrackInputProblem (int trackIndex) const;
+
+        /** The wave-device index the given input track owns in the last applied
+            layout, or -1 when it has no input (RT-3). Read-only diagnostic. */
+        int getAppliedInputDeviceIndex (int trackIndex) const;
 
         /** Re-resolves the input device and re-assigns it to the track. Call after
             the audio device changes (wave devices are rebuilt). */
@@ -817,9 +822,6 @@ namespace rrs
             (retried from timerCallback). */
         bool configureTracks();
 
-        /** Re-applies each input track's channel routing from its mapping. */
-        bool applyInputChannelConfiguration (int trackIndex, tracktion::WaveInputDevice*& resolvedOut);
-
         /** Reads/writes the per-track input mapping stored on the track's state. */
         InputMapping readTrackMapping (int trackIndex) const;
         void writeTrackMapping (tracktion::AudioTrack&, const InputMapping&);
@@ -844,6 +846,11 @@ namespace rrs
         /** Resolves the wave input device that carries `channel`, or the best
             available fallback. */
         tracktion::WaveInputDevice* resolveInputDeviceFor (const InputMapping&) const;
+
+        /** Human-readable reason a planned-but-unplaced input track has no input
+            (RT-2b/RT-3 B2/M2). Empty for a placed track / the "no device open"
+            transient. */
+        juce::String describeInputProblem (const rrs::TrackLayoutResult&) const;
 
         /** Converts an input track into a MIDI track: stops the hardware input
             from targeting it, snapshots the input mapping into the restore
@@ -997,6 +1004,19 @@ namespace rrs
         void storeMasterState();
         bool meterAttached = false;
         bool inputsConfigured = false;
+
+        /** Layout applied by the last successful `configureTracks()` (RT-3): the
+            wave-device index each input track owns, the channel each track owns,
+            and the per-track "no input" reason. Read by `getTrackInputProblem()`
+            (fast, message thread) and by the timer's drift-correction, which must
+            never re-resolve a device by channel-contains (that could pick another
+            track's device — RT-3 B1). */
+        std::map<int, int> appliedDeviceOwner;      ///< device index -> track index
+        std::map<int, int> appliedTrackDevice;      ///< track index -> device index
+        std::map<int, juce::String> inputTrackProblems; ///< track index -> reason (absent = ok)
+        int appliedWaveDeviceCount = -1;
+        /** Bounded retries for the one-per-channel device split request. */
+        int splitRequestAttempts = 0;
         /** User's monitoring preference. Unlike the live device state, this
             survives reconfiguring the input tracks (reconfigure/add-track), so
             `configureTracks()` never silently re-enables monitoring the user
