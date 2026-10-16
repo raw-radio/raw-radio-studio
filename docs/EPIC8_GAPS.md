@@ -78,6 +78,194 @@ this file is the record of what was agreed.
   at **30 Hz**.
 - **R-F — Multichannel metering.** **Yes** — **only active channels, in L/R pairs**.
 
+## Input routing & recording semantics — agreement & task graph
+
+> Status: **owner-agreed fix package, not started.** Frozen after the live retest of phases 1a / 1b / 2
+> (input mapping, track removal, waveform). It **extends R-A…R-F** and is the basis for the
+> routing-and-recording-semantics work: changing the input invariant is the **largest intrusion into
+> the audio core** of this whole effort, so it is done first, deliberately, and behind unit tests.
+> The graph is ordered head-first: **routing + deletion blockers → waveform view → LV2 → live wave
+> growth.** Every live-audio check uses the ALSA loopback runbook in
+> [`DEV_AUDIO_LINUX.md`](DEV_AUDIO_LINUX.md); all builds/tests run on the remote Linux machine
+> (`~/projects/raw-radio/`, screenshot display `Xvfb :99`) per [`EPIC7_GAPS.md`](EPIC7_GAPS.md).
+
+### What is wrong (verified `file:line`)
+
+1. **Cross-track target clobbering.** `configureTracks()` calls
+   `setTarget(track->itemID, /*move=*/true, …)` (`src/studio/Session.cpp:1038`); with `move=true` the
+   engine **removes every other target** on that instance
+   (`third_party/tracktion_engine/modules/tracktion_engine/playback/devices/tracktion_InputDevice.cpp:108-112`),
+   so a wave input backing several tracks keeps only the last-assigned one.
+2. **Silent device fallback.** `resolveInputDeviceFor` (`src/studio/Session.cpp:528`) clamps to a
+   device index when no device carries the requested channel — a channel that is not on the map is
+   still assigned. Callers assume non-`nullptr` (`:758`, `:1280`, `:590`, `:4804`).
+3. **Unbounded track creation.** `addAudioTrack` (`src/studio/Session.cpp:1059`) never refuses when
+   the device has fewer channels than the tracks requested.
+4. **Channel menu lists positions, not the device.** Both menus enumerate `0..getNumInputChannels()-1`
+   with no occupancy marking (`src/ui/MainComponent.cpp:3134`, `src/ui/MixerPanel.cpp:651`).
+5. **Grouping is incidental.** The one-device-per-channel split is a side effect of
+   `maybeSplitInputGrouping` (`src/studio/Session.cpp:909`), driven by a "duplicate device" heuristic,
+   not by the track layouts.
+6. **No per-track removal UI.** `Session::removeAudioTrack` (`src/studio/Session.cpp:1126`) removes
+   **any** track, but the UI offers only the action-row button (selected/last) and has no right-click
+   menu (`MainComponent.cpp:358`, `:2642`).
+7. **Device rebuild re-applies only the channel config.** `timerCallback`
+   (`src/studio/Session.cpp:4793-4824`) re-applies the `ChannelConfiguration` but not the
+   grouping/targets after a device-config change.
+8. **The take clip appears only at stop.** The engine inserts the clip on `stopRecording`
+   (`third_party/tracktion_engine/.../playback/devices/tracktion_WaveInputDevice.cpp:886-903`), so
+   `getClips()` returns nothing while the take rolls — the wave cannot grow.
+
+### Agreed decisions (I1…I12)
+
+- **I1 — One track = one `WaveInputDevice`/channel or one stereo pair.** A device backs a track 1:1;
+  targets are never clobbered. The grouping is **derived from the track layouts**, not incidental.
+- **I2 — No silent fallback.** A channel the device does not expose is not assigned (no clamped
+  substitute device).
+- **I3 — Do not create tracks beyond the device's channels.** Refuse with a clear message.
+- **I4 — The Channel menu shows the device's real channels and marks/disables occupied ones.**
+- **I5 — `Mono` / `Stereo` are working layouts; defaults are 2 channels → stereo, ≥4 channels → mono
+  per channel.** A `Mono` track writes a **1-channel file**. The default rule lives in **one place** —
+  `InputMapping::defaultLayoutForDevice` (canonical owner; `resolveInputLayout` and
+  `InputGrouping::planLayoutFor` both delegate to it). The **3-channel** case resolves to **Mono**
+  (conservative completion between 2 → stereo and ≥4 → mono).
+- **I6 — `mono→stereo` over a neighbour owned by another track is refused with an explanation.**
+- **I7 — Track removal is available for any track via a right-click menu (gutter/lane) and a hotkey**,
+  not only the last/selected one.
+- **I8 — After a device rebuild, mappings and targets are re-applied** (not only the channel config).
+- **I9 — Waveform normalisation by the clip's own peak + a linear/dB scale toggle** (pure, testable
+  math in `src/ui/ClipWaveform.h`).
+- **I10 — Stereo = two strips, mono = one; overlaid into a single strip when the lane is too short.**
+- **I11 — A live take grows during recording** via a **synthetic live clip** built by `Session`
+  (`start` = punch-in/record start, `end` = transport position, `sourceFile` = the active recording
+  file), drawn through the existing `drawClip(..., live=true)` path with the engine's
+  `RecordingThumbnailManager` thumbnail.
+- **I12 — LV2 hosting is on by default** (`CMakeLists.txt:49-50`); the answer is not "opt-in".
+  Test LV2 packages are installed on the build box and the scan is proven with a **plugin-browser
+  screenshot**.
+
+### Task graph
+
+Legend: **Est** ∈ {S, M, L}; `depends on` lists hard prerequisites. `RT-*` = routing/removal,
+`WV-*` = waveform view, `LV-*` = LV2, `LW-*` = live wave growth.
+
+| ID | Task | Goal | Files (primary) | Est | depends on |
+|----|------|------|-----------------|-----|------------|
+| **RT-1** | Tracktion-free grouping + occupancy helpers | Pure helpers: given `{track, InputMapping}[]` + device channel count, derive (a) the desired wave-device grouping (1 device per channel or per stereo pair), (b) `channel → owning track` occupancy, (c) the per-device target list (no clobber). Unit-tested. | `src/studio/InputMapping.h` (or new `src/studio/InputGrouping.h`), `tests/test_studio.cpp` | **M** | — |
+| **RT-2** | Drop the silent device fallback | `resolveInputDeviceFor` returns `nullptr` when no device carries the channel; audit + null-harden every call site. | `src/studio/Session.cpp`, `src/studio/Session.h` | **M** | RT-1 |
+| **RT-3** | One device per channel/pair; no target clobbering | **Core change.** Replace incidental `maybeSplitInputGrouping` with layout-derived grouping; assign with `setTarget(..., /*move=*/false, index)` so a shared device keeps every track's target; **never regroup while recording**. | `src/studio/Session.cpp` (`configureTracks`, `maybeSplitInputGrouping`, `applyInputChannelConfiguration`), `src/studio/InputRouting.h` | **L** | RT-1, RT-2 |
+| **RT-4** | Block tracks beyond the channel count | `addAudioTrack` refuses (clear message) when no free hardware channel remains. | `src/studio/Session.cpp`, `src/studio/Session.h` | **S** | RT-1 |
+| **RT-5** | Mono/Stereo layouts + 1-channel mono takes | Working `Mono`/`Stereo`; defaults 2 ch → stereo, ≥4 ch → mono-per-channel; a `Mono` track writes a **1-channel** WAV. | `src/studio/InputMapping.h`, `src/studio/Session.cpp`, `src/studio/InputRouting.h`, tests | **M** | RT-3 |
+| **RT-6** | Refuse mono→stereo over an occupied neighbour | Pure conflict check + refusal with an explanation (no silent overwrite); surface the message in the UI. | `src/studio/Session.cpp` (`setTrackInputMapping`), `InputMapping.h`/`InputGrouping.h`, `MainComponent.cpp`, `MixerPanel.cpp` | **S/M** | RT-1, RT-5 |
+| **RT-7** | Re-apply mappings **and** targets after a device rebuild | `timerCallback` re-runs the full assignment (grouping + config + targets) when the device changed — change-gated, never mid-take. | `src/studio/Session.cpp` (`timerCallback`, `configureTracks`) | **M** | RT-3 |
+| **RT-8** | Channel menu: real channels, occupied marked/disabled | Shared occupancy provider feeds the gutter popup and the mixer popup; occupied channels are disowned or labelled with the owning track. | `src/ui/MainComponent.cpp` (`showLaneInputMenu:3130`), `src/ui/MixerPanel.cpp` (`showInputMenu:650`), `MainComponent.h`, `MixerPanel.h` | **M** | RT-1 |
+| **RT-9** | Right-click track menu + any-track removal | Right-click on gutter/lane opens `Remove track` + the input-mapping submenu; a hotkey mirrors it; keep the action-row button. | `src/ui/MainComponent.cpp` (`mouseDown:2642`, `keyPressed:2912`, new `showTrackContextMenu`), `MainComponent.h` | **M** | RT-8 |
+| **WV-1** | Waveform scale math (normalise + linear/dB) | Pure `ClipWaveform.h`: scale bins by the clip's own peak; linear↔dB mapping; unit-tested. | `src/ui/ClipWaveform.h`, `tests/test_studio.cpp` | **M** | — |
+| **WV-2** | Wire normalisation + linear/dB toggle | `drawClip`/`paint` use the helpers; a compact persistent toggle in the edit row. | `src/ui/MainComponent.cpp` (`drawClip:3455`, `paint`), `MainComponent.h` | **M** | WV-1 |
+| **WV-3** | Stereo = 2 strips, mono = 1 | Two strips for stereo, one for mono; overlay into one strip when the lane is too short. | `src/ui/MainComponent.cpp` (`drawClip`), `ClipWaveform.h`, `TrackLaneLayout.h` | **M** | WV-1, WV-2 |
+| **LV-1** | LV2 default-on | Flip `RAW_RADIO_STUDIO_ENABLE_LV2` to `ON`, keep the opt-out, document it. | `CMakeLists.txt:49-50`, `README.md` / `DEPENDENCIES.md` | **S** | — |
+| **LV-2** | Prove the LV2 scan (evidence) | Install test LV2 packages on the build box; scan; attach a **plugin-browser screenshot** (`Xvfb :99`). | evidence (screenshot + note); `EPIC3_GAPS.md`/`DEV_AUDIO_LINUX.md` if recorded | **S** | LV-1 |
+| **LW-1** | Synthetic live clip from `Session` | While recording, expose a `ClipInfo` (`start` = record/punch start, `end` = transport position, `sourceFile` = active file) so `getClips()` returns the growing take. | `src/studio/Session.cpp` (`getClips` / new `getLiveClip`), `Session.h`, tests | **S/M** | — |
+| **LW-2** | Draw the growing live take | Render the synthetic clip via `drawClip(..., live=true)` with the live thumbnail; de-dupe against the engine's clip once it is inserted at stop. | `src/ui/MainComponent.cpp` (`paint`, `drawClip`), `MainComponent.h` | **S** | LW-1, WV-2 |
+
+**Order note.** Head order is RT → WV → LV → LW. `LV-1` is dependency-free and may be done in
+parallel from the start (it is sequenced after WV only to keep the commit train linear); `LV-2` needs
+the remote box. `LW-1`'s pure span math can be written before WV-2 but `LW-2` needs WV-2's drawing.
+
+### Commit & review sequence
+
+Each unit = **review (`code-reviewer`) → fixes → one commit** (conventional message, **DCO `-s`**,
+direct push to `main`; leak-scan before commit — the repo is public). A commit lands only when
+`ctest` is green (remote Linux); no per-phase tags (R-decision above).
+
+1. `feat(input): Tracktion-free input grouping + occupancy helpers` — **RT-1** (+ tests). **Carries
+   this document section** (the planner does not commit it; the first task does).
+2. `fix(input): drop the silent device fallback in resolveInputDeviceFor` — RT-2.
+3. `refactor(input): derive wave-device grouping from track layout` — RT-3a (grouping only).
+4. `fix(input): never clobber another track's input target` — RT-3b (targets). RT-3 is split because
+   it is the risky core; each half is independently revertible and green.
+5. `feat(input): block input tracks beyond the device channels` — RT-4.
+6. `feat(input): mono/stereo layouts and 1-channel mono takes` — RT-5.
+7. `fix(input): refuse mono→stereo over an occupied neighbour` — RT-6.
+8. `fix(input): re-apply mapping and targets after a device rebuild` — RT-7.
+9. `feat(ui): channel menu shows real channels and marks occupied` — RT-8.
+10. `feat(ui): right-click track menu and remove any track` — RT-9.
+11. `feat(ui): clip-waveform normalisation and linear/dB scale` — WV-1 + WV-2 (split if the diff is
+    large: math-only commit, then wiring).
+12. `feat(ui): stereo/mono waveform strips` — WV-3.
+13. `build(plugins): enable LV2 hosting by default` — LV-1 (+ the LV-2 evidence note/screenshot).
+14. `feat(ui): the live take grows during recording` — LW-1 + LW-2.
+
+**Review emphasis.** Commits 2–4 (RT-2/RT-3) get an **audio-core review**: the reviewer must check
+every `resolveInputDeviceFor` caller for null and confirm `configureTracks` can never leave a track
+without a target or regroup during a take. Commit 6 (RT-5, mono file format) gets a **data-format
+review** (recovery/import path). The rest are ordinary UI reviews.
+
+### Risks & rollback points
+
+| Risk | Impact | Detection | Rollback |
+|---|---|---|---|
+| **Target/move semantics (RT-3)** | A track silently loses its input, or recording writes to the wrong/no track → "track without input", unusable takes | Unit: grouping yields the expected targets; live: arm 2 tracks, record, each file non-empty and on its own channel; the lane input chip shows a device for every armed track | `git revert` 4 (and 3 if grouping is implicated) |
+| **`nullptr` fallback removal (RT-2)** | A caller that assumed a device now dereferences null → crash / no monitoring | Compile + unit + null-audit of the four call sites; live monitoring still works | Revert 2 (with 3) |
+| **1-channel mono WAV (RT-5)** | Engine/recovery/import mishandle a mono take; old stereo mappings change meaning | Live mono record → file channel count == 1; recovery/import integration | Revert 6 (keep the mapping change, drop the file-format change) |
+| **Regrouping mid-take (RT-3/RT-7)** | A device-list rebuild during recording stops/skips the take (the EPIC 7 flake's failure mode) | Guard: configure/timer never regroup while `isRecording()`; live: start a take, change nothing, confirm the file is complete | Revert 3/8 |
+| **Timer re-apply thrash (RT-7)** | `restartPlayback()` every tick → dropouts | Change-gate (only when the live config differs); `git grep` for `restartPlayback` on the tick path | Revert 8 |
+| **Normalisation hides level (WV-1/2)** | Clipping or a loud-looking near-silent take; dB confusion | Pure-math tests (unity, −∞, peaks); a screenshot review by the owner | Revert 11 |
+| **Live synthetic clip duplication (LW)** | Two clips drawn for one take at stop | De-dupe by `sourceFile`; live check: the take appears once when the transport stops | Revert 14 |
+| **LV2 default-on (LV-1)** | Wider scan surface; `.dmg`/`.deb` format set changes; a broken bundle affects the scan | Live scan + browser screenshot; CI build (formats present in `getHostedFormatNames`) | Revert 13 |
+
+### Verification plan
+
+**Unit tests (add to `tests/test_studio.cpp`; names indicative).**
+
+- Grouping/occupancy (RT-1): `"input grouping: one device per channel on a 4-in interface"`,
+  `"input grouping: a stereo pair keeps two channels on one device"`,
+  `"input grouping: default is stereo for 2 channels and mono-per-channel for >=4"`,
+  `"input grouping: occupancy reports each channel's owning track"`.
+- Fallback (RT-2): `"input mapping: no device is resolved when the channel is off the map"`.
+- Layouts (RT-5): `"input mapping: a Mono track requests a one-channel configuration"`.
+- Conflict (RT-6): `"input mapping: mono->stereo is refused over an occupied neighbour"`.
+- Waveform (WV-1): `"clipwave: normalise scales bins by the clip peak"`,
+  `"clipwave: the linear and dB mappings agree at unity"`,
+  `"clipwave: stereo splits into two strips, mono one, and collapses below the height floor"`.
+- Live clip (LW-1): `"session: the live clip spans record start to the transport position"`.
+
+**Live checks (remote Linux, ALSA loopback — `scripts/dev/alsa-loopback.sh`).**
+
+- `--tone 60` + record **one mono track** → non-empty **1-channel** file; **two tracks** → two files,
+  each on its own channel, neither clobbered.
+- **Default layout**: a 2-ch device → stereo; a ≥4-ch device → mono per channel.
+- **Occupancy**: the Channel menu marks the channels already used.
+- **RT-6**: attempt `mono→stereo` over an occupied neighbour → refusal message.
+- **RT-7/I8**: change the input device (or replug) → mappings/targets re-applied, no "track without
+  input".
+- Whole suite green: `ctest` unit and integration counts grow, **ASan gate green**
+  (`ctest --test-dir build-asan`), plus the pre-existing MIDI/count-in flake recognised as unrelated.
+
+**Screenshots (`Xvfb :99`).**
+
+- Plugin browser listing installed LV2 plugins (**LV-2 evidence**).
+- Waveform states: idle / selected / loop / **live-growing**; **linear vs dB**.
+- Channel menu with occupied channels disabled; right-click track menu (Remove track).
+
+### Open questions (verify live — do not assume)
+
+- **Real 2-channel interface grouping.** Does JUCE/Tracktion present one stereo `WaveInputDevice` or
+  two mono devices for a physical 2-in interface? This decides the I5 default mapping.
+- **`setTarget` for a shared device.** Whether `move=false` **plus** an explicit `index` is the
+  correct call to keep several targets on one instance (and what `index` must be).
+- **1-channel capture.** Whether a `Mono` mapping needs a distinct single-channel
+  `ChannelConfiguration` (vs the current "duplicate to L+R" `centredMono`) to actually write a
+  mono WAV, and whether recovery/import accept it.
+- **Loopback as a stand-in.** The `snd-aloop` card exposes two full-duplex PCM devices with eight
+  subdevices each — confirm the "active input channels" count it presents, so the grouping tests use
+  a valid configuration.
+- **Back-compat migration.** Opening a pre-change session (single `Auto` track) after the I5 default
+  change — does the stored mapping migrate cleanly, or does it need a migration step?
+- **Layout-refusal surface (RT-6).** Status bar vs a modal for the mono→stereo refusal.
+- **LV2 packages.** Which LV2 test packages exist on Ubuntu 24.04, their names, and what the plugin
+  browser actually lists (for the evidence screenshot).
+
 ## Phase 1a — device panel → left collapsible sidebar; lane height + scroll
 
 **Delivered** (Epic 8 phase 1a — `src/ui/SidebarPanel.{h,cpp}`, `src/ui/SidebarLayout.h`,
@@ -333,6 +521,10 @@ These are unanswered until the relevant phase runs on hardware/GUI; they must no
   (FR-ED-1/FR-ED-7, FR-REC-4/FR-REC-7, FR-MIX-3) and NFRs in §4 (FR-MON-2/NFR-P-3, NFR-P-4,
   NFR-P-6).
 - `docs/EPIC8_UX_SPEC.md` — companion interaction-design plan (may not exist yet).
+- §«Input routing & recording semantics — agreement & task graph» (this file) — the owner-agreed
+  input-invariant / waveform / LV2 fix package and its task graph.
+- [`DEV_AUDIO_LINUX.md`](DEV_AUDIO_LINUX.md) — the ALSA-loopback runbook used for the live
+  routing/recording checks above.
 - [`EPIC7_GAPS.md`](EPIC7_GAPS.md) — the ASan-before-release gate, the integration-suite flake, and
   the remote-Linux build/verification setup this epic reuses.
 - [`EPIC4_GAPS.md`](EPIC4_GAPS.md) — snap/grid `[target]` deferred from Epic 4 (Phase 4 here).

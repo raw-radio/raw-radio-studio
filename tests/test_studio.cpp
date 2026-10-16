@@ -32,10 +32,12 @@
 #include "ui/TrackLaneLayout.h"
 #include "ui/SidebarLayout.h"
 #include "studio/MeterCache.h"
+#include "studio/InputGrouping.h"
 
 #include <vector>
 
 #include <cmath>
+#include <climits>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
@@ -1686,6 +1688,367 @@ TEST_CASE ("meter cache stores, peeks (silence before store) and clears (Epic 8 
     CHECK (cache.size() == 0);
     CHECK (cache.peek (2).db == doctest::Approx (-100.0f));
 }
+
+//==============================================================================
+// RT-1: pure input grouping + channel occupancy (one track = one channel or one
+// stereo pair; explicit failures, no silent clamp).
+namespace
+{
+    rrs::TrackInputRequest req (int track, rrs::InputLayout layout, int channel = -1)
+    {
+        return { track, layout, channel };
+    }
+}
+
+TEST_CASE ("input grouping: one device per channel on a 4-in interface")
+{
+    using namespace rrs;
+
+    const std::vector<TrackInputRequest> requests {
+        req (0, InputLayout::Mono), req (1, InputLayout::Mono),
+        req (2, InputLayout::Mono), req (3, InputLayout::Mono) };
+
+    const auto plan = planInputGrouping (requests, 4);
+    REQUIRE (plan.ok);
+    REQUIRE (plan.assignments.size() == 4);
+
+    for (int i = 0; i < 4; ++i)
+    {
+        CHECK (plan.assignments[(size_t) i].trackIndex == i);
+        CHECK (plan.assignments[(size_t) i].firstChannel == i);
+        CHECK (plan.assignments[(size_t) i].layout == InputLayout::Mono);
+    }
+
+    // Cannot hand out more tracks than channels (I3): the 3rd mono track fails.
+    const std::vector<TrackInputRequest> tooMany {
+        req (0, InputLayout::Mono), req (1, InputLayout::Mono), req (2, InputLayout::Mono) };
+    const auto over = planInputGrouping (tooMany, 2);
+    CHECK_FALSE (over.ok);
+    CHECK (over.error == InputGroupingError::NoFreeChannel);
+    CHECK (over.errorTrackIndex == 2);
+}
+
+TEST_CASE ("input grouping: a stereo pair keeps two channels on one device")
+{
+    using namespace rrs;
+
+    const std::vector<TrackInputRequest> requests {
+        req (0, InputLayout::Stereo), req (1, InputLayout::Mono), req (2, InputLayout::Mono) };
+
+    const auto plan = planInputGrouping (requests, 4);
+    REQUIRE (plan.ok);
+    REQUIRE (plan.assignments.size() == 3);
+
+    CHECK (plan.assignments[0].layout == InputLayout::Stereo);
+    CHECK (plan.assignments[0].firstChannel == 0);
+    CHECK (plan.assignments[1].firstChannel == 2);
+    CHECK (plan.assignments[2].firstChannel == 3);
+
+    const auto occ = channelOccupancy (plan.assignments);
+    CHECK (occ.at (0) == 0);
+    CHECK (occ.at (1) == 0); // the pair belongs to the same track
+    CHECK (occ.at (2) == 1);
+    CHECK (occ.at (3) == 2);
+}
+
+TEST_CASE ("input grouping: default is stereo for 2 and mono-per-channel for >=4")
+{
+    using namespace rrs;
+
+    CHECK (defaultLayoutForDevice (1) == InputLayout::Mono);
+    CHECK (defaultLayoutForDevice (2) == InputLayout::Stereo);
+    CHECK (defaultLayoutForDevice (3) == InputLayout::Mono);
+    CHECK (defaultLayoutForDevice (4) == InputLayout::Mono);
+    CHECK (defaultLayoutForDevice (8) == InputLayout::Mono);
+
+    // Auto on a 2-in device -> one stereo pair (I5).
+    const std::vector<TrackInputRequest> twoIn { req (0, InputLayout::Auto) };
+    const auto stereoPlan = planInputGrouping (twoIn, 2);
+    REQUIRE (stereoPlan.ok);
+    REQUIRE (stereoPlan.assignments.size() == 1);
+    CHECK (stereoPlan.assignments[0].layout == InputLayout::Stereo);
+    CHECK (stereoPlan.assignments[0].firstChannel == 0);
+
+    // Auto on a >=4-in device -> one channel per track (I5).
+    const std::vector<TrackInputRequest> fourIn {
+        req (0, InputLayout::Auto), req (1, InputLayout::Auto), req (2, InputLayout::Auto) };
+    const auto monoPlan = planInputGrouping (fourIn, 4);
+    REQUIRE (monoPlan.ok);
+    for (int i = 0; i < 3; ++i)
+    {
+        CHECK (monoPlan.assignments[(size_t) i].layout == InputLayout::Mono);
+        CHECK (monoPlan.assignments[(size_t) i].firstChannel == i);
+    }
+}
+
+TEST_CASE ("input grouping: occupancy reports each channel's owning track")
+{
+    using namespace rrs;
+
+    const std::vector<TrackInputRequest> requests {
+        req (0, InputLayout::Stereo), req (1, InputLayout::Mono) };
+    const auto plan = planInputGrouping (requests, 4);
+    REQUIRE (plan.ok);
+
+    const auto occ = channelOccupancy (plan.assignments);
+    CHECK (occ.size() == 3);
+    CHECK (occ.at (0) == 0);
+    CHECK (occ.at (1) == 0);
+    CHECK (occ.at (2) == 1);
+
+    CHECK_FALSE (isChannelFree (occ, 0));
+    CHECK_FALSE (isChannelFree (occ, 1));
+    CHECK_FALSE (isChannelFree (occ, 2));
+    CHECK (isChannelFree (occ, 3));
+    CHECK_FALSE (isChannelFree (occ, -1)); // negative never "free"
+}
+
+TEST_CASE ("input grouping: a channel off the device is refused, not clamped")
+{
+    using namespace rrs;
+
+    // Mono explicit channel beyond the device.
+    const std::vector<TrackInputRequest> monoOff { req (0, InputLayout::Mono, 4) };
+    const auto a = planInputGrouping (monoOff, 4);
+    CHECK_FALSE (a.ok);
+    CHECK (a.error == InputGroupingError::ChannelOffDevice);
+    CHECK (a.errorTrackIndex == 0);
+
+    // Stereo pair running off the device (channels 3 and 4 on a 4-ch device).
+    const std::vector<TrackInputRequest> stereoOff { req (0, InputLayout::Stereo, 3) };
+    const auto b = planInputGrouping (stereoOff, 4);
+    CHECK_FALSE (b.ok);
+    CHECK (b.error == InputGroupingError::ChannelOffDevice);
+}
+
+TEST_CASE ("input grouping: stereo is refused when a neighbour channel is taken")
+{
+    using namespace rrs;
+
+    // Track 0 owns channel 1; track 1 wants a stereo pair on (0,1).
+    const std::vector<TrackInputRequest> requests {
+        req (0, InputLayout::Mono, 1), req (1, InputLayout::Stereo, 0) };
+    const auto plan = planInputGrouping (requests, 4);
+    CHECK_FALSE (plan.ok);
+    CHECK (plan.error == InputGroupingError::OccupiedNeighbour);
+    CHECK (plan.errorTrackIndex == 1);
+
+    // The pure switch check agrees: switching a mono-on-1 track to stereo on 0
+    // would take channel 1, owned by track 0.
+    const std::map<int, int> occ { { 1, 0 } };
+    CHECK (wouldConflictOnSwitchToStereo (1, 0, 4, occ));
+    CHECK_FALSE (wouldConflictOnSwitchToStereo (0, 0, 4, occ)); // owns channel 1 itself
+    CHECK (wouldConflictOnSwitchToStereo (0, 3, 4, occ));       // pair runs off a 4-ch device
+}
+
+TEST_CASE ("input grouping: deterministic — the result does not depend on insertion order")
+{
+    using namespace rrs;
+
+    const std::vector<TrackInputRequest> forward {
+        req (0, InputLayout::Stereo), req (1, InputLayout::Mono), req (2, InputLayout::Stereo) };
+    const std::vector<TrackInputRequest> reversed {
+        req (2, InputLayout::Stereo), req (1, InputLayout::Mono), req (0, InputLayout::Stereo) };
+
+    const auto a = planInputGrouping (forward, 6);
+    const auto b = planInputGrouping (reversed, 6);
+    REQUIRE (a.ok);
+    REQUIRE (b.ok);
+    REQUIRE (a.assignments.size() == b.assignments.size());
+
+    for (size_t i = 0; i < a.assignments.size(); ++i)
+        CHECK (a.assignments[i] == b.assignments[i]);
+
+    // Deterministic conflict resolution: two tracks claim channel 0 — the LOWER
+    // track index wins and the other is refused (ChannelOccupied), regardless of
+    // order. On failure the plan carries no half-placed assignments (High-1).
+    const std::vector<TrackInputRequest> claimA { req (1, InputLayout::Mono, 0), req (0, InputLayout::Mono, 0) };
+    const std::vector<TrackInputRequest> claimB { req (0, InputLayout::Mono, 0), req (1, InputLayout::Mono, 0) };
+    const auto pa = planInputGrouping (claimA, 4);
+    const auto pb = planInputGrouping (claimB, 4);
+    CHECK_FALSE (pa.ok);
+    CHECK_FALSE (pb.ok);
+    CHECK (pa.error == InputGroupingError::ChannelOccupied);
+    CHECK (pb.error == InputGroupingError::ChannelOccupied);
+    CHECK (pa.errorTrackIndex == 1);
+    CHECK (pb.errorTrackIndex == 1);
+    CHECK (pa.assignments.empty());
+    CHECK (pb.assignments.empty());
+}
+
+//==============================================================================
+// RT-1 review regressions.
+TEST_CASE ("input grouping: a non-positive device channel count is NoDevice, deterministically")
+{
+    using namespace rrs;
+
+    // No device + no requests.
+    const std::vector<TrackInputRequest> none;
+    const auto empty = planInputGrouping (none, 0);
+    CHECK_FALSE (empty.ok);
+    CHECK (empty.error == InputGroupingError::NoDevice);
+    CHECK (empty.errorTrackIndex == -1);
+    CHECK (empty.assignments.empty());
+
+    CHECK_FALSE (planInputGrouping (none, -1).ok);
+    CHECK (planInputGrouping (none, -1).error == InputGroupingError::NoDevice);
+
+    // No device + requests: still NoDevice (not NoFreeChannel), and errorTrackIndex
+    // follows the canonical (sorted) order regardless of the input order (High-2).
+    const std::vector<TrackInputRequest> a { req (9, InputLayout::Mono) };
+    const std::vector<TrackInputRequest> b { req (9, InputLayout::Mono), req (3, InputLayout::Mono) };
+    const std::vector<TrackInputRequest> c { req (3, InputLayout::Mono), req (9, InputLayout::Mono) };
+
+    CHECK (planInputGrouping (a, 0).error == InputGroupingError::NoDevice);
+    CHECK (planInputGrouping (a, 0).errorTrackIndex == 9);
+    CHECK (planInputGrouping (b, 0).errorTrackIndex == 3);
+    CHECK (planInputGrouping (c, 0).errorTrackIndex == 3);
+}
+
+TEST_CASE ("input grouping: 1-channel and 3-channel devices plan")
+{
+    using namespace rrs;
+
+    // 1 channel -> Mono (I5); a second track is refused (device full).
+    const std::vector<TrackInputRequest> two { req (0, InputLayout::Auto), req (1, InputLayout::Auto) };
+    const auto one = planInputGrouping (two, 1);
+    CHECK_FALSE (one.ok);
+    CHECK (one.error == InputGroupingError::NoFreeChannel);
+    CHECK (one.errorTrackIndex == 1);
+    CHECK (one.assignments.empty());
+
+    // 3 channels -> Auto resolves to Mono per channel (I5): 3 tracks fit, the 4th fails.
+    const std::vector<TrackInputRequest> four {
+        req (0, InputLayout::Auto), req (1, InputLayout::Auto), req (2, InputLayout::Auto), req (3, InputLayout::Auto) };
+    const auto three = planInputGrouping (four, 3);
+    CHECK_FALSE (three.ok);
+    CHECK (three.error == InputGroupingError::NoFreeChannel);
+    CHECK (three.errorTrackIndex == 3);
+    CHECK (three.assignments.empty());
+
+    // A stereo pair + a mono on 3 channels is fine.
+    const std::vector<TrackInputRequest> pairAndMono { req (0, InputLayout::Stereo), req (1, InputLayout::Mono) };
+    const auto pm = planInputGrouping (pairAndMono, 3);
+    REQUIRE (pm.ok);
+    REQUIRE (pm.assignments.size() == 2);
+    CHECK (pm.assignments[0].firstChannel == 0);
+    CHECK (pm.assignments[0].layout == InputLayout::Stereo);
+    CHECK (pm.assignments[1].firstChannel == 2);
+    CHECK (pm.assignments[1].layout == InputLayout::Mono);
+}
+
+TEST_CASE ("input grouping: a negative track index is refused (B1)")
+{
+    using namespace rrs;
+
+    const std::vector<TrackInputRequest> dup { req (-1, InputLayout::Mono), req (-1, InputLayout::Mono) };
+    const auto plan = planInputGrouping (dup, 4);
+    CHECK_FALSE (plan.ok);
+    CHECK (plan.error == InputGroupingError::InvalidTrackIndex);
+    CHECK (plan.assignments.empty()); // nothing placed on the two default indices
+
+    // Validation happens before any placement, so a later bad index still poisons the plan.
+    const std::vector<TrackInputRequest> mixed { req (0, InputLayout::Mono), req (-2, InputLayout::Mono) };
+    const auto m = planInputGrouping (mixed, 4);
+    CHECK_FALSE (m.ok);
+    CHECK (m.error == InputGroupingError::InvalidTrackIndex);
+    CHECK (m.errorTrackIndex == -2);
+    CHECK (m.assignments.empty());
+}
+
+TEST_CASE ("input grouping: planLayoutFor and channelsPerLayout")
+{
+    using namespace rrs;
+
+    // Auto delegates to defaultLayoutForDevice (InputMapping.h): 2 -> Stereo, else Mono.
+    CHECK (planLayoutFor (InputLayout::Auto, 1) == InputLayout::Mono);
+    CHECK (planLayoutFor (InputLayout::Auto, 2) == InputLayout::Stereo);
+    CHECK (planLayoutFor (InputLayout::Auto, 3) == InputLayout::Mono);
+    CHECK (planLayoutFor (InputLayout::Auto, 8) == InputLayout::Mono);
+
+    // RT-1 does not support N-channel groups: MultiChannel plans as a stereo pair.
+    CHECK (planLayoutFor (InputLayout::MultiChannel, 8) == InputLayout::Stereo);
+
+    // Explicit layouts pass through.
+    CHECK (planLayoutFor (InputLayout::Mono, 8) == InputLayout::Mono);
+    CHECK (planLayoutFor (InputLayout::Stereo, 8) == InputLayout::Stereo);
+
+    // channelsPerLayout takes a RESOLVED layout only: Stereo -> 2, everything else -> 1.
+    CHECK (channelsPerLayout (InputLayout::Stereo) == 2);
+    CHECK (channelsPerLayout (InputLayout::Mono) == 1);
+    CHECK (channelsPerLayout (InputLayout::Auto) == 1);
+    CHECK (channelsPerLayout (InputLayout::MultiChannel) == 1);
+}
+
+TEST_CASE ("input grouping: on failure the plan carries no assignments (High-1)")
+{
+    using namespace rrs;
+
+    // First stereo pair fits on 4 channels, second does not -> the whole plan is
+    // empty (no half-placed assignments).
+    const std::vector<TrackInputRequest> twoP { req (0, InputLayout::Stereo), req (1, InputLayout::Stereo) };
+    const auto p = planInputGrouping (twoP, 2);
+    CHECK_FALSE (p.ok);
+    CHECK (p.error == InputGroupingError::NoFreeChannel);
+    CHECK (p.assignments.empty());
+
+    // A good placement followed by an off-device explicit channel is also empty.
+    const std::vector<TrackInputRequest> mixed { req (0, InputLayout::Mono, 0), req (1, InputLayout::Mono, 4) };
+    const auto m = planInputGrouping (mixed, 4);
+    CHECK_FALSE (m.ok);
+    CHECK (m.error == InputGroupingError::ChannelOffDevice);
+    CHECK (m.assignments.empty());
+}
+
+TEST_CASE ("input grouping: requestedChannel near INT_MAX is off-device, not overflow (B3)")
+{
+    using namespace rrs;
+
+    const std::vector<TrackInputRequest> maxCh { req (0, InputLayout::Mono, INT_MAX) };
+    const auto a = planInputGrouping (maxCh, 4);
+    CHECK_FALSE (a.ok);
+    CHECK (a.error == InputGroupingError::ChannelOffDevice); // not OccupiedNeighbour
+    CHECK (a.errorTrackIndex == 0);
+
+    const std::vector<TrackInputRequest> maxMono { req (0, InputLayout::Mono, INT_MAX - 1) };
+    CHECK (planInputGrouping (maxMono, 4).error == InputGroupingError::ChannelOffDevice);
+
+    const std::vector<TrackInputRequest> maxStereo { req (0, InputLayout::Stereo, INT_MAX) };
+    CHECK (planInputGrouping (maxStereo, 4).error == InputGroupingError::ChannelOffDevice);
+}
+
+TEST_CASE ("input grouping: two stereo pairs on 4 channels")
+{
+    using namespace rrs;
+
+    const std::vector<TrackInputRequest> requests { req (0, InputLayout::Stereo), req (1, InputLayout::Stereo) };
+    const auto plan = planInputGrouping (requests, 4);
+    REQUIRE (plan.ok);
+    REQUIRE (plan.assignments.size() == 2);
+    CHECK (plan.assignments[0].firstChannel == 0);
+    CHECK (plan.assignments[1].firstChannel == 2);
+
+    const auto occ = channelOccupancy (plan.assignments);
+    CHECK (occ.at (0) == 0);
+    CHECK (occ.at (1) == 0);
+    CHECK (occ.at (2) == 1);
+    CHECK (occ.at (3) == 1);
+}
+
+TEST_CASE ("input grouping: an empty request list on a working device is ok and empty")
+{
+    using namespace rrs;
+
+    const std::vector<TrackInputRequest> none;
+    const auto a = planInputGrouping (none, 4);
+    CHECK (a.ok);
+    CHECK (a.error == InputGroupingError::None);
+    CHECK (a.assignments.empty());
+
+    CHECK (planInputGrouping (none, 2).ok);
+}
+
+
 
 //==============================================================================
 // Epic 8 phase 1b: control metrics bucket boundaries (the auto height 56..72

@@ -57,6 +57,25 @@ namespace rrs
         juce::AudioChannelSet::ChannelType type = juce::AudioChannelSet::left;
     };
 
+    /** The default layout for a device with `deviceChannels` hardware inputs
+        (owner-agreed I5): 1 -> Mono, **2 -> Stereo** (the whole pair),
+        **>= 3 -> Mono per channel**. The 3-channel case has no clean all-stereo
+        default, so mono-per-channel is the conservative completion between
+        "2 -> stereo" and ">= 4 -> mono".
+
+        SINGLE SOURCE OF TRUTH for the `Auto` default: both `resolveInputLayout`
+        (here) and `InputGrouping::planLayoutFor` delegate to this rule. */
+    inline InputLayout defaultLayoutForDevice (int deviceChannels) noexcept
+    {
+        if (deviceChannels <= 1)
+            return InputLayout::Mono;
+
+        if (deviceChannels == 2)
+            return InputLayout::Stereo;
+
+        return InputLayout::Mono;
+    }
+
     /** Resolves `Auto` to a concrete layout for a device with
         `deviceChannelCount` hardware inputs. */
     inline InputLayout resolveInputLayout (InputLayout layout, int deviceChannelCount) noexcept
@@ -64,7 +83,7 @@ namespace rrs
         if (layout != InputLayout::Auto)
             return layout;
 
-        return deviceChannelCount <= 1 ? InputLayout::Mono : InputLayout::Stereo;
+        return defaultLayoutForDevice (deviceChannelCount);
     }
 
     /** Builds the destination channel list for an explicit mapping.
