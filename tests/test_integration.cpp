@@ -57,6 +57,8 @@ int main (int argc, char** argv)
 #include "studio/WavExport.h"
 #include "ui/BrandButton.h"
 #include "ui/BrandColours.h"
+#include "ui/BrandFonts.h"
+#include "ui/ClipWaveformDraw.h"
 #include "ui/InputMenuModel.h"
 #include "ui/PluginBrowser.h"
 #include "ui/TrackLaneLayout.h"
@@ -7183,3 +7185,711 @@ TEST_CASE ("RT-safety: the input-callback level meter performs no allocations")
 }
 
 
+//==============================================================================
+// WV-3 assert-level render checks. The screenshots are nice for a review, but a
+// screenshot cannot fail a build — these do: they draw through the SAME function
+// the arrangement uses (`clipwave::drawClipWaveform`) into an off-screen image and
+// inspect the pixels, with a deterministic in-memory thumbnail (no file, no
+// timing, no GUI).
+namespace
+{
+    /** A thumbnail whose per-range peak comes from a lambda, so a test can place
+        signal exactly where it wants it. */
+    class WvStubThumbnail final : public juce::AudioThumbnailBase
+    {
+    public:
+        WvStubThumbnail (int channels, double lengthSeconds,
+                         std::function<float (int, double, double)> peakAt)
+            : numCh (channels), length (lengthSeconds), peak (std::move (peakAt)) {}
+
+                void clear() override {}
+        bool setSource (juce::InputSource*) override                    { return true; }
+        void setReader (juce::AudioFormatReader*, juce::int64) override {}
+        bool loadFrom (juce::InputStream&) override                     { return true; }
+        void saveTo (juce::OutputStream&) const override                {}
+
+        // AudioThumbnailBase is also a ThreadedWriter IncomingDataReceiver; the stub
+        // is never fed by a writer.
+        void reset (int, double, juce::int64) override                  {}
+        void addBlock (juce::int64, const juce::AudioBuffer<float>&, int, int) override {}
+
+
+        int getNumChannels() const noexcept override                    { return numCh; }
+        double getTotalLength() const noexcept override                 { return length; }
+        void drawChannel (juce::Graphics&, const juce::Rectangle<int>&,
+                          double, double, int, float) override          {}
+        void drawChannels (juce::Graphics&, const juce::Rectangle<int>&,
+                           double, double, float) override              {}
+        bool isFullyLoaded() const noexcept override                    { return true; }
+        juce::int64 getNumSamplesFinished() const noexcept override     { return 0; }
+        float getApproximatePeak() const override                       { return 1.0f; }
+        juce::int64 getHashCode() const override                        { return 0; }
+
+        void getApproximateMinMax (double startTime, double endTime, int channelIndex,
+                                   float& minValue, float& maxValue) const noexcept override
+        {
+            const auto p = (channelIndex >= 0 && channelIndex < numCh && peak != nullptr)
+                               ? peak (channelIndex, startTime, endTime)
+                               : 0.0f;
+            minValue = -p;
+            maxValue = p;
+        }
+
+        int numCh = 1;
+        double length = 1.0;
+        std::function<float (int, double, double)> peak;
+    };
+
+    /** Draws one clip band into a fresh black image through the real drawing code. */
+    juce::Image wvRenderBands (juce::AudioThumbnailBase& thumb, int numChannels, double fileLength,
+                               int width, int height,
+                               rrs::clipwave::WaveformScale scale = rrs::clipwave::WaveformScale::linear,
+                               bool normalise = false)
+    {
+        juce::Image image (juce::Image::ARGB, width, height, true);
+        juce::Graphics g (image);
+        g.fillAll (juce::Colours::black); // the clip background is drawn by drawClip, not here
+
+        rrs::clipwave::BandDrawParams params;
+        params.clipRect = { 0, 0, width, height };
+        params.thumb = &thumb;
+        params.numChannels = numChannels;
+        params.fileLength = fileLength;
+        params.endSeconds = fileLength;
+        params.colour = juce::Colours::red;
+        params.scale = scale;
+        params.normalise = normalise;
+        params.lineColour = juce::Colours::white.withAlpha (rrs::clipwave::centreLineAlpha);
+
+        rrs::clipwave::drawClipWaveform (g, params);
+        return image;
+    }
+
+    /** Non-black pixels inside a rectangle minus the always-drawn centre/separator
+        rows (so a silent band really counts as zero ink). */
+    int wvInkIn (const juce::Image& image, juce::Rectangle<int> area,
+                 const std::vector<int>& rowsToIgnore)
+    {
+        int count = 0;
+
+        for (int y = juce::jmax (0, area.getY()); y < juce::jmin (image.getHeight(), area.getBottom()); ++y)
+        {
+            if (std::find (rowsToIgnore.begin(), rowsToIgnore.end(), y) != rowsToIgnore.end())
+                continue;
+
+            for (int x = juce::jmax (0, area.getX()); x < juce::jmin (image.getWidth(), area.getRight()); ++x)
+                if (image.getPixelAt (x, y).getARGB() != 0xff000000u)
+                    ++count;
+        }
+
+        return count;
+    }
+
+    /** A coarse '#'/'.' map (every 4th column, every row) for INFO output when a
+        pixel assertion fails. */
+    juce::String wvAsciiMap (const juce::Image& image, juce::Rectangle<int> area)
+    {
+        juce::String map;
+
+        for (int y = juce::jmax (0, area.getY()); y < juce::jmin (image.getHeight(), area.getBottom()); ++y)
+        {
+            map << juce::String (y).paddedLeft ('0', 3) << " |";
+
+            for (int x = juce::jmax (0, area.getX()); x < juce::jmin (image.getWidth(), area.getRight()); x += 4)
+                map << (image.getPixelAt (x, y).getARGB() != 0xff000000u ? '#' : '.');
+
+            map << "|\n";
+        }
+
+        return map;
+    }
+
+    /** Two SAFE measurement windows: the outer part of the top band and the outer
+        part of the bottom band, kept several rows away from every centre line and
+        from the L/R separator — so only REAL wave bars can put ink there (which is
+        what makes the assertions below meaningful). */
+    struct WvWindows
+    {
+        juce::Rectangle<int> topUpper;
+        juce::Rectangle<int> bottomLower;
+    };
+
+    WvWindows wvWindows (int width, int height, int numBands)
+    {
+        const auto innerTop = rrs::clipwave::wavePadY;
+        const auto innerBottom = height - rrs::clipwave::wavePadY;
+        const auto mid = (innerTop + innerBottom) / 2;
+
+        if (numBands <= 1)
+            return { { 0, innerTop, width, juce::jmax (1, (mid - innerTop) / 2) },
+                     { 0, mid + juce::jmax (1, (innerBottom - mid) / 2), width,
+                       juce::jmax (1, (innerBottom - mid) / 2) } };
+
+        const auto topCentre = (innerTop + mid) / 2;
+        const auto bottomCentre = (mid + innerBottom) / 2;
+
+        // The centre lines are drawn as a float 1 px collar, so they can cover two
+        // rows: leave 4 rows of clearance on every side.
+        return { { 0, innerTop, width, juce::jmax (1, topCentre - innerTop - 4) },
+                 { 0, bottomCentre + 4, width, juce::jmax (1, innerBottom - bottomCentre - 4) } };
+    }
+}
+
+//==============================================================================
+// WV-3: a stereo clip draws L above and R below — the two bands really carry
+// DIFFERENT channels (a swapped/normalised-away channel would fail here), and a
+// mono clip draws a single centred band (no separator, signal on both sides of it).
+TEST_CASE ("clip waveform bands carry the right channels (WV-3)")
+{
+    // L is loud for the first half, silent for the second; R is the mirror image.
+    WvStubThumbnail stereo (2, 4.0, [] (int ch, double t0, double)
+                            { return ((ch == 0) == (t0 < 2.0)) ? 1.0f : 0.0f; });
+
+    constexpr int width = 400;
+    constexpr int height = 84;
+    const auto image = wvRenderBands (stereo, 2, 4.0, width, height);
+    const auto windows = wvWindows (width, height, 2);
+
+    const juce::Rectangle<int> leftHalf (0, 0, width / 2 - 2, height);
+    const juce::Rectangle<int> rightHalf (width / 2 + 2, 0, width / 2 - 3, height);
+
+    INFO ("stereo map (L loud first half, R loud second half):\n"
+          << wvAsciiMap (image, { 0, 0, width, height }));
+
+    const auto inkIn = [&] (juce::Rectangle<int> window, juce::Rectangle<int> half)
+    {
+        return wvInkIn (image, window.getIntersection (half), {});
+    };
+
+    CHECK (inkIn (windows.topUpper, leftHalf) > 0);      // L ink in the TOP band, first half
+    CHECK (inkIn (windows.topUpper, rightHalf) == 0);    // L silent there afterwards
+    CHECK (inkIn (windows.bottomLower, leftHalf) == 0);  // R silent at first
+    CHECK (inkIn (windows.bottomLower, rightHalf) > 0);  // R ink in the BOTTOM band, second half
+
+    // A MONO clip is ONE band: the same signal reaches both sides of the single
+    // centre line, and there is no L/R separator.
+    WvStubThumbnail mono (1, 4.0, [] (int, double, double) { return 1.0f; });
+    const auto monoImage = wvRenderBands (mono, 1, 4.0, width, height);
+    const auto monoWindows = wvWindows (width, height, 1);
+
+    CHECK (wvInkIn (monoImage, monoWindows.topUpper, {}) > 0);
+    CHECK (wvInkIn (monoImage, monoWindows.bottomLower, {}) > 0);
+    CHECK (rrs::clipwave::bandLayout (1, height - 2 * rrs::clipwave::wavePadY).numBands == 1);
+}
+
+//==============================================================================
+// WV-3: when the band is too short to split, the channels OVERLAY into one band and
+// that band carries the per-bin max over ALL channels. The documented flip side is
+// pinned too: in the tall two-band case only channels 0/1 are drawn, so a signal
+// living solely on channel 2+ shows nothing there (the app is 2-channel).
+TEST_CASE ("clip waveform overlay folds in every channel (WV-3)")
+{
+    // Only channel 3 carries signal.
+    WvStubThumbnail quad (4, 4.0, [] (int ch, double, double) { return ch == 3 ? 1.0f : 0.0f; });
+
+    constexpr int width = 200;
+
+    // Tall band -> two bands, i.e. channels 0/1, both silent -> no wave ink at all
+    // (the documented compromise: 2..N are not shown there).
+    constexpr int tallHeight = 84;
+    const auto tall = wvRenderBands (quad, 4, 4.0, width, tallHeight);
+    const auto tallWindows = wvWindows (width, tallHeight, 2);
+
+    INFO ("tall (2-band) map, channels 0/1 silent:\n" << wvAsciiMap (tall, { 0, 0, width, tallHeight }));
+    CHECK (wvInkIn (tall, tallWindows.topUpper, {}) == 0);
+    CHECK (wvInkIn (tall, tallWindows.bottomLower, {}) == 0);
+
+    // Short band (< 2 x minBandHeightPx inner) -> ONE overlaid band, and channel 3
+    // IS drawn (per-bin max over every channel).
+    constexpr int shortHeight = 22; // inner = 18
+    const auto shortBand = wvRenderBands (quad, 4, 4.0, width, shortHeight);
+    const auto shortWindows = wvWindows (width, shortHeight, 1);
+
+    INFO ("short (overlay) map, only channel 3 loud:\n"
+          << wvAsciiMap (shortBand, { 0, 0, width, shortHeight }));
+    CHECK (wvInkIn (shortBand, shortWindows.topUpper, {}) > 0);
+    CHECK (wvInkIn (shortBand, shortWindows.bottomLower, {}) > 0);
+    CHECK (rrs::clipwave::bandLayout (4, shortHeight - 2 * rrs::clipwave::wavePadY).numBands == 1);
+}
+
+//==============================================================================
+// WV-1: the silence seam. A bin exactly AT `silencePeak` still draws the minimal
+// 1 px tick (the dB curve reaches 0 there, so the clamp is what keeps it visible);
+// a bin below the floor draws nothing but the centre line. Normalisation is off, so
+// the raw threshold is what is measured.
+TEST_CASE ("clip waveform draws the silence floor as a minimal tick (WV-1)")
+{
+    // First half: just below the floor. Second half: exactly on it.
+    WvStubThumbnail seam (1, 2.0, [] (int, double t0, double)
+                          { return t0 < 1.0 ? rrs::clipwave::silencePeak * 0.5f
+                                            : rrs::clipwave::silencePeak; });
+
+    constexpr int width = 200;
+    constexpr int height = 60;
+    const auto image = wvRenderBands (seam, 1, 2.0, width, height,
+                                      rrs::clipwave::WaveformScale::decibel, false);
+
+    const auto mid = rrs::clipwave::wavePadY + (height - 2 * rrs::clipwave::wavePadY) / 2;
+
+    INFO ("seam map (left = below the floor, right = exactly on it):\n"
+          << wvAsciiMap (image, { 0, mid - 4, width, 9 }));
+
+    // Below the floor: the centre line only — measured away from the line itself.
+    const auto quietWindows = wvWindows (width, height, 1);
+    CHECK (wvInkIn (image, quietWindows.topUpper.getIntersection ({ 1, 0, width / 2 - 2, height }), {}) == 0);
+    CHECK (wvInkIn (image, quietWindows.bottomLower.getIntersection ({ 1, 0, width / 2 - 2, height }), {}) == 0);
+
+    // At the floor: a real tick, but only the 1 px minimum (the collar around the
+    // centre line) — one row above the line is inked, two rows above it is not.
+    int tickColumns = 0;
+
+    for (int x = width / 2 + 1; x < width; x += rrs::clipwave::binWidthPx)
+        if (image.getPixelAt (x, mid - 1).getARGB() != 0xff000000u)
+            ++tickColumns;
+
+    CHECK (tickColumns > 0);
+    CHECK (image.getPixelAt (width / 2 + 1, mid - 2).getARGB() == 0xff000000u);
+
+    // A loud clip fills the band on the dB curve (checked at the very top/bottom).
+    WvStubThumbnail loud (1, 1.0, [] (int, double, double) { return 1.0f; });
+    const auto loudImage = wvRenderBands (loud, 1, 1.0, 40, height,
+                                          rrs::clipwave::WaveformScale::decibel, false);
+    CHECK (loudImage.getPixelAt (5, rrs::clipwave::wavePadY).getARGB() != 0xff000000u);
+    CHECK (loudImage.getPixelAt (5, height - rrs::clipwave::wavePadY - 1).getARGB() != 0xff000000u);
+}
+
+//==============================================================================
+// WV-2: the persisted view settings round-trip through a real `PropertiesFile`,
+// and — the point of the fix — a MISSING key and an UNREADABLE one land on the
+// SAME default. (They used to disagree: missing -> dB / normalised, garbled ->
+// linear / not normalised, so a corrupted settings file silently changed the view.)
+TEST_CASE ("clip waveform view settings persist and fall back consistently (WV-2)")
+{
+    using namespace rrs::clipwave;
+
+    // The SHIPPED default (owner decision): the perceptual dB curve with
+    // normalisation OFF — the dB curve alone fixes the "quiet take is a flat strip"
+    // complaint, while normalising would hide the take's absolute level. Pinned so a
+    // change is deliberate (update this line together with the constant).
+    CHECK (defaultWaveformScale == WaveformScale::decibel);
+    CHECK_FALSE (defaultWaveformNormalise);
+
+    const auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                         .getChildFile ("rrs-wv-settings");
+    dir.deleteRecursively();
+    dir.createDirectory();
+
+    juce::PropertiesFile::Options options;
+    options.applicationName = "raw-radio-studio-tests";
+    options.filenameSuffix = ".xml";
+    options.storageFormat = juce::PropertiesFile::storeAsXML;
+
+    const auto file = dir.getChildFile ("settings.xml");
+    const auto readBack = [&]
+    {
+        juce::PropertiesFile settings (file, options);
+        return std::pair { waveformScaleFromString (settings.getValue ("ui.waveformScale")),
+                           waveformNormaliseFromString (settings.getValue ("ui.waveformNormalise")) };
+    };
+
+    // (a) Nothing stored at all.
+    {
+        juce::PropertiesFile settings (file, options);
+        settings.saveIfNeeded(); // an empty file, i.e. a fresh profile
+    }
+    CHECK (readBack().first == defaultWaveformScale);
+    CHECK (readBack().second == defaultWaveformNormalise);
+
+    // (b) A valid pair round-trips (the app writes exactly these strings).
+    {
+        juce::PropertiesFile settings (file, options);
+        settings.setValue ("ui.waveformScale", waveformScaleToString (WaveformScale::linear));
+        settings.setValue ("ui.waveformNormalise", waveformNormaliseToString (false));
+        settings.saveIfNeeded();
+    }
+    CHECK (readBack().first == WaveformScale::linear);
+    CHECK_FALSE (readBack().second);
+
+    // (c) GARBLED values fall back to the same defaults, not to linear/false.
+    {
+        juce::PropertiesFile settings (file, options);
+        settings.setValue ("ui.waveformScale", "banana");
+        settings.setValue ("ui.waveformNormalise", "banana");
+        settings.saveIfNeeded();
+    }
+    CHECK (readBack().first == defaultWaveformScale);
+    CHECK (readBack().second == defaultWaveformNormalise);
+
+    // (d) The accepted textual forms (JUCE stores bools as "1"/"0").
+    CHECK (waveformNormaliseFromString ("1"));
+    CHECK_FALSE (waveformNormaliseFromString ("0"));
+    CHECK (waveformNormaliseFromString ("true"));
+    CHECK_FALSE (waveformNormaliseFromString ("FALSE"));
+    CHECK (waveformNormaliseFromString (" yes "));
+    CHECK_FALSE (waveformNormaliseFromString ("no"));
+    CHECK (waveformNormaliseFromString ("") == defaultWaveformNormalise);
+    CHECK (waveformScaleFromString ("") == defaultWaveformScale);
+    CHECK (waveformScaleFromString ("LINEAR") == defaultWaveformScale); // exact match only
+    CHECK (waveformScaleToString (defaultWaveformScale) == "decibel");
+
+    dir.deleteRecursively();
+}
+
+//==============================================================================
+// WV-1/WV-2 integration: the view gain is really `1 / max(peak, silencePeak)` on a
+// REAL file's peak, and it really reaches the pixels (the drawn wave hits the top
+// of the band). Measured from the thumbnail exactly like the drawing does.
+TEST_CASE ("clip waveform view gain is 1/max(peak) on a real file and reaches the top (WV-1)")
+{
+    using namespace rrs::clipwave;
+
+    const auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                         .getChildFile ("rrs-wv-gain");
+    dir.deleteRecursively();
+    dir.createDirectory();
+
+    // −18 dBFS (0.1259) mono tone, 1 s.
+    const auto file = dir.getChildFile ("quiet.wav");
+    constexpr double sampleRate = 48000.0;
+    constexpr float peak = 0.1259f;
+    const int numSamples = (int) sampleRate;
+
+    {
+        juce::WavAudioFormat format;
+        std::unique_ptr<juce::OutputStream> stream = std::make_unique<juce::FileOutputStream> (file);
+        auto writer = format.createWriterFor (stream,
+                                              juce::AudioFormatWriterOptions{}
+                                                  .withSampleRate (sampleRate)
+                                                  .withNumChannels (1)
+                                                  .withBitsPerSample (24));
+        REQUIRE (writer != nullptr);
+
+        juce::AudioBuffer<float> buffer (1, numSamples);
+
+        for (int i = 0; i < numSamples; ++i)
+            buffer.setSample (0, i, peak * (float) std::sin (juce::MathConstants<double>::twoPi
+                                                             * 220.0 * i / sampleRate));
+
+        REQUIRE (writer->writeFromAudioSampleBuffer (buffer, 0, numSamples));
+        writer.reset();
+    }
+
+    juce::AudioFormatManager formats;
+    formats.registerBasicFormats();
+    juce::AudioThumbnailCache cache (2);
+    juce::TimeSliceThread thread ("wv-gain-thumb");
+    thread.startThread();
+
+    juce::AudioThumbnail thumb (1024, formats, cache);
+    thumb.setSource (new juce::FileInputSource (file));
+
+    for (int i = 0; i < 500 && ! thumb.isFullyLoaded(); ++i)
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (20);
+
+    REQUIRE (thumb.isFullyLoaded());
+
+    // Measure the clip peak the way the drawing does (per-channel min/max summary).
+    const auto length = (double) thumb.getTotalLength();
+    float measured = 0.0f;
+
+    for (int ch = 0; ch < thumb.getNumChannels(); ++ch)
+    {
+        float mn = 0.0f, mx = 0.0f;
+        thumb.getApproximateMinMax (0.0, length, ch, mn, mx);
+        measured = juce::jmax (measured, peakFromMinMax (mn, mx));
+    }
+
+    REQUIRE (measured > 0.0f);
+    INFO ("measured peak " << measured << " (written " << peak << ")");
+
+    // The gain is 1/peak (within the thumbnail's own resolution) ...
+    CHECK (viewGain (measured, true) == doctest::Approx (1.0f / measured).epsilon (0.02f));
+    CHECK (viewGain (measured, true) * measured == doctest::Approx (1.0f).epsilon (0.02f));
+    // ... and without normalisation the same take stays a thin strip.
+    CHECK (viewGain (measured, false) == doctest::Approx (1.0f));
+
+    // End to end: normalised, the drawn wave reaches (near) the top of the band.
+    constexpr int height = 60;
+    const auto image = wvRenderBands (thumb, 1, length, 60, height,
+                                      WaveformScale::linear, true);
+    CHECK (image.getPixelAt (20, rrs::clipwave::wavePadY).getARGB() != 0xff000000u);
+    CHECK (image.getPixelAt (20, height - rrs::clipwave::wavePadY - 1).getARGB() != 0xff000000u);
+
+    // Un-normalised it must NOT reach the top (that is the owner's complaint).
+    const auto thin = wvRenderBands (thumb, 1, length, 60, height,
+                                     WaveformScale::linear, false);
+    CHECK (thin.getPixelAt (20, rrs::clipwave::wavePadY).getARGB() == 0xff000000u);
+
+    thread.stopThread (2000);
+    dir.deleteRecursively();
+}
+
+//==============================================================================
+// WV screenshot fixture — OPT-IN TOOLING, not a test: with no env vars set it is a
+// complete no-op (CI is unaffected, nothing is written anywhere).
+//
+// `RRS_WV_FIXTURE=<dir>`  writes the review material the WV-1..WV-3 screenshots need
+//                         into <dir>: a quiet mono file (the owner's "−30 dBFS is a
+//                         flat strip" case), a stereo file whose L and R differ
+//                         clearly, a session referencing both (with a loop range and
+//                         fades), and the three comparison PNGs rendered through the
+//                         REAL drawing function (`clipwave::drawClipWaveform`).
+//
+// `RRS_WV_FIXTURE_INSTALL_TO=<absolute path>`
+//                         additionally copies that session to exactly that path and
+//                         touches NOTHING else. The target must be an absolute path
+//                         that does NOT exist yet — otherwise the case FAILS without
+//                         deleting anything (its parent directory is created if
+//                         missing). It deliberately does **not** reference
+//                         `paths::defaultEditFile()` or `paths::lockFile()`, so a
+//                         developer's session and the crash-recovery sentinel can
+//                         never be clobbered by running the tests.
+//
+// Photographing the arrangement in the GUI: point the app's profile at a throwaway
+// directory instead of the developer's (the app resolves it through `HOME` —
+// verified on the build box), then launch it with that profile. Example:
+//     RRS_WV_FIXTURE=/tmp/wv
+//     RRS_WV_FIXTURE_INSTALL_TO=/tmp/wv-home/.config/raw-radio-studio/Projects/wv.tracktionedit
+//     (export both, then) ./raw_radio_studio_integration_tests -tc="*WV screenshot fixture*"
+//     HOME=/tmp/wv-home DISPLAY=:99 ./raw-radio-studio    # clean profile: auto-opens it
+TEST_CASE ("WV screenshot fixture (RRS_WV_FIXTURE=<dir>)")
+{
+    const auto dirPath = juce::SystemStats::getEnvironmentVariable ("RRS_WV_FIXTURE", {});
+
+    if (dirPath.isEmpty())
+        return;   // opt-in only
+
+    const juce::File dir (dirPath);
+    dir.createDirectory();
+
+    constexpr double sampleRate = 48000.0;
+    constexpr double seconds = 4.0;
+    const int numSamples = (int) (sampleRate * seconds);
+
+    const auto writeWav = [&] (const juce::String& name, int numChannels,
+                               const std::function<float (int, double)>& sampleAt)
+    {
+        auto file = dir.getChildFile (name);
+        file.deleteFile();
+
+        juce::WavAudioFormat format;
+        std::unique_ptr<juce::OutputStream> stream = std::make_unique<juce::FileOutputStream> (file);
+        auto writer = format.createWriterFor (stream,
+                                              juce::AudioFormatWriterOptions{}
+                                                  .withSampleRate (sampleRate)
+                                                  .withNumChannels (numChannels)
+                                                  .withBitsPerSample (24));
+        REQUIRE (writer != nullptr);
+
+        juce::AudioBuffer<float> buffer (numChannels, numSamples);
+
+        for (int ch = 0; ch < numChannels; ++ch)
+            for (int i = 0; i < numSamples; ++i)
+                buffer.setSample (ch, i, sampleAt (ch, (double) i / sampleRate));
+
+        REQUIRE (writer->writeFromAudioSampleBuffer (buffer, 0, numSamples));
+        writer.reset();
+        return file;
+    };
+
+    // A slow "burst" envelope so the drawn peaks VARY (a constant sine would draw a
+    // solid block and hide the difference between the scales/channels).
+    const auto burst = [] (double t, double spanSeconds, double bursts, double floorLevel)
+    {
+        const auto x = std::sin (juce::MathConstants<double>::pi * bursts * t / spanSeconds);
+        const auto e = x > 0.0 ? std::pow (x, 1.5) : 0.0;
+        return (float) (floorLevel + (1.0 - floorLevel) * e);
+    };
+
+    // A quiet take: −30 dBFS (0.0316) — on the linear curve this is a ~1 px strip.
+    const auto quiet = writeWav ("wv-quiet-mono.wav", 1, [&] (int, double t)
+                                 { return 0.0316f * burst (t, seconds, 4.0, 0.1)
+                                          * (float) std::sin (juce::MathConstants<double>::twoPi * 200.0 * t); });
+
+    // Stereo with clearly different channels: L loud 220 Hz with 3 slow swells,
+    // R quiet 880 Hz with 6 faster ones.
+    const auto stereo = writeWav ("wv-stereo-lr.wav", 2, [&] (int ch, double t)
+                                  {
+                                      const auto amp = ch == 0 ? 0.30f : 0.06f;
+                                      const auto freq = ch == 0 ? 220.0 : 880.0;
+                                      const auto swells = ch == 0 ? 3.0 : 6.0;
+                                      return amp * burst (t, seconds, swells, ch == 0 ? 0.15 : 0.3)
+                                             * (float) std::sin (juce::MathConstants<double>::twoPi * freq * t);
+                                  });
+
+    AudioEngine audio (false);
+    Session session (audio);
+
+    const auto sessionFile = dir.getChildFile ("wv-session.tracktionedit");
+    REQUIRE (session.createNew (sessionFile));
+    REQUIRE (session.importAudioFile (quiet));    // track 0: 1-channel clip
+    REQUIRE (session.importAudioFile (stereo));   // track 1: 2-channel clip
+
+    // Fades + a native loop range so the readability states are visible too.
+    REQUIRE (session.setClipFadeIn (1, 0, 0.5));
+    REQUIRE (session.setClipFadeOut (1, 0, 0.5));
+
+    // Setting the loop range is what makes a plain WAV clip loop (there is no
+    // beat-based auto-tempo here), so the loop hairlines are drawn.
+    if (auto* track0 = session.getTrack (0))
+        if (auto* looped = dynamic_cast<te::AudioClipBase*> (track0->getClips()[0]))
+        {
+            looped->setLoopRange (te::TimeRange (te::TimePosition(),
+                                                 te::TimeDuration::fromSeconds (1.0)));
+            REQUIRE (looped->isLooping());
+        }
+
+    REQUIRE (session.saveAs (sessionFile));
+    session.close();
+
+    std::cout << "[wv-fixture] wrote " << quiet.getFullPathName() << ", "
+              << stereo.getFullPathName() << ", " << sessionFile.getFullPathName() << std::endl;
+
+    //--------------------------------------------------------------------------
+    // The review screenshots: draw the waves with the SAME function the
+    // arrangement uses (`clipwave::drawClipWaveform`), offline and deterministically
+    // — the GUI itself cannot be captured under Xvfb (see the report).
+    //--------------------------------------------------------------------------
+    juce::AudioFormatManager formats;
+    formats.registerBasicFormats();
+
+    juce::AudioThumbnailCache cache (4);
+    juce::TimeSliceThread thumbThread ("wv-thumb");
+    thumbThread.startThread();
+
+    const auto loadThumb = [&] (const juce::File& f)
+    {
+        auto thumb = std::make_unique<juce::AudioThumbnail> (1024, formats, cache);
+        thumb->setSource (new juce::FileInputSource (f));
+
+        for (int i = 0; i < 500 && ! thumb->isFullyLoaded(); ++i)
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (20);
+
+        REQUIRE (thumb->isFullyLoaded());
+        return thumb;
+    };
+
+    const auto quietThumb = loadThumb (quiet);
+    const auto stereoThumb = loadThumb (stereo);
+
+    rrs::brand::initialiseFonts();
+
+    const auto quietLength = (double) quietThumb->getTotalLength();
+    const auto stereoLength = (double) stereoThumb->getTotalLength();
+
+    const auto drawPanel = [] (juce::Graphics& g, juce::Rectangle<int> area, const juce::String& label,
+                               const rrs::clipwave::BandDrawParams& params, juce::Colour bg)
+    {
+        g.setColour (bg);
+        g.fillRoundedRectangle (area.toFloat(), 3.0f);
+        g.setColour (rrs::brand::textSecondary);
+        g.setFont (rrs::brand::uiRegular (12.0f));
+        g.drawText (label, area.reduced (6, 2), juce::Justification::topLeft);
+
+        rrs::clipwave::drawClipWaveform (g, params);
+    };
+
+    const auto panel = [&] (juce::Rectangle<int> area, juce::AudioThumbnailBase& thumb,
+                            int numChannels, double fileLength,
+                            rrs::clipwave::WaveformScale scale, bool normalise)
+    {
+        rrs::clipwave::BandDrawParams params;
+        params.clipRect = area;
+        params.thumb = &thumb;
+        params.numChannels = numChannels;
+        params.fileLength = fileLength;
+        params.looping = false;
+        params.startSeconds = 0.0;
+        params.endSeconds = fileLength;
+        params.colour = rrs::brand::accent;
+        params.scale = scale;
+        params.normalise = normalise;
+        params.lineColour = rrs::brand::textTertiary.withAlpha (0.3f);
+        return params;
+    };
+
+    const auto render = [&] (const juce::String& name, int width, int height,
+                             const std::function<void (juce::Graphics&)>& draw)
+    {
+        juce::Image image (juce::Image::ARGB, width, height, true);
+        juce::Graphics g (image);
+        g.fillAll (rrs::brand::bgWindow);
+        draw (g);
+
+        auto file = dir.getChildFile (name);
+        file.deleteFile();
+
+        juce::PNGImageFormat png;
+        std::unique_ptr<juce::FileOutputStream> out (file.createOutputStream());
+        REQUIRE (out != nullptr);
+        png.writeImageToStream (image, *out);
+        out.reset();
+
+        std::cout << "[wv-fixture] rendered " << file.getFullPathName() << std::endl;
+        return file;
+    };
+
+    // 1) The owner's complaint, and the shipped DEFAULT: the same −30 dBFS mono clip
+    //    on the linear curve, on the dB curve with the default (no normalisation —
+    //    readable, absolute level intact) and, for contrast, dB + normalisation
+    //    (which fills the band and hides the level).
+    render ("wv-compare-linear-vs-db.png", 940, 350, [&] (juce::Graphics& g)
+    {
+        drawPanel (g, { 10, 10, 920, 100 }, "linear scale, no normalisation  (-30 dBFS -> flat strip)",
+                   panel ({ 10, 26, 920, 74 }, *quietThumb, 1, quietLength,
+                          rrs::clipwave::WaveformScale::linear, false),
+                   rrs::brand::clip);
+        drawPanel (g, { 10, 120, 920, 110 },
+                   "dB scale, no normalisation  (SHIPPED DEFAULT: readable wave, absolute level kept)",
+                   panel ({ 10, 136, 920, 84 }, *quietThumb, 1, quietLength,
+                          rrs::clipwave::defaultWaveformScale, rrs::clipwave::defaultWaveformNormalise),
+                   rrs::brand::clip);
+        drawPanel (g, { 10, 240, 920, 100 },
+                   "dB scale + peak normalisation ON  (fills the band, hides the level)",
+                   panel ({ 10, 256, 920, 74 }, *quietThumb, 1, quietLength,
+                          rrs::clipwave::WaveformScale::decibel, true),
+                   rrs::brand::clip);
+    });
+
+    // 2) Stereo: L/R bands when the lane is tall, overlaid when it is short.
+    render ("wv-stereo-bands-vs-overlay.png", 940, 260, [&] (juce::Graphics& g)
+    {
+        drawPanel (g, { 10, 10, 920, 110 }, "stereo, tall band -> 2 bands (L above, R below; dB + normalisation ON for contrast)",
+                   panel ({ 10, 26, 920, 84 }, *stereoThumb, 2, stereoLength,
+                          rrs::clipwave::WaveformScale::decibel, true),
+                   rrs::brand::clip);
+        drawPanel (g, { 10, 130, 920, 56 }, "stereo, band too short (< 2 x 10 px) -> overlay (one band, per-bin max; dB + normalisation)",
+                   panel ({ 10, 146, 920, 30 }, *stereoThumb, 2, stereoLength,
+                          rrs::clipwave::WaveformScale::decibel, true),
+                   rrs::brand::clip);
+    });
+
+    // 3) Mono (a 1-channel take, RT-5) is one band; the quiet mono clip in dB.
+    render ("wv-mono-one-band.png", 940, 140, [&] (juce::Graphics& g)
+    {
+        drawPanel (g, { 10, 10, 920, 110 },
+                   "mono clip (1 channel) -> one band; the SHIPPED DEFAULT (dB, no normalisation)",
+                   panel ({ 10, 26, 920, 84 }, *quietThumb, 1, quietLength,
+                          rrs::clipwave::defaultWaveformScale, rrs::clipwave::defaultWaveformNormalise),
+                   rrs::brand::clip);
+    });
+
+    std::cout << "[wv-fixture] thumbnails loaded from real WAV files" << std::endl;
+
+    const auto installPath = juce::SystemStats::getEnvironmentVariable ("RRS_WV_FIXTURE_INSTALL_TO", {});
+
+    if (installPath.isNotEmpty())
+    {
+        const juce::File target (installPath);
+
+        // Explicit, absolute, and NOTHING that already exists is ever deleted: the
+        // app's own profile (its session, its crash sentinel) is never referenced.
+        REQUIRE (juce::File::isAbsolutePath (installPath));
+        REQUIRE_FALSE (target.exists());
+        REQUIRE (target.getParentDirectory().createDirectory());
+        REQUIRE (sessionFile.copyFileTo (target));
+
+        std::cout << "[wv-fixture] installed to " << target.getFullPathName()
+                  << " (the app profile was not touched)" << std::endl;
+    }
+}

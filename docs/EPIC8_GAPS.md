@@ -262,6 +262,39 @@ allocated per **span**, so sharing tracks share one `WaveInputDevice`.
   limitation (engine-level, not this code): opening a physically different card mid-take tears the
   audio device down, which aborts the take; the app's startup recovery still finds the orphaned file.
 
+**Delivered (WV-1 / WV-2 / WV-3 — clip waveform view).**
+
+- **Owner decision on the default (recorded here).** A fresh profile shows the clip wave on the
+  **dB curve with peak normalisation OFF**. The dB scale alone answers the original complaint
+  ("a quiet take is a flat strip": −24 dBFS draws ~12 px of a 40 px half-height instead of ~1 px),
+  while normalising every take to full scale would hide its **absolute level** (a −30 dBFS take would
+  look like a 0 dBFS one). Normalisation stays one click away (edit-row toggle, persisted) for the
+  extreme case. The default lives in **one place** — `rrs::clipwave::defaultWaveformScale` /
+  `defaultWaveformNormalise` in `src/ui/ClipWaveform.h` — and a missing key and an unreadable one
+  both fall back to it (they used to disagree).
+- **WV-1 — pure scale/normalisation math** (`src/ui/ClipWaveform.h`): `WaveformScale { linear,
+  decibel }`; the dB curve maps −60…0 dBFS onto 0…1, and −60 dB is exactly `silencePeak` so the curve
+  is continuous with `isSilent()` (and matches the usual DAW window: Ardour ships a dB waveform
+  scale, Reaper offers "scale peaks by dB"); `viewGain` peak-normalises the DRAWING only, identity
+  for silence/invalid, capped at +40 dB, and scales a >1.0 peak **down** (never amplifies a clipped
+  take). `bandLayout`/`bandExtent` own the band split.
+- **WV-2 — wiring + toggle** (`src/ui/MainComponent.{h,cpp}`): `drawClip` calls the shared
+  `clipwave::drawClipWaveform`; a compact icon button next to the track-height switcher opens
+  *Scale: linear / dB* and *Normalise peaks*; both persist as `ui.waveformScale` /
+  `ui.waveformNormalise`. The drawing is allocation-free (scalars + an already-cached thumbnail).
+- **WV-3 — bands** (`src/ui/ClipWaveformDraw.h`): stereo/wider → two bands (L above, R below) with
+  their own centre lines and an L/R separator; mono (incl. the 1-channel RT-5 takes) → one band; a
+  band under `2 × 10 px` overlays into one using the per-bin max across **all** channels (a
+  deliberate, documented compromise: the two-band case shows only channels 0/1 because the app's
+  metering is 2-channel). Fades, selection/live borders, names and loop hairlines are drawn after the
+  wave, so readability is unchanged.
+- **Tests.** 5 assert-level render cases draw through the real function into an off-screen image with
+  a deterministic stub thumbnail: the bands carry the right channels, the overlay folds in every
+  channel, the silence floor draws exactly the 1 px tick, the persisted settings round-trip (missing
+  / valid / **garbled**) and `viewGain` is `1/max(peak)` on a real file. `RRS_WV_FIXTURE=<dir>`
+  additionally renders the comparison PNGs; `RRS_WV_FIXTURE_INSTALL_TO=<abs>` can place the fixture
+  session at an explicit new path — the fixture never touches the app profile.
+
 ### Commit & review sequence
 
 Each unit = **review (`code-reviewer`) → fixes → one commit** (conventional message, **DCO `-s`**,
@@ -300,7 +333,7 @@ review** (recovery/import path). The rest are ordinary UI reviews.
 | **1-channel mono WAV (RT-5)** | Engine/recovery/import mishandle a mono take; old stereo mappings change meaning | Live mono record → file channel count == 1; recovery/import integration | Revert 6 (keep the mapping change, drop the file-format change) |
 | **Regrouping mid-take (RT-3/RT-7)** | A device-list rebuild during recording stops/skips the take (the EPIC 7 flake's failure mode) | Guard: configure/timer never regroup while `isRecording()`; live: start a take, change nothing, confirm the file is complete | Revert 3/8 |
 | **Timer re-apply thrash (RT-7)** | `restartPlayback()` every tick → dropouts | **Closed**: the gate compares the device-count + active-channel signature, so a steady state does no work at all (`getInputApplyCount()` is flat over ~15 ticks; one switch = one apply) — pinned by the `input signature` unit test and the no-storm integration test | Revert 8 |
-| **Normalisation hides level (WV-1/2)** | Clipping or a loud-looking near-silent take; dB confusion | Pure-math tests (unity, −∞, peaks); a screenshot review by the owner | Revert 11 |
+| **Normalisation hides level (WV-1/2)** | A loud-looking near-silent take; dB confusion | **Closed by the owner decision**: the shipped default is the dB curve with normalisation **off**, so the drawn height still tracks the absolute level; the toggle is persisted and the math is unit-tested | Revert 11 |
 | **Live synthetic clip duplication (LW)** | Two clips drawn for one take at stop | De-dupe by `sourceFile`; live check: the take appears once when the transport stops | Revert 14 |
 | **LV2 default-on (LV-1)** | Wider scan surface; `.dmg`/`.deb` format set changes; a broken bundle affects the scan | Live scan + browser screenshot; CI build (formats present in `getHostedFormatNames`) | Revert 13 |
 

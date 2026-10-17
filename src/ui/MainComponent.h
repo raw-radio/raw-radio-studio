@@ -143,6 +143,11 @@ namespace rrs
         void setTrackHeightPreset (int preset);
         /** Opens the compact lane-height dropdown from the edit row (owner R-B). */
         void showHeightPresetMenu();
+
+        /** WV-2: the clip-waveform view menu (scale linear/dB, normalise on/off). */
+        void showWaveformMenu();
+        void setWaveformScale (clipwave::WaveformScale);
+        void setWaveformNormalise (bool);
         /** Summary line for the sidebar «Channels» section. */
         juce::String channelsSummaryText() const;
         /** Multi-line body for the sidebar «Status» section. */
@@ -318,6 +323,11 @@ namespace rrs
             edge of the edit row — an icon-only button opening a 56/72/96 dropdown. */
         BrandButton heightPresetButton { "Track height", BrandButton::Style::Secondary };
 
+        /** WV-2: the clip-waveform view switcher (amplitude scale + peak
+            normalisation), an icon-only button next to the height switcher. View
+            only — it never touches audio. Persisted as `ui.waveform*`. */
+        BrandButton waveformButton { "Clip waveform", BrandButton::Style::Secondary };
+
         BrandButton armButton { "Arm", BrandButton::Style::Chip };
         BrandButton recordButton { "Record", BrandButton::Style::Record };
         BrandButton playButton { "Play", BrandButton::Style::Transport };
@@ -449,6 +459,16 @@ namespace rrs
 
         /** Global lane-height preset: 0 compact (56) / 1 normal (72) / 2 large (96). */
         int trackHeightPreset = 1;
+
+        /** WV-2: how the clip wave is scaled, and whether the DRAWING is peak
+            normalised (view only — the audio is never touched). The defaults live in
+            ONE place (`clipwave::defaultWaveform*` in `ui/ClipWaveform.h`), so
+            switching what a fresh session shows is a one-line change there; the
+            current values address the owner report (a soft microphone was a flat
+            strip on the historic linear curve). Both are one click away and persisted
+            (`ui.waveform*`). */
+        clipwave::WaveformScale waveformScale = clipwave::defaultWaveformScale;
+        bool waveformNormalise = clipwave::defaultWaveformNormalise;
 
         //--- Epic 4 clip-edit selection + drag state ---
         int selectedTrackIndex = -1;

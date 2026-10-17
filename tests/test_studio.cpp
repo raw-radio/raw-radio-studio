@@ -39,6 +39,7 @@
 
 #include <cmath>
 #include <climits>
+#include <limits>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
@@ -1525,6 +1526,135 @@ TEST_CASE ("clip waveform binning (Epic 8 phase 2)")
     CHECK (peakFromMinMax (0.0f, 0.0f) == doctest::Approx (0.0f));
     CHECK (isSilent (peakFromMinMax (0.0f, 0.0f)));
     CHECK_FALSE (isSilent (peakFromMinMax (-1.0f, 1.0f)));
+}
+
+//==============================================================================
+// WV-1 (owner report: "the wave is not big in amplitude … a −24 dBFS take is a flat
+// strip"): the amplitude scale, the view-only peak normalisation and the channel
+// band layout. Pure maths — this is what the drawing in MainComponent::drawClip
+// divides up its pixels with.
+TEST_CASE ("clip waveform amplitude scale, view normalisation and band layout (WV-1)")
+{
+    using namespace rrs::clipwave;
+
+    // --- WaveformScale::linear is the historic `peak * halfHeight` -------------
+    CHECK (displayNorm (0.0f, WaveformScale::linear) == doctest::Approx (0.0f));
+    CHECK (displayNorm (0.25f, WaveformScale::linear) == doctest::Approx (0.25f));
+    CHECK (displayNorm (1.0f, WaveformScale::linear) == doctest::Approx (1.0f));
+    CHECK (displayNorm (1.5f, WaveformScale::linear) == doctest::Approx (1.0f));  // clamped
+    CHECK (displayNorm (-0.5f, WaveformScale::linear) == doctest::Approx (0.0f));
+    CHECK (displayNorm (std::numeric_limits<float>::quiet_NaN(), WaveformScale::linear) == 0.0f);
+
+    // --- WaveformScale::decibel spreads the quiet end -------------------------
+    CHECK (displayNorm (1.0f, WaveformScale::decibel) == doctest::Approx (1.0f));   // 0 dBFS
+    CHECK (displayNorm (0.5f, WaveformScale::decibel) == doctest::Approx (0.8997f).epsilon (0.001f)); // −6 dBFS
+    CHECK (displayNorm (0.0631f, WaveformScale::decibel) == doctest::Approx (0.6f).epsilon (0.001f)); // −24 dBFS
+    CHECK (displayNorm (0.0f, WaveformScale::decibel) == doctest::Approx (0.0f));
+    CHECK (displayNorm (-1.0f, WaveformScale::decibel) == doctest::Approx (0.0f));
+    // The dB curve reaches exactly 0 at the silence floor (one seamless picture with
+    // `isSilent`), i.e. at −60 dBFS.
+    CHECK (silencePeak == doctest::Approx (0.001f));
+    CHECK (displayNorm (silencePeak, WaveformScale::decibel) == doctest::Approx (0.0f));
+    CHECK (displayNorm (silencePeak * 0.5f, WaveformScale::decibel) == doctest::Approx (0.0f)); // clamped
+
+    // The owner's complaint, quantified: on a 40 px lane (halfH = 20) a −24 dBFS take
+    // is ~1 px linear (0.063 * 20 = 1.26) but ~12 px on the dB scale.
+    const auto halfH = 20.0f;
+    CHECK (displayNorm (0.0631f, WaveformScale::linear) * halfH == doctest::Approx (1.262f).epsilon (0.001f));
+    CHECK (displayNorm (0.0631f, WaveformScale::decibel) * halfH == doctest::Approx (12.0f).epsilon (0.001f));
+
+    // Monotonic (non-decreasing) on both curves.
+    for (const auto scale : { WaveformScale::linear, WaveformScale::decibel })
+    {
+        float previous = -1.0f;
+
+        for (const auto peak : { 0.0f, 0.001f, 0.01f, 0.1f, 0.25f, 0.5f, 0.9f, 1.0f, 2.0f })
+        {
+            const auto norm = displayNorm (peak, scale);
+            CHECK (norm >= previous);
+            CHECK (norm >= 0.0f);
+            CHECK (norm <= 1.0f);
+            previous = norm;
+        }
+    }
+
+    // --- View normalisation (display only) ------------------------------------
+    // Off, silent, invalid: identity — nothing is invented.
+    CHECK (viewGain (0.0316f, false) == doctest::Approx (1.0f));
+    CHECK (viewGain (0.0316f, true) == doctest::Approx (31.6456f));   // −30 dB -> full
+    CHECK (viewGain (1.0f, true) == doctest::Approx (1.0f));
+    CHECK (viewGain (0.0f, true) == doctest::Approx (1.0f));          // silence
+    CHECK (viewGain (0.0005f, true) == doctest::Approx (1.0f));       // below the floor
+    CHECK (viewGain (-2.0f, true) == doctest::Approx (1.0f));
+    CHECK (viewGain (std::numeric_limits<float>::infinity(), true) == doctest::Approx (1.0f));
+    CHECK (viewGain (std::numeric_limits<float>::quiet_NaN(), true) == doctest::Approx (1.0f));
+    // A clipped/hot float peak scales DOWN (never amplifies), reaching exactly 1.0.
+    CHECK (viewGain (1.5f, true) * 1.5f == doctest::Approx (1.0f));
+    // A whisper is capped (+40 dB), so the view cannot become pure noise.
+    CHECK (viewGain (0.001f, true) == doctest::Approx (maxViewGain));
+    CHECK (viewGain (0.0001f, true) == doctest::Approx (1.0f)); // below the floor
+
+    // The gain really makes a quiet clip readable on the dB scale: −40 dB * 40 -> 0 dB.
+    CHECK (displayNorm (0.01f * viewGain (0.01f, true), WaveformScale::decibel)
+           == doctest::Approx (1.0f));
+
+    // --- Band layout (WV-3) ---------------------------------------------------
+    // Mono (or a clip with no channels) is always ONE band.
+    CHECK (bandLayout (0, 96).numBands == 1);
+    CHECK (bandLayout (1, 96).numBands == 1);
+    CHECK (bandLayout (1, 96).bottomChannel == -1);
+
+    // Stereo: L above, R below — when each half is at least `minBandHeightPx`.
+    {
+        const auto two = bandLayout (2, 2 * minBandHeightPx);
+        CHECK (two.numBands == 2);
+        CHECK (two.topChannel == 0);
+        CHECK (two.bottomChannel == 1);
+    }
+
+    // Too short for two readable bands -> overlay into one.
+    CHECK (bandLayout (2, 2 * minBandHeightPx - 1).numBands == 1);
+    CHECK (bandLayout (2, 12).numBands == 1);
+    CHECK (bandLayout (2, 12).bottomChannel == -1);
+
+    // Wider than stereo: still L/R (channels 0/1), matching the 2-channel metering.
+    {
+        const auto quad = bandLayout (4, 96);
+        CHECK (quad.numBands == 2);
+        CHECK (quad.topChannel == 0);
+        CHECK (quad.bottomChannel == 1);
+        CHECK (bandLayout (8, 12).numBands == 1); // short: one overlaid band
+    }
+
+    // --- Band extents tile the band exactly, without overlap -------------------
+    {
+        const auto one = bandLayout (1, 41);
+        CHECK (bandExtent (one, 100, 41, 0).y == 100);
+        CHECK (bandExtent (one, 100, 41, 0).height == 41);
+        CHECK (bandExtent (one, 100, 41, 1).y == 100);   // no second band: same picture
+        CHECK (bandExtent (one, 100, 41, 1).height == 41);
+    }
+    {
+        const auto two = bandLayout (2, 41);
+        const auto top = bandExtent (two, 100, 41, 0);
+        const auto bottom = bandExtent (two, 100, 41, 1);
+        CHECK (top.y == 100);
+        CHECK (top.height == 20);
+        CHECK (bottom.y == 120);
+        CHECK (bottom.height == 21);                  // the odd pixel goes to the bottom
+        CHECK (top.height + bottom.height == 41);     // no gap, no overlap
+    }
+
+    // --- Persisted scale name round-trips -------------------------------------
+    CHECK (waveformScaleToString (WaveformScale::linear) == "linear");
+    CHECK (waveformScaleToString (WaveformScale::decibel) == "decibel");
+    CHECK (waveformScaleFromString ("decibel") == WaveformScale::decibel);
+    CHECK (waveformScaleFromString ("linear") == WaveformScale::linear);
+    // A broken or missing value falls back to the SHIPPED default (the same one an
+    // absent key gives), so a garbled settings file cannot silently change the view.
+    CHECK (waveformScaleFromString ("garbage") == defaultWaveformScale);
+    CHECK (waveformScaleFromString ("") == defaultWaveformScale);
+    CHECK (waveformScaleFromString ("Linear") == defaultWaveformScale); // exact match
 }
 
 //==============================================================================

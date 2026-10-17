@@ -7,6 +7,7 @@
 #include "ui/BrandColours.h"
 #include "ui/BrandFonts.h"
 #include "ui/ClipSnap.h"
+#include "ui/ClipWaveformDraw.h"
 #include "ui/DevicePanelLayout.h"
 #include "ui/InputMenu.h"
 #include "ui/TrackLaneLayout.h"
@@ -264,6 +265,14 @@ namespace rrs
         heightPresetButton.setTooltip ("Track height: compact 56 / normal 72 / large 96 px");
         heightPresetButton.onClick = [this] { showHeightPresetMenu(); };
         addAndMakeVisible (heightPresetButton);
+
+        // WV-2: the clip-waveform view switcher sits next to the height switcher
+        // (same compact icon-dropdown pattern, owner R-B). Drawing only.
+        waveformButton.setIconName ("waveform");
+        waveformButton.setIconOnly (true, 32);
+        waveformButton.setTooltip ("Clip waveform view: amplitude scale (linear / dB) and peak normalisation");
+        waveformButton.onClick = [this] { showWaveformMenu(); };
+        addAndMakeVisible (waveformButton);
 
         // One vertical scrollbar for the track lanes (replaces the old
         // compress-to-1-px behaviour when many tracks share a short window).
@@ -1758,6 +1767,54 @@ namespace rrs
                             });
     }
 
+    void MainComponent::showWaveformMenu()
+    {
+        juce::PopupMenu menu;
+        menu.addSectionHeader ("Clip waveform");
+        menu.addItem (1, "Scale: linear", true, waveformScale == clipwave::WaveformScale::linear);
+        menu.addItem (2, "Scale: dB (perceptual)", true, waveformScale == clipwave::WaveformScale::decibel);
+        menu.addSeparator();
+        menu.addItem (3, "Normalise peaks (view only)", true, waveformNormalise);
+
+        juce::Component::SafePointer<MainComponent> safe (this);
+
+        menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&waveformButton),
+                            [safe] (int result)
+                            {
+                                auto* self = safe.getComponent();
+
+                                if (self == nullptr || result == 0)
+                                    return;
+
+                                if (result == 1)
+                                    self->setWaveformScale (clipwave::WaveformScale::linear);
+                                else if (result == 2)
+                                    self->setWaveformScale (clipwave::WaveformScale::decibel);
+                                else if (result == 3)
+                                    self->setWaveformNormalise (! self->waveformNormalise);
+                            });
+    }
+
+    void MainComponent::setWaveformScale (clipwave::WaveformScale scale)
+    {
+        if (scale == waveformScale)
+            return;
+
+        waveformScale = scale;
+        persistUiState();
+        repaint();
+    }
+
+    void MainComponent::setWaveformNormalise (bool on)
+    {
+        if (on == waveformNormalise)
+            return;
+
+        waveformNormalise = on;
+        persistUiState();
+        repaint();
+    }
+
     juce::String MainComponent::channelsSummaryText() const
     {
         const int numTracks = session.getNumAudioTracks();
@@ -1797,6 +1854,9 @@ namespace rrs
         settings->setValue ("ui.sidebarSections", sidebar::encodeSections (sidebarPanel.getSections()));
         settings->setValue ("ui.trackHeightPreset", trackHeightPreset);
         settings->setValue ("ui.mixerCollapsed", mixerPanel.isCollapsed());
+        settings->setValue ("ui.waveformScale", clipwave::waveformScaleToString (waveformScale));
+        settings->setValue ("ui.waveformNormalise",
+                           clipwave::waveformNormaliseToString (waveformNormalise));
         settings->saveIfNeeded();
     }
 
@@ -1810,6 +1870,13 @@ namespace rrs
         sidebarPanel.setSections (sidebar::decodeSections (settings->getValue ("ui.sidebarSections")));
         trackHeightPreset = juce::jlimit (0, 2, settings->getIntValue ("ui.trackHeightPreset", 1));
         mixerPanel.setCollapsed (settings->getBoolValue ("ui.mixerCollapsed", false));
+
+        // WV-2: the view is stored as TEXT and parsed with the clipwave helpers, so
+        // a MISSING key and an UNREADABLE one both land on the same default
+        // (`clipwave::defaultWaveform*`, defined in one place in ClipWaveform.h).
+        waveformScale = clipwave::waveformScaleFromString (settings->getValue ("ui.waveformScale"));
+        waveformNormalise = clipwave::waveformNormaliseFromString (
+            settings->getValue ("ui.waveformNormalise"));
     }
 
     //==============================================================================
@@ -2250,8 +2317,10 @@ namespace rrs
         }
 
         // Epic 8 phase 1a (owner R-B): compact lane-height dropdown at the right
-        // edge of the edit row.
+        // edge of the edit row. WV-2 adds the clip-waveform view switcher just to
+        // its left (same compact pattern, no extra row).
         heightPresetButton.setBounds (editRow.removeFromRight (32).withSizeKeepingCentre (32, 32));
+        waveformButton.setBounds (editRow.removeFromRight (32).withSizeKeepingCentre (32, 32));
 
         right.removeFromTop (8);
 
@@ -3704,54 +3773,23 @@ namespace rrs
 
         if (thumb != nullptr && fileLength > 0.0 && numChannels > 0 && halfH >= 1.0f)
         {
-            const int bins = clipwave::binCount (r.getWidth());
+            // WV-1..WV-3: the pixel work lives in the shared, allocation-free
+            // `clipwave::drawClipWaveform` (same code the screenshot fixture draws).
+            clipwave::BandDrawParams params;
+            params.clipRect = r;
+            params.thumb = thumb;
+            params.numChannels = numChannels;
+            params.offsetSeconds = clip.offsetSeconds;
+            params.fileLength = fileLength;
+            params.looping = clip.isLooping;
+            params.startSeconds = startSeconds;
+            params.endSeconds = endSeconds;
+            params.colour = waveColour;
+            params.scale = waveformScale;
+            params.normalise = waveformNormalise;
+            params.lineColour = brand::textTertiary.withAlpha (clipwave::centreLineAlpha);
 
-            auto binPeak = [thumb, numChannels] (double a, double b)
-            {
-                float peak = 0.0f;
-
-                for (int ch = 0; ch < numChannels; ++ch)
-                {
-                    float mn = 0.0f, mx = 0.0f;
-                    thumb->getApproximateMinMax (a, b, ch, mn, mx);
-                    peak = juce::jmax (peak, clipwave::peakFromMinMax (mn, mx));
-                }
-
-                return peak;
-            };
-
-            for (int i = 0; i < bins; ++i)
-            {
-                const auto t0 = clipwave::binStartSeconds (startSeconds, endSeconds, i, bins);
-                const auto t1 = clipwave::binEndSeconds (startSeconds, endSeconds, i, bins);
-                const auto s0 = clipwave::sourceTimeForBin (startSeconds, t0, clip.offsetSeconds,
-                                                            fileLength, clip.isLooping);
-                const auto s1 = clipwave::sourceTimeForBin (startSeconds, t1, clip.offsetSeconds,
-                                                            fileLength, clip.isLooping);
-
-                float peak = 0.0f;
-
-                if (s1 > s0)
-                    peak = binPeak (s0, s1);
-                else if (clip.isLooping && fileLength > clip.offsetSeconds)
-                    // The bin crosses the loop-wrap point: cover the tail of this
-                    // iteration and the head of the next, so there is no 2 px gap.
-                    peak = juce::jmax (binPeak (s0, fileLength), binPeak (clip.offsetSeconds, s1));
-
-                if (clipwave::isSilent (peak))
-                    continue;
-
-                const auto x = (float) (r.getX() + i * clipwave::binWidthPx);
-
-                if (x >= (float) r.getRight())
-                    break;
-
-                // Clamp the bar to the clip's right edge (odd width -> last bin).
-                const auto w = juce::jmin ((float) clipwave::binWidthPx, (float) r.getRight() - x);
-                const auto h = juce::jlimit (1.0f, halfH, peak * halfH);
-                g.setColour (waveColour);
-                g.fillRect (juce::Rectangle<float> (x, centreY - h, w, h * 2.0f));
-            }
+            clipwave::drawClipWaveform (g, params);
         }
 
         // Loop iteration hairlines (spec §5.1) — drawn whenever the iteration
