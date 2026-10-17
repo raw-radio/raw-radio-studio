@@ -2182,6 +2182,36 @@ TEST_CASE ("input grouping: the planner agrees with checkSpanOccupancy (M3 invar
     CHECK (checkSpanOccupancy (3, 2, 4, occupancy).conflict == SpanConflict::OffDevice);
 }
 
+//==============================================================================
+// RT-7: the input-device change signature is a PURE comparison of two halves —
+// the wave-device count AND the active input-channel count. The second half is
+// what catches a card that keeps the same number of WaveInputDevices but exposes
+// a different number of active channels (the owner's 2 -> 8 -> 2 scenario); the
+// integration tests would still pass with the device count alone, so this unit
+// test is what pins the channel-count half.
+TEST_CASE ("input signature: both halves of the device change are compared (RT-7)")
+{
+    // Nothing changed: no re-apply.
+    CHECK_FALSE (inputSignatureChanged (1, 2, 1, 2));
+    CHECK_FALSE (inputSignatureChanged (4, 32, 4, 32));
+
+    // Only the DEVICE COUNT changed (a different card with the same channel count).
+    CHECK (inputSignatureChanged (2, 2, 1, 2));
+
+    // Only the ACTIVE CHANNEL COUNT changed — the same device count (the owner's
+    // 2 -> 8 -> 2 switch). This is the half the integration harness alone does not
+    // isolate, because switching inputChannels there also rebuilds the device list.
+    CHECK (inputSignatureChanged (1, 8, 1, 2));
+    CHECK (inputSignatureChanged (1, 2, 1, 8));
+
+    // Unknown signature (session closed / never applied) — either half being the
+    // `-1` sentinel counts as a change.
+    CHECK (inputSignatureChanged (1, 2, -1, -1));
+    CHECK (inputSignatureChanged (1, 2, 1, -1));
+    CHECK (inputSignatureChanged (1, 2, -1, 2));
+    CHECK (inputSignatureChanged (0, 0, -1, -1));
+}
+
 TEST_CASE ("input grouping: deterministic — the result does not depend on insertion order")
 {
     using namespace rrs;

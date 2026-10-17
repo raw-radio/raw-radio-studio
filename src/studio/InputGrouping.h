@@ -139,6 +139,30 @@ namespace rrs
     }
 
     //==========================================================================
+    // RT-7 — the input-device change signature.
+    //
+    // The Session timer re-applies the whole input layout only when the audio
+    // device REALLY changed. That decision is a pure comparison of two halves:
+    //   * the wave-device COUNT, and
+    //   * the ACTIVE INPUT CHANNEL COUNT.
+    // Both are needed: switching cards usually changes the device count, but a card
+    // can also keep the same number of WaveInputDevices while exposing a different
+    // number of active input channels (2 -> 8 -> 2, the owner's scenario) — only the
+    // channel count then reveals the change.
+    //
+    // The "unknown" sentinel is -1 (no successful apply yet / after `close()`), so a
+    // live signature compared against it always counts as changed.
+
+    /** True when the live `deviceCount`/`channelCount` differ from the last applied
+        signature. Either half differing (or an unknown `-1` on the applied side)
+        means the layout must be re-applied. */
+    inline bool inputSignatureChanged (int deviceCount, int channelCount,
+                                       int appliedDeviceCount, int appliedChannelCount) noexcept
+    {
+        return deviceCount != appliedDeviceCount || channelCount != appliedChannelCount;
+    }
+
+    //==========================================================================
     // Span occupancy: ONE source of truth for "who owns a channel" (RT-4/RT-6/RT-8).
     //
     // A channel is owned by a *span* (a starting channel + a length), not by a

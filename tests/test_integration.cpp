@@ -2104,6 +2104,725 @@ TEST_CASE ("remove track: deleting a sharing partner mid-take keeps the recordin
 }
 
 //==============================================================================
+// RT-7: changing the audio device must re-apply the WHOLE input layout. The
+// hosted device's channel count is the stand-in for a different card, switched
+// through the public `HostedAudioDeviceInterface::initialise` (the same call the
+// harness makes in its constructor) — the narrow card is FiFine-like (2 in), the
+// wide one is an 8-in interface.
+//
+// Narrow (2 in): a stereo pair fits; two pinned monos and a sharing pair are
+// off-device with a reason; the `None` track stays `None`.
+// Wide (8 in):  the off-device tracks get channels, the sharing pair shares ONE
+// device, nothing is lost, the `None` track is STILL `None` (never auto-assigned).
+// Back to narrow: the extra tracks are off-device again (RT-2b reason), the pair
+// and its sharing partner that still fit are preserved.
+TEST_CASE ("input routing: a device switch re-applies the whole input layout (RT-7)")
+{
+    auto dir = scratchDirectory ("rt7-wide-narrow");
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Rt7.tracktionedit")));
+
+    te::HostedAudioDeviceInterface::Parameters params;
+    params.sampleRate = 48000.0;
+    params.blockSize = 256;
+    params.inputChannels = 2;   // narrow card
+    params.outputChannels = 2;
+    auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+
+    // The SAME hosted interface the EnginePlayer initialised — the public way to
+    // simulate a different card. `initialise` re-runs DeviceManager::initialise with
+    // the new channel counts and rebuilds the wave-device list.
+    auto switchInputChannels = [&] (int inputChannels)
+    {
+        auto& hosted = audio.deviceManager().getHostedAudioDeviceInterface();
+        auto p = player->getParams();
+        p.inputChannels = inputChannels;
+        p.outputChannels = 2;
+        hosted.initialise (p);
+        hosted.prepareToPlay (p.sampleRate, p.blockSize);
+        audio.deviceManager().dispatchPendingUpdates();
+    };
+
+    auto pump = [&] (int ms)
+    {
+        for (int i = 0; i < juce::jmax (1, ms / 10); ++i)
+        {
+            audio.deviceManager().dispatchPendingUpdates();
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+        }
+    };
+
+    auto pumpUntilConfigured = [&] (int maxMs)
+    {
+        for (int i = 0; i < juce::jmax (1, maxMs / 10); ++i)
+        {
+            audio.deviceManager().dispatchPendingUpdates();
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+            if (session.isInputConfigured())
+                return true;
+        }
+
+        return session.isInputConfigured();
+    };
+
+    // Wait for the change gate to NOTICE the new device and complete a re-apply.
+    // The `isInputConfigured` flag stays true until the gate fires, so the applied
+    // counter is the observable effect to wait on.
+    auto pumpUntilApplies = [&] (int target, int maxMs)
+    {
+        for (int i = 0; i < juce::jmax (1, maxMs / 10); ++i)
+        {
+            audio.deviceManager().dispatchPendingUpdates();
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+            if (session.getInputApplyCount() >= target)
+                break;
+        }
+
+        pump (200); // let the pass and any async device settle finish
+        return session.getInputApplyCount() >= target;
+    };
+
+    REQUIRE (pumpUntilConfigured (2000));
+    REQUIRE (audio.deviceManager().getNumWaveInDevices() > 0);
+
+    // Six input tracks: a stereo pair (0-1), two pinned monos beyond the narrow
+    // device (2, 3), an unassigned track, and a SHARING pair on channel 4.
+    for (int i = 0; i < 5; ++i)
+        REQUIRE (session.addAudioTrack() >= 0);
+
+    REQUIRE (session.getNumAudioTracks() == 6);
+    const auto idxs = session.getInputTrackIndices();
+    REQUIRE (idxs.size() == 6);
+    const int a = idxs[0], b = idxs[1], c = idxs[2], d = idxs[3], e = idxs[4], f = idxs[5];
+
+    // Move the auto-placed tracks out of the pair's way FIRST (track 1 was
+    // auto-placed on channel 1, which the stereo pair needs), then take 0-1.
+    REQUIRE (session.setTrackInputMapping (b, InputMapping { 2, 1, InputLayout::Mono }));
+    REQUIRE (session.setTrackInputMapping (c, InputMapping { 3, 1, InputLayout::Mono }));
+    REQUIRE (session.setTrackInputMapping (d, InputMapping { 0, 1, InputLayout::None }));
+    REQUIRE (session.setTrackInputMapping (e, InputMapping { 4, 1, InputLayout::Mono }));
+    REQUIRE (session.setTrackInputMapping (f, InputMapping { 4, 1, InputLayout::Mono }));
+    REQUIRE (session.setTrackInputMapping (a, InputMapping { 0, 2, InputLayout::Stereo }));
+
+    pump (200);
+
+    // --- Narrow card ---------------------------------------------------------
+    REQUIRE (session.isInputConfigured());
+    CHECK (session.getTrackInputProblem (a).isEmpty());
+    CHECK (session.getAppliedInputDeviceIndex (a) >= 0);
+
+    // Beyond the device: placed as "invalid" with a concrete reason, no device.
+    CHECK (session.getTrackInputProblem (b).isNotEmpty());
+    CHECK (session.getTrackInputProblem (b).contains ("not available"));
+    CHECK (session.getAppliedInputDeviceIndex (b) == -1);
+    CHECK (session.getTrackInputProblem (c).isNotEmpty());
+    CHECK (session.getAppliedInputDeviceIndex (c) == -1);
+    CHECK (session.getTrackInputProblem (e).isNotEmpty());
+    CHECK (session.getAppliedInputDeviceIndex (e) == -1);
+
+    // Unassigned stays unassigned, with no error and no device.
+    CHECK (session.getTrackInputMapping (d).layout == InputLayout::None);
+    CHECK (session.getTrackInputProblem (d).isEmpty());
+    CHECK (session.getAppliedInputDeviceIndex (d) == -1);
+
+    // --- Switch to the wide (8-in) card -------------------------------------
+    const int appliesBefore = session.getInputApplyCount();
+    switchInputChannels (8);
+    REQUIRE (pumpUntilApplies (appliesBefore + 1, 6000));
+
+    // The previously off-device tracks now have real inputs.
+    CHECK (session.getTrackInputMapping (b).firstChannel == 2);
+    CHECK (session.getTrackInputProblem (b).isEmpty());
+    CHECK (session.getAppliedInputDeviceIndex (b) >= 0);
+    CHECK (session.getTrackInputProblem (c).isEmpty());
+    CHECK (session.getAppliedInputDeviceIndex (c) >= 0);
+    CHECK (session.getTrackInputProblem (e).isEmpty());
+    CHECK (session.getAppliedInputDeviceIndex (e) >= 0);
+
+    // The stereo pair is still placed and its device really carries the pair
+    // configuration (RT-3: the channel config is never corrupted by the switch).
+    CHECK (session.getTrackInputProblem (a).isEmpty());
+    CHECK (session.getAppliedInputDeviceIndex (a) >= 0);
+    {
+        auto* device = audio.deviceManager().getWaveInDevice (session.getAppliedInputDeviceIndex (a));
+        REQUIRE (device != nullptr);
+        CHECK (device->getChannels().getNumChannels() == 2);   // the pair, not the old mono
+    }
+
+    // The sharing pair shares ONE device (identical span, RT-4).
+    CHECK (session.getAppliedInputDeviceIndex (e) == session.getAppliedInputDeviceIndex (f));
+
+    // `None` is never auto-assigned, even on a card with free channels.
+    CHECK (session.getTrackInputMapping (d).layout == InputLayout::None);
+    CHECK (session.getAppliedInputDeviceIndex (d) == -1);
+    CHECK (session.getTrackInputProblem (d).isEmpty());
+
+    // The switch applied (bounded: a change plus its async settle — never one per
+    // tick; the strict steady-state check lives in the no-storm test below).
+    const int appliesAfterWide = session.getInputApplyCount();
+    INFO ("appliesBefore=" << appliesBefore << " appliesAfterWide=" << appliesAfterWide);
+    CHECK (appliesAfterWide >= appliesBefore + 1);
+    CHECK (appliesAfterWide - appliesBefore <= 3);
+
+    // --- Back to the narrow card --------------------------------------------
+    switchInputChannels (2);
+    REQUIRE (pumpUntilApplies (appliesAfterWide + 1, 6000));
+
+    CHECK (session.getTrackInputMapping (b).firstChannel == 2);   // the mapping is kept
+    CHECK (session.getTrackInputProblem (b).isNotEmpty());        // ... but off-device again
+    CHECK (session.getAppliedInputDeviceIndex (b) == -1);
+    CHECK (session.getTrackInputProblem (e).isNotEmpty());
+    CHECK (session.getAppliedInputDeviceIndex (e) == -1);
+
+    // The pair that still fits is preserved.
+    CHECK (session.getTrackInputProblem (a).isEmpty());
+    CHECK (session.getAppliedInputDeviceIndex (a) >= 0);
+    CHECK (session.getTrackInputMapping (d).layout == InputLayout::None);
+
+    session.close();
+}
+
+//==============================================================================
+// RT-7: the change gate must not storm — a steady device state does no work at
+// all, and each REAL switch adds exactly one full apply.
+TEST_CASE ("input routing: a steady device does not re-apply, a switch applies once (RT-7)")
+{
+    auto dir = scratchDirectory ("rt7-no-storm");
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Rt7NoStorm.tracktionedit")));
+
+    te::HostedAudioDeviceInterface::Parameters params;
+    params.sampleRate = 48000.0;
+    params.blockSize = 256;
+    params.inputChannels = 2;
+    params.outputChannels = 2;
+    auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+
+    auto pump = [&] (int ms)
+    {
+        for (int i = 0; i < juce::jmax (1, ms / 10); ++i)
+        {
+            audio.deviceManager().dispatchPendingUpdates();
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+        }
+    };
+
+    for (int i = 0; i < 200; ++i)
+    {
+        audio.deviceManager().dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+        if (session.isInputConfigured())
+            break;
+
+        session.reconfigureInputs();
+    }
+
+    REQUIRE (session.isInputConfigured());
+    REQUIRE (audio.deviceManager().getNumWaveInDevices() > 0);
+
+    // Steady state: run the (10 Hz) timer for ~1.5 s — no further apply at all.
+    // This is the anti-storm assertion: the gate must stay shut, so no
+    // `configureTracks`, no `setAllWaveInputsToNumChannels`, no `save`/restart.
+    pump (300); // let the very last async settle finish first
+    const int settled = session.getInputApplyCount();
+    pump (1500);
+    INFO ("settled=" << settled << " afterSteady=" << session.getInputApplyCount());
+    CHECK (session.getInputApplyCount() == settled);
+
+    // One real switch: it is noticed and applied a BOUNDED number of times (the
+    // change plus its async device settle, ≤3), never once per tick (≈15 ticks in
+    // the 1.5 s window above).
+    auto& hosted = audio.deviceManager().getHostedAudioDeviceInterface();
+    auto p = player->getParams();
+    p.inputChannels = 4;
+    hosted.initialise (p);
+    hosted.prepareToPlay (p.sampleRate, p.blockSize);
+    audio.deviceManager().dispatchPendingUpdates();
+
+    for (int i = 0; i < 600 && session.getInputApplyCount() == settled; ++i)
+    {
+        audio.deviceManager().dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+    }
+
+    pump (300); // let the switch settle
+    const int afterSwitch = session.getInputApplyCount();
+    INFO ("settled=" << settled << " afterSwitch=" << afterSwitch);
+    CHECK (afterSwitch > settled);            // the change WAS applied
+    CHECK (afterSwitch - settled <= 3);       // bounded, not per-tick
+
+    // ... and then it settles again: at the new size nothing further happens.
+    pump (1500);
+    INFO ("afterSwitch=" << afterSwitch << " afterPump=" << session.getInputApplyCount());
+    CHECK (session.getInputApplyCount() == afterSwitch);
+
+    // close(): the cumulative counter survives, the applied signature is reset to
+    // the `-1` sentinel (so a reopened session re-applies) and a closed session does
+    // nothing at all — no storm, no exception.
+    const int beforeClose = session.getInputApplyCount();
+    REQUIRE (beforeClose > 0);
+    CHECK (session.hasAppliedInputSignature());
+
+    session.close();
+
+    CHECK (session.getInputApplyCount() == beforeClose);        // preserved
+    CHECK_FALSE (session.hasAppliedInputSignature());           // signature = -1
+    pump (600);                                                 // edit == nullptr
+    CHECK (session.getInputApplyCount() == beforeClose);        // no storm
+}
+
+//==============================================================================
+// RT-7: widening the card's channel count re-applies the whole layout end to end.
+//
+// NOTE on the signature halves: the hosted device type in this harness derives one
+// WaveInputDevice PER CHANNEL, so switching `inputChannels` here also moves the
+// device count — the CHANNEL-COUNT half of the signature therefore cannot be
+// isolated at the integration level in this harness, and is pinned directly by the
+// unit test `input signature: both halves of the device change are compared (RT-7)`
+// (which asserts `inputSignatureChanged (1, 2, 1, 8) == true`). What this case adds
+// is the end-to-end behaviour: a channel-count change re-plans and places a track
+// that was off-device on the narrower card.
+TEST_CASE ("input routing: a channel-count device change re-applies the layout (RT-7)")
+{
+    auto dir = scratchDirectory ("rt7-channels-only");
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Rt7Channels.tracktionedit")));
+
+    te::HostedAudioDeviceInterface::Parameters params;
+    params.sampleRate = 48000.0;
+    params.blockSize = 256;
+    params.inputChannels = 2;
+    params.outputChannels = 2;
+    auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+
+    auto pump = [&] (int ms)
+    {
+        for (int i = 0; i < juce::jmax (1, ms / 10); ++i)
+        {
+            audio.deviceManager().dispatchPendingUpdates();
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+        }
+    };
+
+    for (int i = 0; i < 200; ++i)
+    {
+        audio.deviceManager().dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+        if (session.isInputConfigured())
+            break;
+
+        session.reconfigureInputs();
+    }
+
+    REQUIRE (audio.deviceManager().getNumWaveInDevices() > 0);
+
+    // ONE input track pinned beyond the narrow card: off-device on a 2-in device, it
+    // must gain channel 2 on a 4-in one.
+    const int track = session.getInputTrackIndices()[0];
+    REQUIRE (session.setTrackInputMapping (track, InputMapping { 2, 1, InputLayout::Mono }));
+    pump (300);
+
+    // Nothing can be placed on the 2-in card, so no pass ever COMPLETES — but the
+    // failed pass still records the signature, which is what the gate compares.
+    CHECK_FALSE (session.isInputConfigured());
+    REQUIRE (session.hasAppliedInputSignature());
+    CHECK (session.getAppliedInputDeviceIndex (track) == -1);   // off-device (2-in)
+
+    const int devicesBefore = audio.deviceManager().getNumWaveInDevices();
+    const int channelsBefore = audio.getNumActiveInputChannels();
+    const int appliesBefore = session.getInputApplyCount();
+
+    // Widen the card's active channel count (2 -> 4).
+    auto& hosted = audio.deviceManager().getHostedAudioDeviceInterface();
+    auto p = player->getParams();
+    p.inputChannels = 4;
+    hosted.initialise (p);
+    hosted.prepareToPlay (p.sampleRate, p.blockSize);
+    audio.deviceManager().dispatchPendingUpdates();
+
+    for (int i = 0; i < 400 && session.getInputApplyCount() == appliesBefore; ++i)
+    {
+        audio.deviceManager().dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+    }
+
+    pump (300);
+
+    const int devicesAfter = audio.deviceManager().getNumWaveInDevices();
+    const int channelsAfter = audio.getNumActiveInputChannels();
+    INFO ("devices " << devicesBefore << " -> " << devicesAfter
+                     << ", channels " << channelsBefore << " -> " << channelsAfter
+                     << ", applies " << appliesBefore << " -> " << session.getInputApplyCount());
+
+    // The channel count really changed and the gate fired (bounded: a change plus
+    // its async settle), so the track that was off-device is now placed.
+    REQUIRE (channelsAfter != channelsBefore);
+    CHECK (session.getInputApplyCount() > appliesBefore);
+    CHECK (session.getInputApplyCount() <= appliesBefore + 2);
+    CHECK (session.getAppliedInputDeviceIndex (track) >= 0);   // now placed
+    CHECK (session.getTrackInputProblem (track).isEmpty());
+
+    session.close();
+}
+
+//==============================================================================
+// RT-7: a pass that never SUCCEEDS must not count as an apply (and must not save /
+// restart playback — those live only inside `configureTracks`' success path, which
+// the counter gates). Two failing states: every track `None`, and no device at all.
+TEST_CASE ("input routing: a failing input pass never counts as an apply (RT-7)")
+{
+    auto dir = scratchDirectory ("rt7-failing-pass");
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Rt7Fail.tracktionedit")));
+
+    te::HostedAudioDeviceInterface::Parameters params;
+    params.sampleRate = 48000.0;
+    params.blockSize = 256;
+    params.inputChannels = 2;
+    params.outputChannels = 2;
+    auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+
+    auto pump = [&] (int ms)
+    {
+        for (int i = 0; i < juce::jmax (1, ms / 10); ++i)
+        {
+            audio.deviceManager().dispatchPendingUpdates();
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+        }
+    };
+
+    for (int i = 0; i < 200; ++i)
+    {
+        audio.deviceManager().dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+        if (session.isInputConfigured())
+            break;
+
+        session.reconfigureInputs();
+    }
+
+    REQUIRE (session.isInputConfigured());
+
+    // (a) Every input track unassigned (`None`): `configureTracks` reports "nothing
+    // to place" and returns false — no apply, so no device/target/save work.
+    REQUIRE (session.setTrackInputMapping (0, InputMapping { 0, 1, InputLayout::None }));
+    const int before = session.getInputApplyCount();
+
+    pump (1200);
+    CHECK_FALSE (session.isInputConfigured());
+    CHECK (session.getInputApplyCount() == before);   // ~12 retries, zero applies
+
+    // (b) No audio device at all: same — the pass bails before applying.
+    audio.deviceManager().dispatchPendingUpdates();
+    audio.deviceManager().deviceManager.closeAudioDevice();
+    pump (1200);
+    CHECK_FALSE (session.isInputConfigured());
+    CHECK (session.getInputApplyCount() == before);
+
+    session.close();
+}
+
+
+//==============================================================================
+// RT-7: a device change while a take is rolling must NOT mutate anything (the
+// take survives) and must be caught up after the transport stops — and SEVERAL
+// change signals in one take must collapse into exactly ONE deferred apply.
+//
+// The device change is a wave-device-list rebuild (`setAllWaveInputsToNumChannels`,
+// the same call the app itself makes) plus the GUI device-change path
+// (`reconfigureInputs()`); that is a device-list change WITHOUT a hardware
+// teardown, so the take keeps rolling. (A second wave-list rebuild, or a
+// physically different card, tears the audio device down mid-take — engine-level,
+// the same family as the card-switch risk in the docs — so the extra signals here
+// are the GUI path rather than a second rebuild.)
+TEST_CASE ("input routing: a device-list rebuild during recording is deferred to the stop (RT-7)")
+{
+    auto dir = scratchDirectory ("rt7-mid-take");
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Rt7MidTake.tracktionedit")));
+
+    te::HostedAudioDeviceInterface::Parameters params;
+    params.sampleRate = 48000.0;
+    params.blockSize = 256;
+    params.inputChannels = 2;
+    params.outputChannels = 2;
+    auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+
+    for (int i = 0; i < 200; ++i)
+    {
+        audio.deviceManager().dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+        if (session.isInputConfigured())
+            break;
+
+        session.reconfigureInputs();
+    }
+
+    REQUIRE (audio.deviceManager().getNumWaveInDevices() > 0);
+
+    // A track pinned beyond the card: off-device now, and it must stay so until the
+    // take is over (then the deferred apply runs — it remains off-device because the
+    // card is unchanged; the reason must stay honest).
+    REQUIRE (session.addAudioTrack() >= 0);
+    REQUIRE (session.getNumAudioTracks() == 2);
+    REQUIRE (session.setTrackInputMapping (1, InputMapping { 3, 1, InputLayout::Mono }));
+    CHECK (session.getAppliedInputDeviceIndex (1) == -1);
+
+    REQUIRE (session.setTrackArmed (0, true));
+    session.getEdit()->getTransport().setPosition (te::TimePosition {});
+    REQUIRE (session.record());
+
+    juce::AudioBuffer<float> input (2, 256);
+
+    for (int s = 0; s < 256; ++s)
+        input.setSample (0, s, 0.5f);
+
+    for (int block = 0; block < 20; ++block)
+        player->process (input);
+
+    REQUIRE (session.isRecording());
+    const int appliesAtStart = session.getInputApplyCount();
+
+    // Change signal 1: rebuild the wave-device list during the take.
+    audio.deviceManager().setAllWaveInputsToNumChannels (1);
+    audio.deviceManager().dispatchPendingUpdates();
+    session.reconfigureInputs();
+
+    for (int i = 0; i < 30; ++i)
+    {
+        audio.deviceManager().dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+    }
+
+    // Change signals 2 and 3: the GUI device-change path again.
+    session.reconfigureInputs();
+
+    for (int i = 0; i < 20; ++i)
+    {
+        audio.deviceManager().dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+    }
+
+    session.reconfigureInputs();
+
+    for (int i = 0; i < 20; ++i)
+    {
+        audio.deviceManager().dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+    }
+
+    // No mutation while recording: still rolling, NO full apply ran, and the
+    // off-device track was not silently re-pointed.
+    INFO ("appliesAtStart=" << appliesAtStart
+                            << " midTake=" << session.getInputApplyCount());
+    CHECK (session.isRecording());
+    CHECK (session.isTrackRecording (0));
+    CHECK (session.getInputApplyCount() == appliesAtStart);
+    CHECK (session.getAppliedInputDeviceIndex (1) == -1);
+
+    for (int block = 0; block < 40; ++block)
+        player->process (input);
+
+    session.stop();
+
+    for (int i = 0; i < 300; ++i)
+    {
+        session.getEdit()->dispatchPendingUpdatesSynchronously();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (20);
+    }
+
+    session.setTrackArmed (0, false);
+    session.setMonitoringEnabled (false);
+
+    // The take survived (a valid, non-empty mono file)...
+    {
+        auto* track = session.getTrack (0);
+        REQUIRE (track != nullptr);
+        REQUIRE (track->getClips().size() >= 1);
+
+        auto* clip = dynamic_cast<te::WaveAudioClip*> (track->getClips()[0]);
+        REQUIRE (clip != nullptr);
+
+        const auto file = clip->getOriginalFile();
+        REQUIRE (file.existsAsFile());
+
+        te::AudioFile audioFile (session.getEdit()->engine, file);
+        REQUIRE (audioFile.isValid());
+        CHECK (audioFile.getLength() > 0.05);
+    }
+
+    // ... and the deferred changes were caught up after the stop — TWO changes in
+    // one take collapse into exactly ONE additional full apply.
+    INFO ("appliesAtStart=" << appliesAtStart << " afterStop=" << session.getInputApplyCount());
+    CHECK (session.getInputApplyCount() == appliesAtStart + 1);
+    CHECK (session.isInputConfigured());
+
+    // The card is still narrow, so the channel-3 track is still off-device — with
+    // the concrete reason (RT-2b), not silence.
+    CHECK (session.getAppliedInputDeviceIndex (1) == -1);
+    CHECK (session.getTrackInputProblem (1).contains ("not available"));
+
+    session.close();
+}
+
+//==============================================================================
+// RT-7 LIVE acceptance — the OWNER scenario on real hardware: switch the input
+// card between a narrow one (FiFine, 2 in) and a wide one (Loopback, 32 in) and
+// print the "device -> track -> layout -> applied device -> problem" table.
+//
+// Opt-in (`RRS_RT7_LIVE=1`) because it needs both real ALSA cards; the switch goes
+// through `AudioEngine::applyInputDeviceSetup` (the same call the headless
+// self-test and the device panel use) and the re-apply is left to the RT-7 timer
+// gate, so this exercises the shipping path.
+TEST_CASE ("input routing: LIVE card switch FiFine <-> Loopback (RT-7, RRS_RT7_LIVE=1)")
+{
+    if (juce::SystemStats::getEnvironmentVariable ("RRS_RT7_LIVE", juce::String()) != "1")
+        return;   // needs the real cards + a free ALSA `hw`
+
+    juce::ScopedJuceInitialiser_GUI juceInit;
+
+    auto dir = scratchDirectory ("rt7-live");
+
+    AudioEngine audio; // real devices (no headless flag)
+
+    const auto inputNames = audio.getInputDeviceNames();
+    std::cout << "[rt7-live] input devices:\n";
+
+    for (const auto& n : inputNames)
+        std::cout << "[rt7-live]   - " << n << "\n";
+
+    auto findName = [&inputNames] (const juce::String& needle) -> juce::String
+    {
+        for (const auto& n : inputNames)
+            if (n.containsIgnoreCase (needle))
+                return n;
+
+        return {};
+    };
+
+    const auto narrowNeedle = juce::SystemStats::getEnvironmentVariable ("RRS_RT7_NARROW", "fifine");
+    const auto wideNeedle = juce::SystemStats::getEnvironmentVariable ("RRS_RT7_WIDE", "Loopback");
+
+    auto narrow = findName (narrowNeedle);
+
+    if (narrow.isEmpty())
+        narrow = findName ("ALC897 Analog"); // the built-in 2-in codec as a fallback
+
+    const auto wide = findName (wideNeedle);
+
+    std::cout << "[rt7-live] narrow=\"" << narrow << "\" wide=\"" << wide << "\"\n";
+    REQUIRE (narrow.isNotEmpty());
+    REQUIRE (wide.isNotEmpty());
+
+    // Restore the machine's previous input device when the check is done.
+    const auto originalInput = audio.getCurrentInputDeviceName();
+
+    const auto open = [&audio] (const juce::String& name)
+    {
+        const auto error = audio.applyInputDeviceSetup (name);
+        std::cout << "[rt7-live] open \"" << name << "\" -> "
+                  << (error.isEmpty() ? juce::String ("ok") : error)
+                  << " (active in = " << audio.getNumActiveInputChannels() << ")\n";
+        return error.isEmpty();
+    };
+
+    const auto pump = [&audio] (int ms)
+    {
+        for (int i = 0; i < juce::jmax (1, ms / 10); ++i)
+        {
+            audio.deviceManager().dispatchPendingUpdates();
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+        }
+    };
+
+    REQUIRE (open (narrow));
+
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Rt7Live.tracktionedit")));
+
+    for (int i = 0; i < 200; ++i)
+    {
+        audio.deviceManager().dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+        if (session.isInputConfigured())
+            break;
+
+        session.reconfigureInputs();
+    }
+
+    REQUIRE (session.getNumAudioTracks() >= 1);
+
+    // A stereo pair + a mono + extras so both directions of the switch are visible.
+    for (int i = 0; i < 3; ++i)
+        REQUIRE (session.addAudioTrack() >= 0);
+
+    const auto idxs = session.getInputTrackIndices();
+    REQUIRE (idxs.size() >= 4);
+
+    REQUIRE (session.setTrackInputMapping (idxs[1], InputMapping { 2, 1, InputLayout::Mono }));
+    REQUIRE (session.setTrackInputMapping (idxs[2], InputMapping { 3, 1, InputLayout::Mono }));
+    REQUIRE (session.setTrackInputMapping (idxs[3], InputMapping { 0, 1, InputLayout::None }));
+    REQUIRE (session.setTrackInputMapping (idxs[0], InputMapping { 0, 2, InputLayout::Stereo }));
+
+    const auto printTable = [&] (const char* label)
+    {
+        std::cout << "[rt7-live] === " << label << " (active in = "
+                  << audio.getNumActiveInputChannels()
+                  << ", applies = " << session.getInputApplyCount() << ") ===\n";
+
+        for (auto index : session.getInputTrackIndices())
+        {
+            const auto m = session.getTrackInputMapping (index);
+            const auto problem = session.getTrackInputProblem (index);
+
+            std::cout << "[rt7-live] track=" << index
+                      << " \"" << session.getTrackName (index) << "\""
+                      << " layout=" << inputLayoutToString (m.layout)
+                      << " first=" << m.firstChannel
+                      << " need=" << mappingChannelSpan (m, juce::jmax (0, audio.getNumActiveInputChannels()))
+                      << " applied=" << session.getAppliedInputDeviceIndex (index)
+                      << " problem=\"" << problem << "\"\n";
+        }
+    };
+
+    pump (400);
+    printTable ("NARROW card (FiFine 2 in)");
+
+    // Switch to the wide card: same call the device panel makes; the RT-7 timer
+    // gate must notice and re-apply on its own.
+    REQUIRE (open (wide));
+    pump (1500);
+    printTable ("WIDE card (Loopback)");
+
+    // And back to the narrow one.
+    REQUIRE (open (narrow));
+    pump (1500);
+    printTable ("NARROW again (FiFine)");
+
+    session.close();
+
+    if (originalInput.isNotEmpty())
+        audio.applyInputDeviceSetup (originalInput); // leave the box as we found it
+}
+
+//==============================================================================
 // RT-2b #2/#4/#6/#7: single authoritative predicate + guard rails.
 TEST_CASE ("input problem: single predicate and guards (RT-2b)")
 {

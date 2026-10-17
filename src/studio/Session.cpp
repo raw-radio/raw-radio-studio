@@ -884,7 +884,15 @@ namespace rrs
 
         inputsConfigured = false;
         configureTracks();
-        edit->restartPlayback();
+
+        // RT-7 follow-up (recording-guard hole): NEVER restart playback while a take
+        // is rolling — a restart can disturb/drop it. `configureTracks` already
+        // refuses mid-take, so the new mapping stays pending (`inputsConfigured ==
+        // false`) and the timer's full pass applies it right after the transport
+        // stops, i.e. the mapping is remembered but nothing is mutated now.
+        if (! isRecording())
+            edit->restartPlayback();
+
         save();
         sendChangeMessage();
         return true;
@@ -1110,7 +1118,11 @@ namespace rrs
         appliedTrackDevice.clear();
         appliedSpanDevice.clear();
         appliedSpanRepTrack.clear();
+
+        // RT-7: invalidate the change signature until this pass records a new one.
+        // `inputApplyCount` is deliberately NOT reset here (it is cumulative).
         appliedWaveDeviceCount = -1;
+        appliedInputChannelCount = -1;
 
         // Nothing to route until a device is open (headless / interface opening):
         // not an error, keep retrying (timerCallback).
@@ -1302,7 +1314,13 @@ namespace rrs
             anyAssigned = true;
         }
 
+        // RT-7: record the input "signature" of this pass so the timer can tell a
+        // REAL device change (device list or ACTIVE INPUT CHANNEL COUNT) from a
+        // steady state. Both parts matter: switching cards can keep the same number
+        // of WaveInputDevices while the channel count changes (2 -> 8 -> 2), and
+        // only the channel count drives off-device / "No input" resolution.
         appliedWaveDeviceCount = dm.getNumWaveInDevices();
+        appliedInputChannelCount = juce::jmax (0, audio.getNumActiveInputChannels());
 
         // An empty device list (headless tests / no interface) is not an error.
         if (! anyAssigned)
@@ -1317,6 +1335,7 @@ namespace rrs
         edit->restartPlayback();
 
         inputsConfigured = true;
+        ++inputApplyCount;
         ensureMeterAttached();
 
         // A channel missing/occupied is a real, user-facing error (RT-2b);
@@ -4728,6 +4747,7 @@ namespace rrs
         appliedSpanRepTrack.clear();
         inputTrackProblems.clear();
         appliedWaveDeviceCount = -1;
+        appliedInputChannelCount = -1;
         splitRequestAttempts = 0;
 
         // The session is gone: clear the sentinel so a crash while empty does not
@@ -5219,19 +5239,32 @@ namespace rrs
             // track on c+1, so one track's config could be overwritten with
             // another's. Use the APPLIED layout (device -> owner track) instead.
             //
+            // RT-7: CHANGE-GATED full re-apply. A real device change — the wave
+            // device list was rebuilt, OR the ACTIVE INPUT CHANNEL COUNT changed
+            // (a different card: 2 -> 8 -> 2 with the same device count) — drops
+            // `inputsConfigured`, so the next tick re-runs the whole pass
+            // (planner + channel configs + targets). When nothing changed, the
+            // gate stays shut and no work/save/restartPlayback happens at all —
+            // that is what keeps this from storming every tick. The signature is
+            // refreshed by the successful pass itself (see configureTracks).
+            //
             // Never mutate anything while a take is rolling (the take would be
-            // lost). A device rebuild is detected and triggers a full
-            // re-configure on the next tick (the full re-apply is RT-7).
-            const bool deviceListChanged =
-                audio.deviceManager().getNumWaveInDevices() != appliedWaveDeviceCount;
+            // lost): `configureTracks` returns early on `isRecording()`, so the
+            // change stays pending and is caught up right after the transport
+            // stops (`inputsConfigured` stays false meanwhile).
+            const bool inputChanged =
+                inputSignatureChanged (audio.deviceManager().getNumWaveInDevices(),
+                                       juce::jmax (0, audio.getNumActiveInputChannels()),
+                                       appliedWaveDeviceCount,
+                                       appliedInputChannelCount);
 
-            if (deviceListChanged)
+            if (inputChanged)
                 inputsConfigured = false;
 
             // NOTE: this is a plain guard, NOT a `return` — the rest of
             // timerCallback (FR-REC-8 header finalise, autosave, notifications)
             // must keep running during a take.
-            if (! isRecording() && ! deviceListChanged)
+            if (! isRecording() && ! inputChanged)
             {
                 bool changed = false;
                 const auto hardwareChannels = juce::jmax (1, audio.getNumActiveInputChannels());

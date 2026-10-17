@@ -199,6 +199,12 @@ allocated per **span**, so sharing tracks share one `WaveInputDevice`.
   `mappedChannelsFor`. This is **unreachable via `configureTracks`** (the planner flags the span as
   off-device and the track gets no input/config), but is documented so the fallback is not mistaken
   for the RT-5 mono path.
+- **A failing input pass retries at the timer rate (RT-7, pre-existing, accepted).** When
+  `configureTracks` cannot succeed — no device open, or every input track unassigned (`None`) — it
+  returns false, so `inputsConfigured` stays false and the 10 Hz timer calls it again on every tick.
+  Nothing is mutated, saved or restarted in that state (the work lives behind the success path, which
+  the `getInputApplyCount()` diagnostic gates and a test pins), so the cost is a planner run on the
+  message thread; left as-is rather than adding a back-off.
 
 **Delivered (RT-6 / RT-8 / RT-9).**
 
@@ -225,6 +231,36 @@ allocated per **span**, so sharing tracks share one `WaveInputDevice`.
   modifier, so there is no clash) and on the existing action-row button — all through one
   `MainComponent::deleteTrackAt`. Any track may be removed (middle, unarmed, …) except the last and
   the one whose take is rolling (`Session::removeAudioTrack` guards `isTrackRecording`).
+- **RT-7 — full, change-gated re-apply after a device change.** The timer compares a two-part input
+  **signature** — the wave-device count **and** the active input-channel count
+  (`appliedWaveDeviceCount` / `appliedInputChannelCount` via the pure
+  `rrs::inputSignatureChanged()`, `Session::timerCallback`). A real change drops `inputsConfigured`,
+  so the next tick re-runs the whole pass (planner + channel configs + targets) in `configureTracks`,
+  which records the new signature on success and bumps the `getInputApplyCount()` diagnostic. Both
+  halves are needed and both are pinned by a unit test: a card can keep the same number of
+  `WaveInputDevice`s while exposing a different number of active channels (2 → 8 → 2), which the
+  device count alone would miss. When the signature is unchanged the gate stays shut: no planner run,
+  no `setAllWaveInputsToNumChannels`, no `save`/`restartPlayback` (`getInputApplyCount()` is flat over
+  ~15 steady ticks; one switch = one re-apply; several switches during one take collapse into one
+  apply after the stop). While a take is rolling `configureTracks` returns early, so the change stays
+  pending and lands right after the transport stops.
+- **RT-7 guard family.** `setTrackInputMapping` no longer calls `restartPlayback()` while a take is
+  rolling (the mapping is written and the apply is deferred like any other device change);
+  `configureTracks` itself already refuses mid-take. **Known gap (documented, deferred):** other
+  mutation paths (`addMidiTrack`, `convertTrackToMidi`, `importAudioFile`, `normaliseTake`, clip
+  edits, plugin inserts) still call `restartPlayback()` unconditionally, so a take will not be
+  protected if one of those is invoked mid-record — outside RT-7's scope, to be covered by the
+  hardening pass (Epic 7).
+- **Reproduce the live device-switch check.** The env-gated integration case `input routing: LIVE
+  card switch FiFine <-> Loopback (RT-7, RRS_RT7_LIVE=1)` performs exactly the owner scenario on real
+  hardware: it opens a narrow card (default `RRS_RT7_NARROW=fifine`, falling back to the built-in
+  2-in codec), switches to a wide one (`RRS_RT7_WIDE=Loopback`), and prints the
+  `track / layout / first / need / applied device / problem` table after each switch (run the
+  integration test binary with `RRS_RT7_LIVE=1`). Measured: on the wide card the two off-device monos
+  gained channels 2/3 while the stereo pair kept its pair config; back on the narrow card they became
+  off-device again with a concrete reason and the unassigned track stayed unassigned. Known
+  limitation (engine-level, not this code): opening a physically different card mid-take tears the
+  audio device down, which aborts the take; the app's startup recovery still finds the orphaned file.
 
 ### Commit & review sequence
 
@@ -263,7 +299,7 @@ review** (recovery/import path). The rest are ordinary UI reviews.
 | **`nullptr` fallback removal (RT-2)** | A caller that assumed a device now dereferences null → crash / no monitoring | Compile + unit + null-audit of the four call sites; live monitoring still works | Revert 2 (with 3) |
 | **1-channel mono WAV (RT-5)** | Engine/recovery/import mishandle a mono take; old stereo mappings change meaning | Live mono record → file channel count == 1; recovery/import integration | Revert 6 (keep the mapping change, drop the file-format change) |
 | **Regrouping mid-take (RT-3/RT-7)** | A device-list rebuild during recording stops/skips the take (the EPIC 7 flake's failure mode) | Guard: configure/timer never regroup while `isRecording()`; live: start a take, change nothing, confirm the file is complete | Revert 3/8 |
-| **Timer re-apply thrash (RT-7)** | `restartPlayback()` every tick → dropouts | Change-gate (only when the live config differs); `git grep` for `restartPlayback` on the tick path | Revert 8 |
+| **Timer re-apply thrash (RT-7)** | `restartPlayback()` every tick → dropouts | **Closed**: the gate compares the device-count + active-channel signature, so a steady state does no work at all (`getInputApplyCount()` is flat over ~15 ticks; one switch = one apply) — pinned by the `input signature` unit test and the no-storm integration test | Revert 8 |
 | **Normalisation hides level (WV-1/2)** | Clipping or a loud-looking near-silent take; dB confusion | Pure-math tests (unity, −∞, peaks); a screenshot review by the owner | Revert 11 |
 | **Live synthetic clip duplication (LW)** | Two clips drawn for one take at stop | De-dupe by `sourceFile`; live check: the take appears once when the transport stops | Revert 14 |
 | **LV2 default-on (LV-1)** | Wider scan surface; `.dmg`/`.deb` format set changes; a broken bundle affects the scan | Live scan + browser screenshot; CI build (formats present in `getHostedFormatNames`) | Revert 13 |

@@ -398,6 +398,24 @@ namespace rrs
             layout, or -1 when it has no input (RT-3). Read-only diagnostic. */
         int getAppliedInputDeviceIndex (int trackIndex) const;
 
+        /** RT-7 (read-only diagnostic): how many times a full input apply has
+            COMPLETED since the session was constructed. It counts every successful
+            pass — a device change noticed by the timer AND the direct mutations that
+            re-plan eagerly (`setTrackInputMapping`, `addAudioTrack`,
+            `removeAudioTrack`, `reconfigureInputs`, session open/create) — so a
+            steady device state leaves it flat, while a device change adds to it.
+            It never grows for a pass that FAILS (no device / every track `None`). */
+        int getInputApplyCount() const noexcept                 { return inputApplyCount; }
+
+        /** RT-7 (read-only diagnostic): true once a successful apply has recorded an
+            input-device signature. False before the first apply and after
+            `close()` (both signatures are the `-1` "unknown" sentinel, so the next
+            timer tick sees a change and re-applies). */
+        bool hasAppliedInputSignature() const noexcept
+        {
+            return appliedWaveDeviceCount >= 0 && appliedInputChannelCount >= 0;
+        }
+
         /** RT-6: would assigning `mapping` to `trackIndex` be refused because a
             STEREO pair's span would take a channel owned by a DIFFERENT span? (An
             identical span may be shared — RT-4; a mono span overlapping an owned
@@ -1064,6 +1082,16 @@ namespace rrs
         std::map<std::pair<int, int>, int> appliedSpanRepTrack;  ///< span -> representative track
         std::map<int, juce::String> inputTrackProblems; ///< track index -> reason (absent = ok)
         int appliedWaveDeviceCount = -1;
+        /** RT-7: the ACTIVE INPUT CHANNEL COUNT of the last successful apply — the
+            second half of the change signature. Switching cards can keep the same
+            number of WaveInputDevices while the channel count changes (2 -> 8 -> 2),
+            and only the channel count drives off-device / "No input" resolution. */
+        int appliedInputChannelCount = -1;
+        /** RT-7 diagnostic: how many times a full input apply has COMPLETED (the
+            successful end of `configureTracks`). Used by the no-storm test — it must
+            not grow while the input signature is unchanged. Cumulative, never reset
+            by a reconfigure. */
+        int inputApplyCount = 0;
         /** Bounded retries for the one-per-channel device split request. */
         int splitRequestAttempts = 0;
         /** User's monitoring preference. Unlike the live device state, this
