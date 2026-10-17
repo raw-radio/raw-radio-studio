@@ -25,6 +25,7 @@
 #include "ui/ClipWaveform.h"
 #include "ui/DevicePanel.h"
 #include "ui/InputMeter.h"
+#include "ui/LiveTakeThumbnails.h"
 #include "ui/MeterBallistics.h"
 #include "ui/MixerPanel.h"
 #include "ui/PianoRollPanel.h"
@@ -438,11 +439,11 @@ namespace rrs
         juce::uint32 thumbnailClock = 0;
         double lastClipPruneMs = 0.0;
 
-        /** Keeps the engine's live recording thumbnail alive while it is drawn
-            (the engine writes its peaks on the audio thread — RT-safe). Reused
-            across frames; reset when recording stops. */
-        tracktion::RecordingThumbnailManager::Thumbnail::Ptr liveRecordingThumbnail;
-        juce::File liveRecordingFile;
+        /** LW-2/M1: one cached live-recording thumbnail per TAKE FILE (see
+            `ui/LiveTakeThumbnails.h` — the cache owns the churn/lookup rules), so
+            painting several recording tracks in one frame never re-fetches a file we
+            already hold. Cleared when recording stops / the session changes. */
+        LiveTakeThumbnails liveThumbnails;
 
         /** Lane rectangles in `trackLaneArea`, engine-track order (FR-REC-2:
             click a lane to arm/disarm it). Computed with `laneScrollOffsetY` and

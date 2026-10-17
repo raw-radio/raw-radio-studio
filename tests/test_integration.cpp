@@ -59,6 +59,7 @@ int main (int argc, char** argv)
 #include "ui/BrandColours.h"
 #include "ui/BrandFonts.h"
 #include "ui/ClipWaveformDraw.h"
+#include "ui/LiveTakeThumbnails.h"
 #include "ui/InputMenuModel.h"
 #include "ui/PluginBrowser.h"
 #include "ui/TrackLaneLayout.h"
@@ -7244,7 +7245,8 @@ namespace
     juce::Image wvRenderBands (juce::AudioThumbnailBase& thumb, int numChannels, double fileLength,
                                int width, int height,
                                rrs::clipwave::WaveformScale scale = rrs::clipwave::WaveformScale::linear,
-                               bool normalise = false)
+                               bool normalise = false,
+                               double startSeconds = 0.0, double endSeconds = -1.0)
     {
         juce::Image image (juce::Image::ARGB, width, height, true);
         juce::Graphics g (image);
@@ -7255,10 +7257,41 @@ namespace
         params.thumb = &thumb;
         params.numChannels = numChannels;
         params.fileLength = fileLength;
-        params.endSeconds = fileLength;
+        params.startSeconds = startSeconds;
+        params.endSeconds = endSeconds >= 0.0 ? endSeconds : fileLength;
         params.colour = juce::Colours::red;
         params.scale = scale;
         params.normalise = normalise;
+        params.lineColour = juce::Colours::white.withAlpha (rrs::clipwave::centreLineAlpha);
+
+        rrs::clipwave::drawClipWaveform (g, params);
+        return image;
+    }
+
+
+    /** One frame of a LIVE take, laid out exactly as the arrangement does it: a lane
+        of `laneSeconds` mapped onto `width` px, with the take's own rect spanning
+        [start, end] of that lane. Used by the LW-2 growth test and by the screenshot
+        fixture, so the asserted pixels and the published PNGs are the same picture. */
+    juce::Image wvRenderLiveFrame (juce::AudioThumbnailBase& thumb, double recordedLength,
+                                   double start, double end, double laneSeconds,
+                                   int width, int height)
+    {
+        const auto x1 = (int) std::llround (width * (start / laneSeconds));
+        const auto x2 = (int) std::llround (width * (end / laneSeconds));
+
+        juce::Image image (juce::Image::ARGB, width, height, true);
+        juce::Graphics g (image);
+        g.fillAll (juce::Colours::black);
+
+        rrs::clipwave::BandDrawParams params;
+        params.clipRect = { x1, 0, juce::jmax (3, x2 - x1), height };
+        params.thumb = &thumb;
+        params.numChannels = 1;
+        params.fileLength = recordedLength;
+        params.startSeconds = start;
+        params.endSeconds = end;
+        params.colour = juce::Colours::red;
         params.lineColour = juce::Colours::white.withAlpha (rrs::clipwave::centreLineAlpha);
 
         rrs::clipwave::drawClipWaveform (g, params);
@@ -7625,6 +7658,230 @@ TEST_CASE ("clip waveform view gain is 1/max(peak) on a real file and reaches th
 }
 
 //==============================================================================
+// LW-2/M1: the live-take thumbnail cache holds ONE Ptr per take file and keeps
+// returning the SAME object — the property that stops `getThumbnailFor` from
+// creating/destroying a Thumbnail while a take is being drawn.
+//
+// Why this is a cache-level test and not a `MainComponent::paint` test (the review
+// asked for the strongest available evidence): `MainComponent` cannot be built in
+// the test binary without side effects that the review's own rules forbid — its
+// default ctor constructs `AudioEngine` (which OPENS the machine's audio device and
+// reads the real profile) and calls `loadSettings()`/`runStartupRecovery()`, which
+// read and WRITE the developer's `Settings.xml` and may create/open a session under
+// the real `Projects/` directory; and `MainComponent.cpp` is not part of the test
+// target (only `PluginBrowser`/`BrandButton`/`IconCache`/`BrandFonts` are). The
+// paint-side *decisions*, however, are covered: `clipwave::liveTakeRect` /
+// `liveTakeVisible` are shared verbatim with paint() and unit-tested, the live clip
+// itself is asserted in the LW-1 case, and the growth pixels in the LW-2 case.
+TEST_CASE ("the live-take thumbnail cache reuses one thumbnail per take file (LW-2/M1)")
+{
+    AudioEngine audio (false);   // no devices: the cache only needs the engine
+    LiveTakeThumbnails cache;
+
+    const auto dir = scratchDirectory ("lw-thumbs");
+    const auto takeA = dir.getChildFile ("take-a.wav");
+    const auto takeB = dir.getChildFile ("take-b.wav");
+
+    CHECK (cache.size() == 0);
+    CHECK (cache.get (audio.engine(), juce::File()) == nullptr);   // empty file -> none
+    CHECK (cache.size() == 0);
+
+    // First use creates and caches; the SAME object comes back afterwards — that
+    // identity is what a per-frame re-fetch would destroy (churn).
+    auto* a1 = cache.get (audio.engine(), takeA);
+    REQUIRE (a1 != nullptr);
+    CHECK (cache.size() == 1);
+    CHECK (cache.get (audio.engine(), takeA) == a1);
+    CHECK (cache.get (audio.engine(), takeA) == a1);
+
+    // A SECOND take file while the first is still being drawn keeps both entries:
+    // interleaving the two (as `paint` does for two recording tracks) must not
+    // re-create either, and must not grow the cache beyond the file count.
+    auto* b1 = cache.get (audio.engine(), takeB);
+    REQUIRE (b1 != nullptr);
+    CHECK (b1 != a1);
+    CHECK (cache.size() == 2);
+
+    for (int frame = 0; frame < 20; ++frame)
+    {
+        CHECK (cache.get (audio.engine(), takeA) == a1);
+        CHECK (cache.get (audio.engine(), takeB) == b1);
+    }
+
+    CHECK (cache.size() == 2);
+
+    // The engine knows these files (they are the recording pool), and the objects
+    // really are different thumbnails.
+    CHECK (a1->file == takeA);
+    CHECK (b1->file == takeB);
+
+    // Stopping the recording releases everything (the component calls `clear()`).
+    cache.clear();
+    CHECK (cache.size() == 0);
+
+    dir.deleteRecursively();
+}
+
+//==============================================================================
+// LW-2: the growing LIVE take draws further right as the take advances. The stub
+// thumbnail stands in for the engine's recording thumbnail (signal only for the
+// source time already recorded) and each frame is laid out exactly as the
+// arrangement does it: a lane of `laneSeconds` mapped onto the image width, with the
+// take's rect spanning [start, end]. As `end` grows the rect — and the ink — must
+// extend further right, and must never paint beyond what has been recorded.
+TEST_CASE ("the growing live take draws further right as it records (LW-2)")
+{
+    using namespace rrs::clipwave;
+
+    constexpr double laneSeconds = 10.0;   // the visible timeline window
+    constexpr int width = 400;
+    constexpr int height = 60;
+    double recorded = 2.0;                 // seconds actually written so far
+
+    WvStubThumbnail growing (1, laneSeconds, [&recorded] (int, double t0, double)
+                             { return t0 < recorded ? 0.8f : 0.0f; });
+
+    const auto mid = rrs::clipwave::wavePadY + (height - 2 * rrs::clipwave::wavePadY) / 2;
+
+    // Frame 1: 2 s recorded -> the take's rect spans 0..20% of the lane.
+    const auto frame1 = wvRenderLiveFrame (growing, recorded, 0.0, 2.0, laneSeconds, width, height);
+
+    CHECK (wvInkIn (frame1, { 0, 0, 60, height }, { mid }) > 0);     // ink inside the take
+    CHECK (wvInkIn (frame1, { 160, 0, 240, height }, { mid }) == 0); // nothing beyond it
+
+    // Frame 2: the take has grown to 6 s -> the rect (and the ink) reaches 60%.
+    recorded = 6.0;
+    const auto frame2 = wvRenderLiveFrame (growing, recorded, 0.0, 6.0, laneSeconds, width, height);
+
+    INFO ("frame1 (2 s):\n" << wvAsciiMap (frame1, { 0, 0, width, height }));
+    INFO ("frame2 (6 s):\n" << wvAsciiMap (frame2, { 0, 0, width, height }));
+
+    CHECK (wvInkIn (frame2, { 200, 0, 30, height }, { mid }) > 0);   // ink reached 6 s
+    CHECK (wvInkIn (frame2, { 380, 0, 20, height }, { mid }) == 0);  // nothing at 10 s
+    // ... and the second frame has strictly more ink than the first (it grew).
+    CHECK (wvInkIn (frame2, { 0, 0, width, height }, { mid })
+           > wvInkIn (frame1, { 0, 0, width, height }, { mid }));
+}
+
+// LW-1: the live recording clip comes from the SESSION, not from `getClips()` —
+// because the engine only inserts the clip into the Edit when the recording stops.
+// During a hosted take the synthetic clip is reported, its `end` GROWS with the
+// transport, and the moment the take stops it disappears while exactly one real clip
+// referencing the same file appears (so the two can never be drawn twice).
+TEST_CASE ("the live recording clip grows during the take and yields to the real clip (LW-1)")
+{
+    auto dir = scratchDirectory ("lw-live-clip");
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("LwLive.tracktionedit")));
+
+    te::HostedAudioDeviceInterface::Parameters params;
+    params.sampleRate = 48000.0;
+    params.blockSize = 256;
+    params.inputChannels = 1;
+    params.outputChannels = 2;
+    auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+
+    for (int i = 0; i < 200; ++i)
+    {
+        audio.deviceManager().dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+        if (session.isInputConfigured())
+            break;
+
+        session.reconfigureInputs();
+    }
+
+    REQUIRE (audio.deviceManager().getNumWaveInDevices() > 0);
+
+    // Nothing live while nothing is recording.
+    CHECK_FALSE (session.getLiveRecordingClip (0).has_value());
+
+    REQUIRE (session.setTrackArmed (0, true));
+    session.getEdit()->getTransport().setPosition (te::TimePosition {});
+    REQUIRE (session.record());
+
+    juce::AudioBuffer<float> input (1, 256);
+    juce::FloatVectorOperations::fill (input.getWritePointer (0), 0.5f, 256);
+
+    // Feed audio AND run the message loop between blocks: the transport POSITION is
+    // published by TransportControl's 50 Hz message-thread timer (it reads the
+    // playhead the audio callback advances), exactly as in the running app. Without
+    // pumping, the position stays at its start value and `end` would not grow.
+    const auto feed = [&] (int blocks)
+    {
+        for (int block = 0; block < blocks; ++block)
+        {
+            player->process (input);
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (12);
+        }
+    };
+
+    feed (30);
+
+    REQUIRE (session.isRecording());
+
+    const auto live1 = session.getLiveRecordingClip (0);
+    REQUIRE (live1.has_value());
+
+    INFO ("frame 1: transport=" << session.getPositionSeconds()
+          << " punchIn/start=" << live1->startSeconds
+          << " end=" << live1->endSeconds
+          << " recording=" << (int) session.isRecording()
+          << " takeBytes=" << live1->sourceFile.getSize());
+    CHECK (live1->isWave);
+    CHECK (live1->clipIndex == -1);                       // no clip in the Edit yet
+    CHECK (live1->trackIndex == 0);
+    CHECK (live1->sourceFile.getFullPathName().isNotEmpty());
+    CHECK (live1->startSeconds >= 0.0);
+    CHECK (live1->endSeconds >= live1->startSeconds);
+    CHECK (live1->lengthSeconds == doctest::Approx (live1->endSeconds - live1->startSeconds));
+    CHECK (live1->offsetSeconds == doctest::Approx (0.0));
+
+    // The engine really has not inserted the clip: that is WHY this API exists.
+    CHECK (session.getClips (0).empty());
+
+    // The take advances -> `end` grows, the file stays the same.
+    feed (120);
+
+    const auto live2 = session.getLiveRecordingClip (0);
+    REQUIRE (live2.has_value());
+    INFO ("frame 2: transport=" << session.getPositionSeconds()
+          << " live end " << live1->endSeconds << " -> " << live2->endSeconds
+          << " takeBytes=" << live2->sourceFile.getSize());
+    CHECK (live2->endSeconds > live1->endSeconds);
+    CHECK (live2->sourceFile == live1->sourceFile);
+    CHECK (session.getClips (0).empty());
+
+    session.stop();
+
+    for (int i = 0; i < 300; ++i)
+    {
+        session.getEdit()->dispatchPendingUpdatesSynchronously();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (20);
+    }
+
+    session.setTrackArmed (0, false);
+    session.setMonitoringEnabled (false);
+
+    // After the stop the synthetic clip is gone and the REAL clip is there — exactly
+    // one, referencing the same file. The two states are mutually exclusive, which is
+    // what makes the paint-time de-duplication (by sourceFile) airtight.
+    CHECK_FALSE (session.getLiveRecordingClip (0).has_value());
+
+    const auto clips = session.getClips (0);
+    REQUIRE (clips.size() == 1);
+    CHECK (clips[0].isWave);
+    CHECK (clips[0].sourceFile == live1->sourceFile);
+    CHECK (clips[0].startSeconds == doctest::Approx (live1->startSeconds));
+    CHECK (clips[0].endSeconds >= live2->endSeconds - 0.1);
+
+    session.close();
+}
+
+//==============================================================================
 // WV screenshot fixture — OPT-IN TOOLING, not a test: with no env vars set it is a
 // complete no-op (CI is unaffected, nothing is written anywhere).
 //
@@ -7873,6 +8130,66 @@ TEST_CASE ("WV screenshot fixture (RRS_WV_FIXTURE=<dir>)")
                           rrs::clipwave::defaultWaveformScale, rrs::clipwave::defaultWaveformNormalise),
                    rrs::brand::clip);
     });
+
+    // 4) LW-1/LW-2: the take GROWS during recording. The engine's own growing
+    //    recording thumbnail is modelled by a stub that returns signal only for the
+    //    source time already written, and each frame is laid out by the same
+    //    `wvRenderLiveFrame` the LW-2 assertions use: the lane spans 10 s, the take
+    //    occupies [0, end]. Two frames show the wave extending to the right; the
+    //    third shows the SAME take after the stop as a real clip (one clip, no
+    //    double draw — the live clip is gone and `getClips()` holds exactly one).
+    {
+        constexpr double laneSeconds = 10.0;
+        double recorded = 2.0;
+
+        // A slowly swelling envelope inside the written part, so the frames show the
+        // wave DRAWING ITSELF (a constant peak would fill the rect solidly).
+        WvStubThumbnail growing (1, laneSeconds, [&recorded] (int, double t0, double)
+                                 {
+                                     if (t0 >= recorded)
+                                         return 0.0f;
+
+                                     const auto env = 0.30f + 0.70f * (float) std::abs (
+                                         std::sin (juce::MathConstants<double>::pi * t0 / 2.5));
+                                     return env;
+                                 });
+
+        const auto liveFrame = [&] (juce::Rectangle<int> area, const juce::String& label, double end)
+        {
+            const auto frame = wvRenderLiveFrame (growing, recorded, 0.0, end, laneSeconds,
+                                                  area.getWidth(), area.getHeight());
+            return std::make_pair (frame, label);
+        };
+
+        // First frame: 2 s written.
+        const auto frame2s = liveFrame ({ 0, 0, 900, 60 }, "live take, 2 s recorded", 2.0);
+        recorded = 6.0;
+        const auto frame6s = liveFrame ({ 0, 0, 900, 60 }, "live take, 6 s recorded", 6.0);
+
+        render ("lw-live-grows.png", 940, 300, [&] (juce::Graphics& g)
+        {
+            const auto drawFrame = [&] (juce::Rectangle<int> area, const juce::Image& frame,
+                                        const juce::String& label)
+            {
+                g.setColour (rrs::brand::clip);
+                g.fillRoundedRectangle (area.toFloat(), 3.0f);
+                g.setColour (rrs::brand::textSecondary);
+                g.setFont (rrs::brand::uiRegular (12.0f));
+                g.drawText (label, area.reduced (6, 2), juce::Justification::topLeft);
+                g.drawImageAt (frame, area.getX(), area.getY() + 18);
+            };
+
+            // The frames are drawn on their own black background inside the panel.
+            drawFrame ({ 10, 10, 920, 84 }, frame2s.first,
+                       "live take during recording  (2 s written of a 10 s lane)");
+            drawFrame ({ 10, 110, 920, 84 }, frame6s.first,
+                       "the SAME take later       (6 s written -> the wave grew to the right)");
+            g.setColour (rrs::brand::textTertiary);
+            g.setFont (rrs::brand::uiRegular (11.0f));
+            g.drawText ("after the stop the engine inserts ONE real clip for this file; the live clip is gone (no double draw)",
+                        juce::Rectangle<int> (10, 205, 920, 20), juce::Justification::centredLeft);
+        });
+    }
 
     std::cout << "[wv-fixture] thumbnails loaded from real WAV files" << std::endl;
 

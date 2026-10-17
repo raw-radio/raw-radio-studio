@@ -14,6 +14,7 @@
 
 #include <atomic>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "AudioEngine.h"
@@ -281,12 +282,41 @@ namespace rrs
         std::vector<ClipInfo> getClips (int trackIndex) const;
         bool getClipInfo (int trackIndex, int clipIndex, ClipInfo&) const;
 
-        /** The file the given track is recording to RIGHT NOW, or an empty File
-            when the track is not recording (Epic 8 phase 2). Used to tell which
-            specific clip is the live take — a clip is "live" only when its source
-            file equals this one, so pre-existing clips on an armed track are not
-            mistaken for the take. */
-        juce::File getActiveRecordingFileForTrack (int trackIndex) const;
+        // (The former `getActiveRecordingFileForTrack` was REMOVED with LW-1: the
+        // live take is now described by `getLiveRecordingClip` below, which returns
+        // the same recording file PLUS the take's geometry, and is the single source
+        // the UI reads. Kept as a note so the removal is not mistaken for a loss.)
+
+        /** LW-1: the take being written on `trackIndex` RIGHT NOW, or `nullopt` when
+            the track is not recording.
+
+            The engine only inserts a clip into the Edit when the recording STOPS
+            (`WaveInputDevice::applyLastRecording` → `insertWaveClip`), so during a
+            take `getClips()` is empty and the arrangement used to have nothing to
+            draw — while the engine is already maintaining a growing recording
+            thumbnail. This returns the missing clip GEOMETRY so the UI can draw the
+            growing take:
+
+              * `startSeconds`  = the device's punch-in time for the target — the very
+                                  value the real clip is stamped with at stop.
+                                  (`InputDeviceInstance::getPunchInTime` falls back to
+                                  the transport start when there is no punch range;
+                                  that fallback is an engine-side safety net that a
+                                  live take — which by definition has a recording
+                                  context — does not hit.),
+              * `endSeconds`    = the CURRENT transport position (never before
+                                  `startSeconds`),
+              * `lengthSeconds` = `endSeconds - startSeconds`, `offsetSeconds` = 0
+                                  (a fresh take starts at the file's beginning),
+              * `sourceFile`    = the file the device is writing — the same file the
+                                  real clip will reference, so the live thumbnail and
+                                  the post-stop de-duplication both line up,
+              * `clipIndex`     = -1 (no clip exists in the Edit yet),
+              * `isWave`        = true.
+
+            Message thread only (the same thread that owns the transport); nothing
+            here runs on the audio thread. */
+        std::optional<ClipInfo> getLiveRecordingClip (int trackIndex) const;
 
         /** Moves a clip's start to `newStartSeconds`, keeping its length and the
             source content under the clip (offset) unchanged. */

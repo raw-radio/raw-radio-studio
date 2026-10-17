@@ -12,6 +12,7 @@
 #include "ui/InputMenu.h"
 #include "ui/TrackLaneLayout.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdlib>
@@ -1643,9 +1644,9 @@ namespace rrs
         selectClip (-1, -1);
 
         // Epic 8 phase 2: build the clip-thumbnail cache for the new session's
-        // clips now (off the paint path).
-        liveRecordingThumbnail = nullptr;
-        liveRecordingFile = juce::File();
+        // clips now (off the paint path). LW-2: the live-take thumbnails belong to
+        // the previous session's takes — drop them with it.
+        liveThumbnails.clear();
         preloadClipThumbnails();
 
         titleLabel.setText ("raw-radio-studio   -   " + session.getSessionName(),
@@ -1669,14 +1670,13 @@ namespace rrs
     //==============================================================================
     void MainComponent::changeListenerCallback (juce::ChangeBroadcaster*)
     {
-        // The track/clip set changed (Epic 8 phase 2): forget the live take when
+        // The track/clip set changed (Epic 8 phase 2): forget the live takes when
         // recording stopped, create the thumbnails we need OFF the paint path, and
-        // drop the stale ones.
-        if (! session.isRecording())
-        {
-            liveRecordingThumbnail = nullptr;
-            liveRecordingFile = juce::File();
-        }
+        // drop the stale ones. (LW-2/M1: `liveThumbnails` is cleared in
+        // `timerCallback`, which is guaranteed to run even if no change message
+        // arrives on the last frame.)
+        if (! session.isRecording() && liveThumbnails.size() > 0)
+            liveThumbnails.clear();
 
         preloadClipThumbnails();
         pruneClipThumbnails();
@@ -1882,6 +1882,12 @@ namespace rrs
     //==============================================================================
     void MainComponent::timerCallback()
     {
+        // LW-2/M1: once nothing is recording the cached live-take thumbnails are
+        // dead — drop them here (guaranteed to run, so a take's Ptr can never linger
+        // and the cache can never grow across takes).
+        if (liveThumbnails.size() > 0 && ! session.isRecording())
+            liveThumbnails.clear();
+
         // One clock for the ruler and the lanes (Epic 4 playhead fix). The ruler
         // used to repaint on its own 30 Hz timer and the lanes on this 10 Hz one,
         // so the ruler playhead visibly lagged the lane playhead. Both are now
@@ -2045,14 +2051,28 @@ namespace rrs
                         // the playhead (its left edge is the gutter's right edge).
                         const auto timelineLength = juce::jmax (1.0e-6, session.getTimelineLengthSeconds());
 
+                        // The track's clips are fetched ONCE per lane per frame (the
+                        // live-take de-duplication below needs the same list).
+                        const auto trackClips = session.getClips (index);
+
+                        // LW-1: the take being WRITTEN right now, if any. This also
+                        // supplies the "which clip is live" file below, so the input
+                        // device scan happens ONCE per lane per frame — exactly as
+                        // often as before this feature. No new container is built and
+                        // no per-pixel allocation happens; the one File copy the
+                        // previous code already made per recording track per frame
+                        // (`getActiveRecordingFileForTrack`) is now the take's own
+                        // `sourceFile`.
+                        const auto liveTake = recording ? session.getLiveRecordingClip (index)
+                                                        : std::nullopt;
+
                         // Clip-level live detection: only the take being written
                         // right now (its file == the track's active recording file),
                         // never a pre-existing clip on an armed track.
-                        const auto activeRecordingFile = recording
-                                                             ? session.getActiveRecordingFileForTrack (index)
-                                                             : juce::File();
+                        const auto activeRecordingFile = liveTake.has_value() ? liveTake->sourceFile
+                                                                             : juce::File();
 
-                        for (const auto& clip : session.getClips (index))
+                        for (const auto& clip : trackClips)
                         {
                             auto startSeconds = clip.startSeconds;
                             auto endSeconds = clip.endSeconds;
@@ -2143,6 +2163,58 @@ namespace rrs
                                 g.drawText ((clip.isLooping ? juce::String ("\u21bb ") : juce::String())
                                                 + clip.name,
                                             r.reduced (6, 0), juce::Justification::centredLeft);
+                            }
+                        }
+
+                        // LW-1/LW-2: the take being written right now has NO clip in
+                        // the Edit yet (the engine inserts it only at stop), so the
+                        // growing take is drawn from the Session's live state — through
+                        // the SAME path as a real clip, so the WV scale /
+                        // normalisation / band layout apply to it unchanged.
+                        //
+                        // HIT-TEST: the synthetic take is deliberately NOT reachable —
+                        // `hitTestClip` walks `session.getClips()` only, and there is no
+                        // `clipIndex` to name it (`clipIndex == -1`). A click inside a
+                        // live take therefore hits the lane; `mouseDown` swallows it
+                        // (selects the track only, never toggling arm) so a click can
+                        // not abort the take — see `clipwave::liveTakeRect`.
+                        if (liveTake.has_value())
+                        {
+                            // DE-DUPLICATION (defensive): the engine drops the recording
+                            // context BEFORE it inserts the clip (`applyLastRecording`),
+                            // so today a frame never sees both — this branch guards the
+                            // invariant that a file is drawn once even if that ever
+                            // changes (and it is what makes the paint path safe to
+                            // reorder).
+                            const bool realClipDrawn = std::any_of (
+                                trackClips.begin(), trackClips.end(),
+                                [&liveTake] (const Session::ClipInfo& c)
+                                { return c.isWave && c.sourceFile == liveTake->sourceFile; });
+
+                            if (! realClipDrawn)
+                            {
+                                const auto liveRect = clipwave::liveTakeRect (
+                                    Timeline::xForSeconds (liveTake->startSeconds, timelineLength,
+                                                           trackTimelineArea),
+                                    Timeline::xForSeconds (liveTake->endSeconds, timelineLength,
+                                                           trackTimelineArea),
+                                    clipBand);
+
+                                // Same horizontal cull as a real clip (shared helper).
+                                if (clipwave::liveTakeVisible (liveRect, trackTimelineArea))
+                                {
+                                    // `live = true`: the engine's growing recording
+                                    // thumbnail (its cached Ptr is reused by drawClip —
+                                    // never a fresh getThumbnailFor per frame) plus the
+                                    // pulsing "growing edge" inside drawClip.
+                                    drawClip (g, liveRect, *liveTake, liveTake->startSeconds,
+                                              liveTake->endSeconds, false, true);
+
+                                    // The live border (a real clip gets it after its
+                                    // fade ramps; a fresh take has none yet).
+                                    g.setColour (brand::record);
+                                    g.drawRoundedRectangle (liveRect.toFloat().reduced (0.5f), 3.0f, 1.5f);
+                                }
                             }
                         }
                     }
@@ -2800,6 +2872,35 @@ namespace rrs
             // targetable by Remove track). Input tracks keep their Epic 1/2
             // click-to-arm behaviour as well.
             selectTrack (index);
+
+            // LW-2 (UX guard): the take being written has no clip in the Edit yet, so
+            // `hitTestClip` cannot see it and a click inside the growing rectangle
+            // would fall through to the arm toggle below — DISARMING the track and
+            // ABORTING the take the user just clicked on. Swallow it: select the track
+            // and say what happened. Same shared geometry as paint(), so the rect the
+            // user sees is the rect that swallows the click.
+            if (const auto liveTake = session.isRecording() ? session.getLiveRecordingClip (index)
+                                                            : std::nullopt)
+            {
+                juce::Rectangle<int> nameRow, liveBand;
+                track_lane::splitLane (trackLaneRects[(size_t) index], nameRow, liveBand);
+
+                const auto liveRect = clipwave::liveTakeRect (
+                    Timeline::xForSeconds (liveTake->startSeconds,
+                                           juce::jmax (1.0e-6, session.getTimelineLengthSeconds()),
+                                           trackTimelineArea),
+                    Timeline::xForSeconds (liveTake->endSeconds,
+                                           juce::jmax (1.0e-6, session.getTimelineLengthSeconds()),
+                                           trackTimelineArea),
+                    liveBand);
+
+                if (liveRect.contains (e.getPosition()))
+                {
+                    showStatus (session.getTrackName (index)
+                                + " is recording — the take keeps running. Click the arm control to stop it.");
+                    return;
+                }
+            }
 
             // MIDI tracks arm exactly like input tracks (via their MIDI input);
             // only imported/backing tracks are playback-only.
@@ -3740,20 +3841,13 @@ namespace rrs
         {
             if (live)
             {
-                // Reuse the engine's live thumbnail; re-fetch only when the take
-                // file changes. (getThumbnailFor must NOT be called for non-takes:
-                // it lazily creates a Thumbnail that would be destroyed the next
-                // frame — an AudioThumbnail create/destroy churn at 30 Hz.)
-                if (liveRecordingThumbnail == nullptr || liveRecordingFile != clip.sourceFile)
-                {
-                    liveRecordingFile = clip.sourceFile;
-                    liveRecordingThumbnail = audio.engine()
-                                                 .getRecordingThumbnailManager()
-                                                 .getThumbnailFor (clip.sourceFile);
-                }
-
-                if (liveRecordingThumbnail != nullptr)
-                    thumb = liveRecordingThumbnail->thumb.get();
+                // LW-2/M1: `liveThumbnails` holds one Ptr PER TAKE FILE, so drawing
+                // several recording tracks in the same frame re-runs `getThumbnailFor`
+                // at most once per file per take — never once per frame (see
+                // ui/LiveTakeThumbnails.h). Insertions only happen when a NEW take
+                // file appears; the cache is cleared when recording stops.
+                if (auto* liveThumb = liveThumbnails.get (audio.engine(), clip.sourceFile))
+                    thumb = liveThumb->thumb.get();
             }
             else
             {

@@ -259,6 +259,24 @@ namespace rrs::clipwave
         return defaultWaveformNormalise;
     }
 
+    /** LW-2: the on-screen rectangle of the take being written, from its two mapped
+        x positions (`Timeline::xForSeconds`) and the lane's clip band. `jmax (3, …)`
+        is the same minimum width a real clip gets, so a just-started take is still
+        visible. SHARED by `paint` (drawing) and the mouse handler (swallowing a
+        click so it cannot disarm the track and abort the take), so what the user
+        sees and what swallows the click can never disagree. */
+    inline juce::Rectangle<int> liveTakeRect (int x1, int x2, juce::Rectangle<int> clipBand) noexcept
+    {
+        return { x1, clipBand.getY(), juce::jmax (3, x2 - x1), clipBand.getHeight() };
+    }
+
+    /** LW-2: the same horizontal cull a real clip gets — a take fully outside the
+        visible timeline costs nothing. */
+    inline bool liveTakeVisible (juce::Rectangle<int> liveRect, juce::Rectangle<int> timelineArea) noexcept
+    {
+        return liveRect.getRight() >= timelineArea.getX() && liveRect.getX() <= timelineArea.getRight();
+    }
+
     /** Maps a timeline time to source-file time for a clip that starts at
         `clipStart` with source `offsetSeconds`, wrapping per iteration when the
         clip is looped (iteration length = fileLength - offset). Clamped to

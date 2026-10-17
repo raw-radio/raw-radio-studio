@@ -288,6 +288,19 @@ allocated per **span**, so sharing tracks share one `WaveInputDevice`.
   deliberate, documented compromise: the two-band case shows only channels 0/1 because the app's
   metering is 2-channel). Fades, selection/live borders, names and loop hairlines are drawn after the
   wave, so readability is unchanged.
+- **LW-1 / LW-2 — the take grows while it is recorded.** The engine inserts a clip into the Edit only
+  when the recording STOPS (`WaveInputDevice::applyLastRecording`), so during a take `getClips()` is
+  empty and the arrangement had nothing to draw. `Session::getLiveRecordingClip(track)` returns the
+  missing geometry — `start` = the device's punch-in time (the value the real clip is stamped with at
+  stop), `end` = the CURRENT transport position, `sourceFile` = the file being written, `clipIndex`
+  = -1 — and `paint` draws it through the same `drawClip`/`clipwave::drawClipWaveform` path (so the
+  WV scale, normalisation and L/R bands apply to a live take). De-duplication by `sourceFile` is
+  defensive (the engine drops the recording context *before* inserting the clip, so a frame never
+  sees both); the live-take thumbnail cache keeps one `Ptr` PER take file (`ui/LiveTakeThumbnails.h`)
+  so two simultaneous takes never re-fetch/create a `Thumbnail` per frame; and a click inside the
+  growing rectangle is swallowed by the shared `clipwave::liveTakeRect` geometry — it selects the
+  track but never toggles arm, so it cannot abort the take the user clicked on.
+
 - **Tests.** 5 assert-level render cases draw through the real function into an off-screen image with
   a deterministic stub thumbnail: the bands carry the right channels, the overlay folds in every
   channel, the silence floor draws exactly the 1 px tick, the persisted settings round-trip (missing
@@ -505,9 +518,11 @@ reserved so every lane's clip zone starts at the same x.
 `Engine::getRecordingThumbnailManager()->getThumbnailFor(file)` (the engine writes peaks on the
 audio thread — RT-safe), ordinary clips from a cached `te::SmartThumbnail` per source file. Files
 come from `Session::ClipInfo::sourceFile` (filled from `WaveAudioClip::getOriginalFile()`).
-**Live detection is clip-level**: a clip is the take only when its `sourceFile` equals
-`Session::getActiveRecordingFileForTrack(track)` (from `InputDeviceInstance::getRecordingFile`) — a
-pre-existing clip on an armed track is never mistaken for the take. Thumbnails are created/cached
+**Live detection is clip-level**: a clip is the take only when its `sourceFile` equals the recording
+file the input device instance is writing (LW-1 exposes it as part of
+`Session::getLiveRecordingClip(track)`, which also carries the take's geometry; the earlier
+`getActiveRecordingFileForTrack` helper was folded into it and removed) — a pre-existing clip on an
+armed track is never mistaken for the take. Thumbnails are created/cached
 off the paint path (message thread, LRU-evicted, pruned on session change); `paint()` only reads
 pre-computed peaks (no rebuild, no allocation proportional to pixels).
 Bins are 2 px, the wave is `brand::waveformIdle` (accent @55%) / `accent` when selected or live /

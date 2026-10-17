@@ -1658,6 +1658,57 @@ TEST_CASE ("clip waveform amplitude scale, view normalisation and band layout (W
 }
 
 //==============================================================================
+// LW-2: the live take's on-screen geometry. `paint` (drawing) and the mouse handler
+// (swallowing a click so it cannot disarm the track and abort the take) share these
+// helpers, so what the user sees and what swallows the click cannot disagree.
+TEST_CASE ("live take rect and cull match the clip geometry (LW-2)")
+{
+    using namespace rrs::clipwave;
+
+    const juce::Rectangle<int> band { 0, 40, 400, 52 };
+
+    // The rect uses the clip band's y/height and the mapped x positions; a
+    // just-started take still gets the same 3 px minimum a real clip does (so it is
+    // visible and its click target exists).
+    const auto fresh = liveTakeRect (200, 200, band);
+    CHECK (fresh.getX() == 200);
+    CHECK (fresh.getY() == 40);
+    CHECK (fresh.getWidth() == 3);
+    CHECK (fresh.getHeight() == 52);
+
+    const auto grown = liveTakeRect (100, 260, band);
+    CHECK (grown.getWidth() == 160);
+
+    // A take running "backwards" (a paused/rewound transport while the take is still
+    // open) can never produce a negative or zero width.
+    CHECK (liveTakeRect (300, 120, band).getWidth() == 3);
+
+    // The horizontal cull is the same one a real clip gets: visible while any part
+    // of the rect lies inside the timeline area.
+    const juce::Rectangle<int> timeline { 100, 0, 400, 100 };
+    CHECK (liveTakeVisible ({ 100, 0, 10, 10 }, timeline));    // touching the left edge
+    CHECK (liveTakeVisible ({ 495, 0, 10, 10 }, timeline));    // touching the right edge
+    CHECK (liveTakeVisible ({ 490, 0, 40, 10 }, timeline));    // overlapping the right
+    CHECK_FALSE (liveTakeVisible ({ 40, 0, 59, 10 }, timeline));   // ends before it
+    CHECK_FALSE (liveTakeVisible ({ 501, 0, 10, 10 }, timeline));  // starts after it
+
+    // The click guard uses the very same rect: a point inside it is swallowed, a
+    // point on the lane outside it is not.
+    CHECK (grown.contains (juce::Point<int> { 150, 60 }));
+    CHECK_FALSE (grown.contains (juce::Point<int> { 420, 60 }));
+
+    // And the band it is built from is the lane's clip strip (paint's own geometry).
+    juce::Rectangle<int> nameRow, clipBand;
+    rrs::track_lane::splitLane ({ 0, 0, 400, 96 }, nameRow, clipBand);
+    const auto fromLane = liveTakeRect (10, 110, clipBand);
+    CHECK (fromLane.getY() == clipBand.getY());
+    CHECK (fromLane.getHeight() == clipBand.getHeight());
+    CHECK (clipBand == juce::Rectangle<int> ({ 0, 0, 400, 96 })
+                         .reduced (0, rrs::track_lane::clipInset));
+    CHECK (clipBand.contains (nameRow));   // the name overlay is drawn ON TOP of the band
+}
+
+//==============================================================================
 // Epic 8 phase 2: clip-level live-take detection (a pre-existing clip on an
 // armed track must NOT be treated as the take being recorded).
 TEST_CASE ("clip live-take detection (Epic 8 phase 2)")

@@ -2000,23 +2000,47 @@ namespace rrs
         return fillClipInfo (*clip, info);
     }
 
-    juce::File Session::getActiveRecordingFileForTrack (int trackIndex) const
+    std::optional<Session::ClipInfo> Session::getLiveRecordingClip (int trackIndex) const
     {
         if (edit == nullptr)
-            return {};
+            return std::nullopt;
 
         auto* track = getTrack (trackIndex);
 
         if (track == nullptr)
-            return {};
+            return std::nullopt;
 
-        // The input device instance knows which target (track itemID) is
-        // recording and the exact file it is writing to (Epic 8 phase 2).
         for (auto* instance : edit->getAllInputDevices())
-            if (instance != nullptr && instance->isRecording (track->itemID))
-                return instance->getRecordingFile (track->itemID);
+        {
+            if (instance == nullptr || ! instance->isRecording (track->itemID))
+                continue;
 
-        return {};
+            const auto file = instance->getRecordingFile (track->itemID);
+
+            if (file == juce::File())
+                return std::nullopt;
+
+            ClipInfo info;
+            info.trackIndex = trackIndex;
+            info.clipIndex = -1;   // no clip in the Edit yet — that is the whole point
+            info.isWave = true;
+            info.sourceFile = file;
+
+            // The punch-in time is what `WaveInputDevice::applyLastRecording` stamps
+            // on the real clip at stop (and it already falls back to the transport
+            // start when there is no punch range), so the synthetic take and the
+            // eventual real clip share their left edge.
+            const auto start = instance->getPunchInTime (track->itemID);
+
+            info.startSeconds = juce::jmax (0.0, start.inSeconds());
+            info.endSeconds = juce::jmax (info.startSeconds, getPositionSeconds());
+            info.lengthSeconds = info.endSeconds - info.startSeconds;
+            info.offsetSeconds = 0.0;
+
+            return info;
+        }
+
+        return std::nullopt;
     }
 
     bool Session::moveClip (int trackIndex, int clipIndex, double newStartSeconds)
