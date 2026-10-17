@@ -57,6 +57,7 @@ int main (int argc, char** argv)
 #include "studio/WavExport.h"
 #include "ui/BrandButton.h"
 #include "ui/BrandColours.h"
+#include "ui/InputMenuModel.h"
 #include "ui/PluginBrowser.h"
 #include "ui/TrackLaneLayout.h"
 
@@ -1530,7 +1531,574 @@ TEST_CASE ("input problem: stereo on a 1-channel device is flagged (RT-2b #2)")
 
     // An explicit stereo pair cannot fit one channel.
     REQUIRE (session.setTrackInputMapping (track, InputMapping { 0, 2, InputLayout::Stereo }));
-    CHECK (session.getTrackInputProblem (track).isNotEmpty());
+    session.close();
+}
+
+//==============================================================================
+// RT-6: a mono->stereo switch that would take a channel owned by a DIFFERENT span
+// is refused with an explanation; an identical span is shared (RT-4), and the
+// refusal never rewrites the mapping (no silent overwrite).
+TEST_CASE ("input mapping: mono->stereo is refused over an occupied neighbour (RT-6)")
+{
+    auto dir = scratchDirectory ("rt6-conflict");
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Rt6.tracktionedit")));
+
+    te::HostedAudioDeviceInterface::Parameters params;
+    params.sampleRate = 48000.0;
+    params.blockSize = 256;
+    params.inputChannels = 4; // room for off-device-free pairs
+    params.outputChannels = 2;
+    auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+
+    for (int i = 0; i < 200; ++i)
+    {
+        audio.deviceManager().dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+        if (session.isInputConfigured())
+            break;
+
+        session.reconfigureInputs();
+    }
+
+    REQUIRE (audio.deviceManager().getNumWaveInDevices() > 0);
+    REQUIRE (session.getNumInputChannels() >= 4);
+
+    REQUIRE (session.addAudioTrack() >= 0); // 2 input tracks
+    const auto idxs = session.getInputTrackIndices();
+    REQUIRE (idxs.size() == 2);
+    const int a = idxs[0], b = idxs[1];
+
+    // Track a is pinned onto channel 1 — the SAME span as b (which addAudioTrack
+    // placed on channel 1). An identical span shares (RT-4): allowed.
+    REQUIRE (session.setTrackInputMapping (a, InputMapping { 1, 1, InputLayout::Mono }));
+    CHECK (session.getTrackInputMapping (a) == InputMapping { 1, 1, InputLayout::Mono });
+
+    // a -> a stereo pair 2-3: free, allowed.
+    REQUIRE (session.setTrackInputMapping (a, InputMapping { 2, 2, InputLayout::Stereo }));
+
+    // a -> a stereo pair 1-2: channel 1 belongs to b (a different span: mono 1) ->
+    // refused, and the message names the owner. The mapping is NOT overwritten.
+    session.clearLastError();
+    CHECK_FALSE (session.setTrackInputMapping (a, InputMapping { 1, 2, InputLayout::Stereo }));
+    CHECK (session.getLastError().contains ("already used"));
+    CHECK (session.getLastError().contains (session.getTrackName (b)));
+    CHECK (session.getTrackInputMapping (a) == InputMapping { 2, 2, InputLayout::Stereo });
+
+    // Nothing is changed by the refusal (device/planner state stays consistent).
+    CHECK (session.getTrackInputProblem (a).isEmpty());
+
+    // b -> the same stereo pair as a (2-3): identical span -> shared, allowed.
+    REQUIRE (session.setTrackInputMapping (b, InputMapping { 2, 2, InputLayout::Stereo }));
+
+    // b -> stereo 1-2: its RIGHT channel (2) is owned by a's pair -> refused.
+    CHECK_FALSE (session.setTrackInputMapping (b, InputMapping { 1, 2, InputLayout::Stereo }));
+
+    // An off-device span is still writable (RT-2b pin-invalid): RT-6 only refuses
+    // another track's channel, never an off-device pin.
+    CHECK (session.setTrackInputMapping (b, InputMapping { 3, 1, InputLayout::Mono }));
+
+    session.close();
+}
+
+//==============================================================================
+// RT-8: the Channel menu model marks free / shared / used / off-device for a real
+// device, driven by the one occupancy source (Session::getInputChannelMenu).
+TEST_CASE ("input menu: channels are marked free/shared/used (RT-8)")
+{
+    auto dir = scratchDirectory ("rt8-menu");
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Rt8.tracktionedit")));
+
+    te::HostedAudioDeviceInterface::Parameters params;
+    params.sampleRate = 48000.0;
+    params.blockSize = 256;
+    params.inputChannels = 4;
+    params.outputChannels = 2;
+    auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+
+    for (int i = 0; i < 200; ++i)
+    {
+        audio.deviceManager().dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+        if (session.isInputConfigured())
+            break;
+
+        session.reconfigureInputs();
+    }
+
+    REQUIRE (audio.deviceManager().getNumWaveInDevices() > 0);
+    REQUIRE (session.addAudioTrack() >= 0);
+    const auto idxs = session.getInputTrackIndices();
+    REQUIRE (idxs.size() == 2);
+    const int a = idxs[0], b = idxs[1];
+
+    // Put b on channel 0 (mono), so channel 0 is owned and channel 1 is free.
+    REQUIRE (session.setTrackInputMapping (b, InputMapping { 0, 1, InputLayout::Mono }));
+    REQUIRE (session.setTrackInputMapping (a, InputMapping { 0, 1, InputLayout::Mono })); // shares 0 (identical span)
+
+    {
+        const auto items = session.getInputChannelMenu (a);
+        REQUIRE (items.size() == 4);
+        CHECK (items[0].availability == ChannelAvailability::Shared); // identical span with b
+        CHECK (items[0].ownerTrackIndex == b);
+        CHECK (items[1].availability == ChannelAvailability::Free);
+        CHECK (items[2].availability == ChannelAvailability::Free);
+        CHECK (items[3].availability == ChannelAvailability::Free);
+    }
+
+    // Give `a` a stereo pair 1-2 (free; b still owns channel 0). Seen by a STEREO
+    // track, b's mono channel 0 is a DIFFERENT span (used) and the last channel
+    // cannot start a pair (off-device).
+    REQUIRE (session.setTrackInputMapping (a, InputMapping { 1, 2, InputLayout::Stereo }));
+
+    {
+        const auto items = session.getInputChannelMenu (a); // a is stereo (need 2)
+        REQUIRE (items.size() == 4);
+        CHECK (items[0].availability == ChannelAvailability::Used);   // b owns 0 as a MONO span
+        CHECK (items[0].ownerTrackIndex == b);
+        CHECK (items[1].availability == ChannelAvailability::Free);   // pair 1-2 does not touch b's channel 0
+        CHECK (items[2].availability == ChannelAvailability::Free);
+        CHECK (items[3].availability == ChannelAvailability::OffDevice); // 3 + 2 > 4
+    }
+
+    // b joins the same stereo pair (identical span) -> shared, selectable.
+    REQUIRE (session.setTrackInputMapping (b, InputMapping { 1, 2, InputLayout::Stereo }));
+
+    {
+        const auto items = session.getInputChannelMenu (a);
+        CHECK (items[0].availability == ChannelAvailability::Used);     // pair 0-1 would take b's channel 1
+        CHECK (items[1].availability == ChannelAvailability::Shared);   // identical pair with b
+        CHECK (items[1].ownerTrackIndex == b);
+        CHECK (items[2].availability == ChannelAvailability::Used);     // pair 2-3 would take b's channel 2
+        CHECK (items[3].availability == ChannelAvailability::OffDevice);
+    }
+
+    session.close();
+}
+
+//==============================================================================
+// B1 (the exact reported bug): a LAYOUT menu result must change the layout and
+// leave the channel alone. Both popups run decodeResult -> applySelection ->
+// setTrackInputMapping, so this is the same code path the GUI uses (before the
+// fix, id 201/202/203 wrote firstChannel = 101/102/103 and kept the layout).
+TEST_CASE ("input menu: a layout result really changes the layout, not the channel (B1)")
+{
+    using namespace rrs::input_menu;
+
+    auto dir = scratchDirectory ("rt8-b1-layout");
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("B1.tracktionedit")));
+
+    te::HostedAudioDeviceInterface::Parameters params;
+    params.sampleRate = 48000.0;
+    params.blockSize = 256;
+    params.inputChannels = 4;
+    params.outputChannels = 2;
+    auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+
+    for (int i = 0; i < 200; ++i)
+    {
+        audio.deviceManager().dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+        if (session.isInputConfigured())
+            break;
+
+        session.reconfigureInputs();
+    }
+
+    REQUIRE (audio.deviceManager().getNumWaveInDevices() > 0);
+    const int track = session.getInputTrackIndices()[0];
+
+    const auto applyMenu = [&session, track] (int id)
+    {
+        const int numChannels = juce::jmax (1, session.getNumInputChannels());
+        auto m = session.getTrackInputMapping (track);
+
+        if (! applySelection (decodeResult (id), m, numChannels))
+            return false;
+
+        return session.setTrackInputMapping (track, m);
+    };
+
+    // Pin the channel so a leaked channel-id decode is unmistakable.
+    REQUIRE (session.setTrackInputMapping (track, InputMapping { 1, 1, InputLayout::Mono }));
+    REQUIRE (session.getTrackInputMapping (track) == InputMapping { 1, 1, InputLayout::Mono });
+
+    // Layout -> Stereo (202): the layout changes, the channel does NOT become 102.
+    REQUIRE (applyMenu (layoutStereo));
+    {
+        const auto m = session.getTrackInputMapping (track);
+        CHECK (m.layout == InputLayout::Stereo);
+        CHECK (m.firstChannel == 1);
+        CHECK (m.numChannels == 2);
+    }
+
+    REQUIRE (applyMenu (layoutMono));
+    CHECK (session.getTrackInputMapping (track).layout == InputLayout::Mono);
+    CHECK (session.getTrackInputMapping (track).firstChannel == 1);
+
+    REQUIRE (applyMenu (layoutAuto));
+    CHECK (session.getTrackInputMapping (track).layout == InputLayout::Auto);
+    CHECK (session.getTrackInputMapping (track).firstChannel == 1);
+
+    REQUIRE (applyMenu (layoutMulti));
+    {
+        const auto m = session.getTrackInputMapping (track);
+        CHECK (m.layout == InputLayout::MultiChannel);
+        CHECK (m.firstChannel == 1);
+        CHECK (m.numChannels == 3); // 4 - 1
+    }
+
+    // A CHANNEL result (100 + 3) changes the channel and keeps the layout.
+    REQUIRE (applyMenu (channelItemBase + 3));
+    {
+        const auto m = session.getTrackInputMapping (track);
+        CHECK (m.firstChannel == 3);
+        CHECK (m.layout == InputLayout::MultiChannel);
+    }
+
+    session.close();
+}
+
+//==============================================================================
+// RT-6 (priority): a stereo pair that is BOTH off-device and overlapping another
+// track's channel stays WRITABLE (RT-2b pin-invalid) and is reported as
+// off-device, never as "already used".
+TEST_CASE ("input mapping: an off-device pair over an owned channel is off-device, not taken (RT-6)")
+{
+    auto dir = scratchDirectory ("rt6-offdev");
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("OffDev.tracktionedit")));
+
+    te::HostedAudioDeviceInterface::Parameters params;
+    params.sampleRate = 48000.0;
+    params.blockSize = 256;
+    params.inputChannels = 2; // a pair at channel 1 would need channels 1-2
+    params.outputChannels = 2;
+    auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+
+    for (int i = 0; i < 200; ++i)
+    {
+        audio.deviceManager().dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+        if (session.isInputConfigured())
+            break;
+
+        session.reconfigureInputs();
+    }
+
+    REQUIRE (audio.deviceManager().getNumWaveInDevices() > 0);
+    const int track = session.getInputTrackIndices()[0];
+
+    // Track 0 owns channel 1 as a MONO span.
+    REQUIRE (session.setTrackInputMapping (track, InputMapping { 1, 1, InputLayout::Mono }));
+
+    // Stereo at channel 1 runs off the 2-channel device AND touches channel 1.
+    session.clearLastError();
+    REQUIRE (session.setTrackInputMapping (track, InputMapping { 1, 2, InputLayout::Stereo }));
+
+    const auto problem = session.getTrackInputProblem (track);
+    CHECK (problem.contains ("not available"));       // off-device
+    CHECK_FALSE (problem.contains ("already used"));  // NOT a clash
+
+    session.close();
+}
+
+//==============================================================================
+// RT-6: a MultiChannel span (n >= 3) written over an occupied range is accepted
+// (the guard only covers 2-channel pairs), the planner flags it and nothing
+// crashes.
+TEST_CASE ("input mapping: a multi span over an occupied range is written and flagged (RT-6)")
+{
+    auto dir = scratchDirectory ("rt6-multi");
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Multi.tracktionedit")));
+
+    te::HostedAudioDeviceInterface::Parameters params;
+    params.sampleRate = 48000.0;
+    params.blockSize = 256;
+    params.inputChannels = 4;
+    params.outputChannels = 2;
+    auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+
+    for (int i = 0; i < 200; ++i)
+    {
+        audio.deviceManager().dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+        if (session.isInputConfigured())
+            break;
+
+        session.reconfigureInputs();
+    }
+
+    REQUIRE (audio.deviceManager().getNumWaveInDevices() > 0);
+    REQUIRE (session.addAudioTrack() >= 0);
+    const auto idxs = session.getInputTrackIndices();
+    REQUIRE (idxs.size() == 2);
+    const int a = idxs[0], b = idxs[1];
+
+    // Move b out of the way first (it was auto-placed on channel 1), so a can
+    // take the free pair 0-1.
+    REQUIRE (session.setTrackInputMapping (b, InputMapping { 3, 1, InputLayout::Mono }));
+    REQUIRE (session.setTrackInputMapping (a, InputMapping { 0, 2, InputLayout::Stereo }));
+
+    // b asks for a 3-channel span starting at 0 (over a's pair) — a multi span,
+    // not a pair, so RT-6 does not refuse it: it is written and the planner flags
+    // the overlap (RT-2b).
+    REQUIRE (session.setTrackInputMapping (b, InputMapping { 0, 3, InputLayout::MultiChannel }));
+    CHECK (session.getTrackInputMapping (b).layout == InputLayout::MultiChannel);
+    CHECK (session.getTrackInputMapping (b).numChannels == 3);
+    CHECK (session.getTrackInputProblem (b).isNotEmpty());
+
+    // a is untouched and still has its input.
+    CHECK (session.getTrackInputProblem (a).isEmpty());
+    CHECK (session.getAppliedInputDeviceIndex (a) >= 0);
+
+    session.close();
+}
+
+//==============================================================================
+// RT-9: any track can be removed — the middle one, a non-armed one while another
+// is armed — but the track whose take is rolling is refused.
+TEST_CASE ("remove track: any/middle/non-armed track, refusal while recording (RT-9)")
+{
+    auto dir = scratchDirectory ("rt9-remove");
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Rt9.tracktionedit")));
+
+    te::HostedAudioDeviceInterface::Parameters params;
+    params.sampleRate = 48000.0;
+    params.blockSize = 256;
+    params.inputChannels = 1;   // one input; extra tracks become unassigned
+    params.outputChannels = 2;
+    auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+
+    for (int i = 0; i < 200; ++i)
+    {
+        audio.deviceManager().dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+        if (session.isInputConfigured())
+            break;
+
+        session.reconfigureInputs();
+    }
+
+    REQUIRE (audio.deviceManager().getNumWaveInDevices() > 0);
+
+    REQUIRE (session.addAudioTrack() >= 0);
+    REQUIRE (session.addAudioTrack() >= 0);
+    REQUIRE (session.getNumAudioTracks() == 3);
+
+    const auto name0 = session.getTrackName (0);
+    const auto name2 = session.getTrackName (2);
+
+    // Remove the MIDDLE track (neither the last nor the armed one).
+    REQUIRE (session.removeAudioTrack (1));
+    CHECK (session.getNumAudioTracks() == 2);
+    CHECK (session.getTrackName (0) == name0);
+    CHECK (session.getTrackName (1) == name2);
+
+    // The last remaining track cannot be removed.
+    REQUIRE (session.removeAudioTrack (1));
+    CHECK (session.getNumAudioTracks() == 1);
+    session.clearLastError();
+    CHECK_FALSE (session.removeAudioTrack (0));
+    CHECK (session.getLastError().contains ("last track"));
+
+    session.close();
+}
+
+//==============================================================================
+// RT-9 (recording guard): the track being written cannot be removed; a different,
+// non-recording track can be, even while the take rolls.
+TEST_CASE ("remove track: refuses the recording track, allows another mid-take (RT-9)")
+{
+    auto dir = scratchDirectory ("rt9-recording");
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("Rt9Rec.tracktionedit")));
+
+    te::HostedAudioDeviceInterface::Parameters params;
+    params.sampleRate = 48000.0;
+    params.blockSize = 256;
+    params.inputChannels = 1;
+    params.outputChannels = 2;
+    auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+
+    for (int i = 0; i < 200; ++i)
+    {
+        audio.deviceManager().dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+        if (session.isInputConfigured())
+            break;
+
+        session.reconfigureInputs();
+    }
+
+    REQUIRE (audio.deviceManager().getNumWaveInDevices() > 0);
+
+    REQUIRE (session.addAudioTrack() >= 0); // 2 tracks (second is unassigned)
+    REQUIRE (session.getNumAudioTracks() == 2);
+
+    REQUIRE (session.setTrackArmed (0, true));
+    CHECK_FALSE (session.isTrackRecording (0)); // armed but not rolling yet
+
+    session.getEdit()->getTransport().setPosition (te::TimePosition {});
+    REQUIRE (session.record());
+
+    for (int i = 0; i < 20; ++i)
+    {
+        session.getEdit()->dispatchPendingUpdatesSynchronously();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (20);
+    }
+
+    CHECK (session.isRecording());
+    CHECK (session.isTrackRecording (0));
+
+    // The recording track is refused (with a reason) ...
+    session.clearLastError();
+    CHECK_FALSE (session.removeAudioTrack (0));
+    CHECK (session.getLastError().contains ("recording"));
+    CHECK (session.getNumAudioTracks() == 2);
+
+    // ... but a different, non-recording track may still be removed mid-take.
+    CHECK (session.removeAudioTrack (1));
+    CHECK (session.getNumAudioTracks() == 1);
+
+    session.stop();
+
+    for (int i = 0; i < 60; ++i)
+    {
+        session.getEdit()->dispatchPendingUpdatesSynchronously();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (20);
+    }
+
+    session.setTrackArmed (0, false);
+    session.setMonitoringEnabled (false);
+
+    session.close();
+}
+
+//==============================================================================
+// M4: two tracks SHARING one span — removing the sharing partner while the other
+// is recording must not drop the recording track's target or its take (the shared
+// WaveInputDevice is still targeted by the surviving track).
+TEST_CASE ("remove track: deleting a sharing partner mid-take keeps the recording track (M4)")
+{
+    auto dir = scratchDirectory ("rt9-share-remove");
+
+    AudioEngine audio (false);
+    Session session (audio);
+    REQUIRE (session.createNew (dir.getChildFile ("ShareRemove.tracktionedit")));
+
+    te::HostedAudioDeviceInterface::Parameters params;
+    params.sampleRate = 48000.0;
+    params.blockSize = 256;
+    params.inputChannels = 1;   // one input -> both tracks must share channel 0
+    params.outputChannels = 2;
+    auto player = std::make_unique<te::test_utilities::EnginePlayer> (audio.engine(), params);
+
+    for (int i = 0; i < 200; ++i)
+    {
+        audio.deviceManager().dispatchPendingUpdates();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+        if (session.isInputConfigured())
+            break;
+
+        session.reconfigureInputs();
+    }
+
+    REQUIRE (audio.deviceManager().getNumWaveInDevices() > 0);
+
+    REQUIRE (session.addAudioTrack() >= 0);
+    REQUIRE (session.getNumAudioTracks() == 2);
+
+    // Both tracks on the SAME span (channel 0, mono) — RT-4 sharing.
+    REQUIRE (session.setTrackInputMapping (0, InputMapping { 0, 1, InputLayout::Mono }));
+    REQUIRE (session.setTrackInputMapping (1, InputMapping { 0, 1, InputLayout::Mono }));
+
+    const int sharedDevice = session.getAppliedInputDeviceIndex (0);
+    REQUIRE (sharedDevice >= 0);
+    CHECK (session.getAppliedInputDeviceIndex (1) == sharedDevice); // one device for the span
+
+    REQUIRE (session.setTrackArmed (0, true));
+    session.getEdit()->getTransport().setPosition (te::TimePosition {});
+    REQUIRE (session.record());
+
+    juce::AudioBuffer<float> input (1, 256);
+
+    for (int block = 0; block < 20; ++block)
+    {
+        juce::FloatVectorOperations::fill (input.getWritePointer (0), 0.5f, 256);
+        player->process (input);
+    }
+
+    // Remove the OTHER (non-recording) sharing partner while the take rolls.
+    REQUIRE (session.removeAudioTrack (1));
+    CHECK (session.getNumAudioTracks() == 1);
+
+    // The recording track keeps its target and stays armed.
+    CHECK (session.getAppliedInputDeviceIndex (0) == sharedDevice);
+    CHECK (session.isTrackArmed (0));
+    CHECK (session.isTrackRecording (0));
+    CHECK (session.getTrackInputProblem (0).isEmpty());
+
+    // Keep feeding the (surviving) take.
+    for (int block = 0; block < 60; ++block)
+    {
+        juce::FloatVectorOperations::fill (input.getWritePointer (0), 0.5f, 256);
+        player->process (input);
+    }
+
+    session.stop();
+
+    for (int i = 0; i < 300; ++i)
+    {
+        session.getEdit()->dispatchPendingUpdatesSynchronously();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (20);
+    }
+
+    session.setTrackArmed (0, false);
+    session.setMonitoringEnabled (false);
+
+    // The take survived: a non-empty mono file with the fed level.
+    {
+        auto* track = session.getTrack (0);
+        REQUIRE (track != nullptr);
+        REQUIRE (track->getClips().size() >= 1);
+
+        auto* clip = dynamic_cast<te::WaveAudioClip*> (track->getClips()[0]);
+        REQUIRE (clip != nullptr);
+
+        const auto file = clip->getOriginalFile();
+        REQUIRE (file.existsAsFile());
+
+        te::AudioFile audioFile (session.getEdit()->engine, file);
+        REQUIRE (audioFile.isValid());
+        CHECK (audioFile.getLength() > 0.05);
+    }
 
     session.close();
 }

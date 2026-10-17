@@ -398,6 +398,36 @@ namespace rrs
             layout, or -1 when it has no input (RT-3). Read-only diagnostic. */
         int getAppliedInputDeviceIndex (int trackIndex) const;
 
+        /** RT-6: would assigning `mapping` to `trackIndex` be refused because a
+            STEREO pair's span would take a channel owned by a DIFFERENT span? (An
+            identical span may be shared — RT-4; a mono span overlapping an owned
+            channel is left to the planner so it surfaces as a per-track problem.)
+            When `reason` is non-null it is filled with the user-facing explanation
+            (naming the owning track).
+
+            `setTrackInputMapping` calls this before writing: a refusal leaves the
+            mapping untouched (no silent overwrite) and sets `getLastError()`. */
+        bool canSetTrackInputMapping (int trackIndex, const InputMapping& mapping,
+                                      juce::String* reason = nullptr) const;
+
+        /** RT-8: the Channel-menu rows for `trackIndex` (one per real device
+            channel), each marked free / shared / used / off-device, with the owning
+            track for the occupied ones. The gutter popup and the mixer popup both
+            build their menu from this one occupancy source.
+
+            Occupancy follows the tracks' **saved (intended)** mappings — not only
+            the layouts the planner actually applied — so two tracks can never
+            silently fight over one channel; a track the planner could not place
+            still owns the channel it intends to use. The decision itself is the
+            planner's own `checkSpanOccupancy` (so the mark can never disagree with
+            the per-track problem the mixer chips read via `getTrackInputProblem`). */
+        std::vector<rrs::ChannelMenuItem> getInputChannelMenu (int trackIndex) const;
+
+        /** RT-9: true while this exact track is being written to disk (the
+            transport is recording AND the track is armed). Removing it would drop
+            the take, so the UI refuses. */
+        bool isTrackRecording (int trackIndex) const;
+
         /** Re-resolves the input device and re-assigns it to the track. Call after
             the audio device changes (wave devices are rebuilt). */
         void reconfigureInputs();
@@ -849,6 +879,15 @@ namespace rrs
         /** True when at least one input track has an assigned (non-`None`) input
             (RT-4): the monitoring device-0 fallback must not fire otherwise. */
         bool hasAnyAssignedInputTrack() const;
+
+        /** The spans (start + length + track) of the ASSIGNED input tracks, skipping
+            `excludeTrack`. The single occupancy source for the RT-6 conflict check
+            and the RT-8 Channel menu. Derived from the tracks' SAVED mappings (see
+            `getInputChannelMenu`): a track the planner could not place still owns
+            the channel it intends to use, so ownership follows intent. Off-device
+            saveds spans are dropped by `buildSpanOccupancy` (they own nothing a
+            menu could offer). */
+        std::vector<rrs::SpanOwner> inputSpans (int excludeTrack) const;
 
         /** Resolves the wave input device that carries `channel`, or the best
             available fallback. */

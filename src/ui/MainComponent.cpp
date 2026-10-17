@@ -8,6 +8,7 @@
 #include "ui/BrandFonts.h"
 #include "ui/ClipSnap.h"
 #include "ui/DevicePanelLayout.h"
+#include "ui/InputMenu.h"
 #include "ui/TrackLaneLayout.h"
 
 #include <array>
@@ -375,29 +376,15 @@ namespace rrs
             if (exportInProgress)
                 return;
 
-            // Remove the *selected* track. A track is selected by clicking its
-            // lane header (even when it has no clips — owner bug: after deleting
-            // an imported clip the empty track could not be targeted). When no
-            // track is selected, fall back to the last track (original
-            // behaviour). This is how the owner deletes an imported backing
-            // track ("minus") without it having to be the last one.
+            // Remove the *selected* track (any track, not just the last): a track
+            // is selected by clicking its lane header even when it has no clips.
+            // With no selection, fall back to the last track. The same helper backs
+            // the right-click menu and the Cmd/Ctrl+Delete hotkey (RT-9).
             const auto numTracks = session.getNumAudioTracks();
             const int target = (selectedTrackIndex >= 0 && selectedTrackIndex < numTracks)
                                    ? selectedTrackIndex
                                    : numTracks - 1;
-            const auto name = session.getTrackName (target);
-
-            if (target < 0 || ! session.removeAudioTrack (target))
-            {
-                showStatus (session.getLastError(), true);
-            }
-            else
-            {
-                selectClip (-1, -1); // the removed track's selection is gone
-                showStatus ("Removed track: " + name);
-            }
-
-            refreshTransportUi();
+            deleteTrackAt (target);
         };
         settingsButton.onClick  = [this] { showSettings(); };
         aboutButton.onClick     = [this] { showAbout(); };
@@ -2685,6 +2672,15 @@ namespace rrs
 
             const auto index = (int) i;
 
+            // RT-9: right-click anywhere on the lane (gutter or clip area) opens
+            // the track context menu (Remove track + input assignment). It must
+            // not arm the track or start a clip drag.
+            if (e.mods.isPopupMenu())
+            {
+                showTrackContextMenu (index);
+                return;
+            }
+
             // Epic 8 phase 1b: the gutter (the lane's left control band) handles
             // its own controls. A click there never starts a clip drag or a
             // timeline edit.
@@ -2966,6 +2962,36 @@ namespace rrs
             return true;
         }
 
+        // RT-9: Cmd/Ctrl+Delete (or Cmd/Ctrl+Backspace) removes the HOVERED track,
+        // else the selected one. Plain Delete stays "delete clip" — the modifier
+        // keeps the two actions distinct (Mac ⌘⌫, Win/Linux Ctrl+Del). No clash:
+        // the only other modified delete-ish shortcut is Cmd+Z (handled above).
+        if (mods.isCommandDown()
+            && (code == juce::KeyPress::deleteKey || code == juce::KeyPress::backspaceKey))
+        {
+            // M2: never act while the MIDI piano-roll overlay is open (the piano
+            // roll only consumes the BARE Delete, so Cmd+Delete would otherwise
+            // bubble up here and delete a track mid-edit), and only when this
+            // component owns the focus — the same gate as the transport hotkeys.
+            if (! transportHotkeysAllowed)
+                return true;
+
+            // M1: auto-repeat guard, like every other destructive hotkey — holding
+            // the key must not delete several tracks in a row.
+            if (isRepeat (code))
+                return true;
+
+            if (! exportInProgress)
+            {
+                const int target = juce::isPositiveAndBelow (hoverTrackIndex, session.getNumAudioTracks())
+                                       ? hoverTrackIndex
+                                       : selectedTrackIndex;
+                deleteTrackAt (target);
+            }
+
+            return true;
+        }
+
         if (code == juce::KeyPress::deleteKey || code == juce::KeyPress::backspaceKey)
         {
             deleteSelectedClip();
@@ -3164,67 +3190,156 @@ namespace rrs
         }
     }
 
+    // RT-6: which layouts may be selected for `trackIndex` right now. A layout
+    // whose span would overlap another track's channel is reported unavailable, so
+    // the menu greys it out instead of failing silently on selection. Probed
+    // against the shared occupancy (`Session::canSetTrackInputMapping`).
+    static rrs::input_menu::LayoutAvailability layoutAvailabilityFor (Session& session, int trackIndex)
+    {
+        return rrs::input_menu::probeLayoutAvailability (
+            session.getTrackInputMapping (trackIndex),
+            juce::jmax (1, session.getNumInputChannels()),
+            [&session, trackIndex] (const InputMapping& probe)
+            { return session.canSetTrackInputMapping (trackIndex, probe); });
+    }
+
+    void MainComponent::applyInputMenuResult (int trackIndex, int result)
+    {
+        // ONE decoder + ONE apply (InputMenu.h): a "Layout" id can never be read as
+        // a channel (B1), and both popups share the same mapping update.
+        const int numChannels = juce::jmax (1, session.getNumInputChannels());
+        auto m = session.getTrackInputMapping (trackIndex);
+
+        if (! rrs::input_menu::applySelection (rrs::input_menu::decodeResult (result), m, numChannels))
+            return;
+
+        if (session.setTrackInputMapping (trackIndex, m))
+        {
+            refreshTransportUi();
+            repaint();
+        }
+        else
+        {
+            // RT-6: a refusal (channel/pair taken by another track) must be visible.
+            showStatus (session.getLastError(), true);
+        }
+    }
+
     void MainComponent::showLaneInputMenu (int trackIndex)
     {
-        // Same menu as MixerPanel::showInputMenu (channel + layout, FR-REC-3).
-        auto mapping = session.getTrackInputMapping (trackIndex);
-        const auto numChannels = juce::jmax (1, session.getNumInputChannels());
-
-        juce::PopupMenu channelMenu;
-        const bool assigned = mapping.layout != InputLayout::None;
-
-        for (int ch = 0; ch < numChannels; ++ch)
-            channelMenu.addItem (100 + ch, "Input " + juce::String (ch + 1), true,
-                                 assigned && ch == mapping.firstChannel);
-
-        juce::PopupMenu layoutMenu;
-        layoutMenu.addItem (200, "Auto", true, mapping.layout == InputLayout::Auto);
-        layoutMenu.addItem (201, "Mono", true, mapping.layout == InputLayout::Mono);
-        layoutMenu.addItem (202, "Stereo", true, mapping.layout == InputLayout::Stereo);
-        layoutMenu.addItem (203, "Multi-channel", true, mapping.layout == InputLayout::MultiChannel);
+        // Same menu as MixerPanel::showInputMenu, built from ONE occupancy source
+        // (Session::getInputChannelMenu) via the shared InputMenu builder (RT-8).
+        const auto mapping = session.getTrackInputMapping (trackIndex);
+        const auto items = session.getInputChannelMenu (trackIndex);
 
         juce::PopupMenu menu;
         menu.addSectionHeader ("Input for " + session.getTrackName (trackIndex));
-        menu.addSubMenu ("Channel", channelMenu);
-        menu.addSubMenu ("Layout", layoutMenu);
+        menu.addSubMenu ("Channel", rrs::input_menu::buildChannelMenu (
+                                       items, mapping.firstChannel,
+                                       mapping.layout != InputLayout::None,
+                                       [this] (int index) { return session.getTrackName (index); }));
+        menu.addSubMenu ("Layout", rrs::input_menu::buildLayoutMenu (
+                                      mapping.layout, layoutAvailabilityFor (session, trackIndex),
+                                      "taken by another track"));
 
         juce::Component::SafePointer<MainComponent> safe (this);
 
         menu.showMenuAsync (juce::PopupMenu::Options().withMousePosition(),
-                            [safe, trackIndex, numChannels] (int result)
+                            [safe, trackIndex] (int result)
+                            {
+                                if (auto* self = safe.getComponent(); self != nullptr && result != 0)
+                                    self->applyInputMenuResult (trackIndex, result);
+                            });
+    }
+
+    void MainComponent::deleteTrackAt (int index)
+    {
+        if (exportInProgress || ! juce::isPositiveAndBelow (index, session.getNumAudioTracks()))
+            return;
+
+        // RT-9: a track whose take is rolling must not be dropped mid-record.
+        if (session.isTrackRecording (index))
+        {
+            showStatus ("Cannot remove \"" + session.getTrackName (index)
+                            + "\" while it is recording. Stop the take first.",
+                        true);
+            return;
+        }
+
+        const auto name = session.getTrackName (index);
+
+        if (! session.removeAudioTrack (index))
+        {
+            showStatus (session.getLastError(), true);
+            return;
+        }
+
+        selectClip (-1, -1); // the removed track's selection is gone
+        showStatus ("Removed track: " + name);
+        refreshTransportUi();
+        repaint();
+    }
+
+    void MainComponent::showTrackContextMenu (int trackIndex)
+    {
+        if (exportInProgress || ! juce::isPositiveAndBelow (trackIndex, session.getNumAudioTracks()))
+            return;
+
+        selectTrack (trackIndex);
+
+        const bool isInput = inputTrackIndexCache.contains (trackIndex);
+        const auto mapping = session.getTrackInputMapping (trackIndex);
+        const auto items = session.getInputChannelMenu (trackIndex);
+
+        juce::PopupMenu menu;
+        menu.addSectionHeader (session.getTrackName (trackIndex));
+
+        // Remove is the primary action (I7/RT-9). It is disabled for the last track
+        // and while this track's take is rolling; the reason is spelled out in the
+        // label rather than hidden.
+        {
+            const bool lastTrack = session.getNumAudioTracks() <= 1;
+            const bool recording = session.isTrackRecording (trackIndex);
+            const bool canRemove = ! lastTrack && ! recording;
+
+            auto label = juce::String ("Remove track (Cmd/Ctrl+Delete)");
+
+            if (lastTrack)
+                label += "  \u2014 the last track cannot be removed";
+            else if (recording)
+                label += "  \u2014 it is recording";
+
+            menu.addItem (1, label, canRemove);
+        }
+
+        // Input assignment for input tracks (greyed out/marked by RT-8's model).
+        if (isInput)
+        {
+            menu.addSeparator();
+            menu.addSubMenu ("Assign input", rrs::input_menu::buildChannelMenu (
+                                                 items, mapping.firstChannel,
+                                                 mapping.layout != InputLayout::None,
+                                                 [this] (int index) { return session.getTrackName (index); }));
+            menu.addSubMenu ("Layout", rrs::input_menu::buildLayoutMenu (
+                                           mapping.layout, layoutAvailabilityFor (session, trackIndex),
+                                           "taken by another track"));
+        }
+
+        juce::Component::SafePointer<MainComponent> safe (this);
+
+        menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this)
+                                                     .withMousePosition(),
+                            [safe, trackIndex] (int result)
                             {
                                 auto* self = safe.getComponent();
 
                                 if (self == nullptr || result == 0)
                                     return;
 
-                                auto m = self->session.getTrackInputMapping (trackIndex);
-
-                                if (result >= 100 && result < 100 + numChannels)
-                                {
-                                    m.firstChannel = result - 100;
-
-                                    // RT-4: picking a channel ASSIGNS an unassigned
-                                    // track (otherwise the layout would stay None).
-                                    if (m.layout == InputLayout::None)
-                                        m.layout = InputLayout::Mono;
-                                }
-                                else if (result == 200) m.layout = InputLayout::Auto;
-                                else if (result == 201) m.layout = InputLayout::Mono;
-                                else if (result == 202) m.layout = InputLayout::Stereo;
-                                else if (result == 203) m.layout = InputLayout::MultiChannel;
-
-                                // Keep the channel count coherent with the layout.
-                                if (m.layout == InputLayout::MultiChannel)
-                                    m.numChannels = juce::jmax (1, numChannels - m.firstChannel);
-                                else if (m.layout == InputLayout::Stereo)
-                                    m.numChannels = 2;
+                                if (result == 1)
+                                    self->deleteTrackAt (trackIndex);
                                 else
-                                    m.numChannels = 1;
-
-                                self->session.setTrackInputMapping (trackIndex, m);
-                                self->refreshTransportUi();
-                                self->repaint();
+                                    self->applyInputMenuResult (trackIndex, result);
                             });
     }
 

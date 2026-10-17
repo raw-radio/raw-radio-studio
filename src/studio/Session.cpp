@@ -584,6 +584,109 @@ namespace rrs
         return readTrackMapping (trackIndex);
     }
 
+    std::vector<SpanOwner> Session::inputSpans (int excludeTrack) const
+    {
+        // The spans of the ASSIGNED input tracks (RT-1/RT-6): the single occupancy
+        // source for the conflict check (setTrackInputMapping) and the Channel menu
+        // (getInputChannelMenu). `None` tracks occupy nothing and are skipped.
+        const int deviceChannels = juce::jmax (0, audio.getNumActiveInputChannels());
+
+        std::vector<SpanOwner> spans;
+
+        for (auto index : inputTrackIndices())
+        {
+            if (index == excludeTrack)
+                continue;
+
+            const auto mapping = readTrackMapping (index);
+            const int need = mappingChannelSpan (mapping, deviceChannels);
+
+            if (need <= 0)
+                continue;
+
+            spans.push_back ({ mapping.firstChannel, need, index });
+        }
+
+        return spans;
+    }
+
+    bool Session::canSetTrackInputMapping (int trackIndex, const InputMapping& mapping,
+                                           juce::String* reason) const
+    {
+        auto* track = getTrack (trackIndex);
+
+        if (edit == nullptr || track == nullptr || ! isInputTrack (*track))
+        {
+            if (reason != nullptr)
+                *reason = "Only input tracks can be assigned a hardware input.";
+
+            return false;
+        }
+
+        const int deviceChannels = juce::jmax (0, audio.getNumActiveInputChannels());
+        const int need = mappingChannelSpan (mapping, deviceChannels);
+
+        // Unassigned occupies nothing; with no device open there is nothing to
+        // conflict with either (the planner surfaces an off-device reason later).
+        if (need <= 0 || deviceChannels <= 0)
+            return true;
+
+        const auto occupancy = buildSpanOccupancy (inputSpans (trackIndex), deviceChannels);
+        const auto check = checkSpanOccupancy (mapping.firstChannel, need, deviceChannels, occupancy);
+
+        // RT-6/I6 refuses exactly the case the owner named: switching to a STEREO
+        // PAIR (a 2-channel span) whose pair would take a channel owned by another
+        // track. Two deliberate non-refusals:
+        //   * an identical span shares (RT-4) — `check` already reports None;
+        //   * a mono/multi span overlapping an owned channel stays writable so the
+        //     planner can report it as a per-track problem (RT-2b pin-invalid) —
+        //     the pre-RT-6 behaviour those tests pin.
+        if (need != 2 || check.conflict != SpanConflict::OwnedByOther)
+            return true;
+
+        if (reason != nullptr)
+        {
+            // Reuse the planner's wording (describeInputProblem) so the refusal and
+            // the per-track problem read identically — one message source (RT-3 M1).
+            rrs::TrackLayoutResult r;
+            r.trackIndex = trackIndex;
+            r.firstChannel = mapping.firstChannel;
+            r.need = need;
+            r.layout = planLayoutFor (mapping.layout, deviceChannels);
+            r.placed = false;
+            r.error = InputGroupingError::OccupiedNeighbour;
+            r.ownerTrackIndex = check.ownerTrackIndex;
+            r.conflictChannel = check.conflictChannel;
+            *reason = describeInputProblem (r);
+        }
+
+        return false;
+    }
+
+    std::vector<ChannelMenuItem> Session::getInputChannelMenu (int trackIndex) const
+    {
+        const int deviceChannels = getNumInputChannels();
+
+        // No device open: keep the historical single, unmarked channel so the menu
+        // is never empty (assignment still works; the planner flags it later).
+        if (deviceChannels <= 0)
+            return { ChannelMenuItem { 0, ChannelAvailability::Free, -1 } };
+
+        const auto mapping = readTrackMapping (trackIndex);
+        int proposedNeed = mappingChannelSpan (mapping, deviceChannels);
+
+        // An unassigned track offers single channels (its span is not defined yet).
+        if (proposedNeed <= 0)
+            proposedNeed = 1;
+
+        return channelMenuModel (proposedNeed, deviceChannels, inputSpans (trackIndex));
+    }
+
+    bool Session::isTrackRecording (int trackIndex) const
+    {
+        return isRecording() && isTrackArmed (trackIndex);
+    }
+
     void Session::detachTrackFromHardwareInput (int trackIndex)
     {
         auto* track = getTrack (trackIndex);
@@ -746,6 +849,20 @@ namespace rrs
         {
             lastError = "Only input tracks can be assigned a hardware input.";
             return false;
+        }
+
+        // RT-6: refuse a layout change whose span overlaps a channel owned by a
+        // DIFFERENT span (an identical span is shared — RT-4). The mapping is not
+        // written, so the previous assignment is untouched (no silent overwrite).
+        {
+            juce::String conflict;
+
+            if (! canSetTrackInputMapping (trackIndex, mapping, &conflict))
+            {
+                lastError = conflict.isNotEmpty() ? conflict
+                                                  : "This input cannot be assigned.";
+                return false;
+            }
         }
 
         writeTrackMapping (*track, mapping);
@@ -1324,6 +1441,15 @@ namespace rrs
         if (track == nullptr || getNumAudioTracks() <= 1)
         {
             lastError = "Cannot remove the last track.";
+            return false;
+        }
+
+        // RT-9: removing a track mid-take would drop the take and its file. Refuse
+        // for the track that is actually being written (recording + armed), not for
+        // every track — the others may be removed even while a take rolls.
+        if (isTrackRecording (index))
+        {
+            lastError = "Cannot remove a track while it is recording. Stop the take first.";
             return false;
         }
 

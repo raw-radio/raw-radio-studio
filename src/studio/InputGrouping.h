@@ -138,17 +138,131 @@ namespace rrs
         return channel >= 0 && occupancy.find (channel) == occupancy.end();
     }
 
+    //==========================================================================
+    // Span occupancy: ONE source of truth for "who owns a channel" (RT-4/RT-6/RT-8).
+    //
+    // A channel is owned by a *span* (a starting channel + a length), not by a
+    // bare track index: RT-4 allows several tracks to **share an identical span**
+    // (same start + same length) on one device, while a *different* span that
+    // overlaps an owned channel is refused. Recording the span (not just the
+    // track) is therefore required to tell sharing from a real conflict.
+    //
+    // These primitives are the SINGLE implementation of that rule: the planner
+    // (`planInputLayout`), the Session write guard (RT-6) and the Channel menu
+    // (RT-8) all decide through `checkSpanOccupancy`, so they cannot disagree.
+
+    /** One track's occupied span. `need` is the channel count (>= 1). */
+    struct SpanOwner
+    {
+        int firstChannel = 0;
+        int need = 1;
+        int trackIndex = -1;
+    };
+
+    /** `channel -> owning span` (empty optional = free). Channels outside the
+        device are simply not represented. Used by `checkSpanOccupancy` and the
+        Channel menu (RT-8). */
+    inline std::vector<std::optional<SpanOwner>> buildSpanOccupancy (std::span<const SpanOwner> spans,
+                                                                    int deviceChannels)
+    {
+        std::vector<std::optional<SpanOwner>> owner ((size_t) juce::jmax (0, deviceChannels));
+
+        for (const auto& span : spans)
+        {
+            if (span.need < 1 || ! channelSpanFits (span.firstChannel, span.need, deviceChannels))
+                continue;
+
+            for (int i = 0; i < span.need; ++i)
+                owner[(size_t) (span.firstChannel + i)] = span;
+        }
+
+        return owner;
+    }
+
+    /** Why a proposed span cannot be placed (RT-6). */
+    enum class SpanConflict
+    {
+        None,           ///< free, or shared with an identical span (RT-4)
+        OffDevice,      ///< the span runs off the device
+        OwnedByOther    ///< an overlapping channel is owned by a DIFFERENT span
+    };
+
+    /** The outcome of `checkSpanOccupancy`. */
+    struct SpanCheckResult
+    {
+        SpanConflict conflict = SpanConflict::None;
+        int conflictChannel = -1;   ///< the offending channel (0-based)
+        int ownerTrackIndex = -1;   ///< the owner track for `OwnedByOther`
+        int ownerNeed = 0;          ///< the owner span's length for `OwnedByOther`
+    };
+
+    /** Checks whether a span `first .. first + need - 1` may be placed against an
+        occupancy built by `buildSpanOccupancy`.
+
+        RT-4 sharing: a channel owned by an **identical** span (same
+        `firstChannel` + same `need`) is shared, not a conflict. Any other owner —
+        including a different-length span starting on the same channel — is a
+        conflict, reported with the offending channel, its owner and the owner's
+        span length (I6; the caller distinguishes a "neighbour" conflict). */
+    inline SpanCheckResult checkSpanOccupancy (int first, int need, int deviceChannels,
+                                               const std::vector<std::optional<SpanOwner>>& occupancy)
+    {
+        SpanCheckResult result;
+
+        if (need < 1)
+            return result; // a zero-length span occupies nothing (unassigned)
+
+        if (! channelSpanFits (first, need, deviceChannels))
+        {
+            result.conflict = SpanConflict::OffDevice;
+            result.conflictChannel = first;
+            return result;
+        }
+
+        for (int i = 0; i < need; ++i)
+        {
+            const auto& slot = occupancy[(size_t) (first + i)];
+
+            if (! slot.has_value())
+                continue;
+
+            // Same span (start + length): sharing (RT-4) — never a conflict.
+            if (slot->firstChannel == first && slot->need == need)
+                continue;
+
+            result.conflict = SpanConflict::OwnedByOther;
+            result.conflictChannel = first + i;
+            result.ownerTrackIndex = slot->trackIndex;
+            result.ownerNeed = slot->need;
+            return result;
+        }
+
+        return result;
+    }
+
+    /** Would switching to a stereo pair on `(firstChannel, firstChannel + 1)`
+        conflict with `otherSpans` (the spans of the OTHER tracks)? A thin wrapper
+        over `checkSpanOccupancy` so the stereo switch (I6, RT-6) shares the one
+        rule — identical spans still share (RT-4). */
+    inline bool wouldConflictOnSwitchToStereo (int firstChannel, int deviceChannels,
+                                               std::span<const SpanOwner> otherSpans)
+    {
+        const auto occupancy = buildSpanOccupancy (otherSpans, deviceChannels);
+        return checkSpanOccupancy (firstChannel, 2, deviceChannels, occupancy).conflict
+               != SpanConflict::None;
+    }
+
     /** Per-track layout plan: places each request in canonical (`trackIndex`)
-        order, keeping a channel-occupancy map. A track that cannot be placed
+        order, keeping a span occupancy. A track that cannot be placed
         gets an explicit `error` (with `ownerTrackIndex`/`conflictChannel`) while
         the others are still placed — unlike the all-or-nothing
         `planInputGrouping`. This is the single rule both `configureTracks` and
         the per-track "input problem" read (RT-3 M1/M2).
 
-        Occupancy (RT-4 refresh): tracks may **share an identical span** (same
-        `firstChannel` + same `need`) — several tracks on one channel/pair is
-        valid (the device config is identical). A *different* span overlapping an
-        owned channel is still refused. */
+        Occupancy (RT-4): tracks may **share an identical span** (same
+        `firstChannel` + same `need`). The placement decision is
+        `checkSpanOccupancy` itself — the same primitive the Session write guard
+        (RT-6) and the Channel menu (RT-8) use, so all three agree by construction. */
     inline InputLayoutPlan planInputLayout (std::span<const TrackInputRequest> requests,
                                             int deviceChannels)
     {
@@ -162,8 +276,17 @@ namespace rrs
         const bool hasDevice = deviceChannels > 0;
 
         // For each channel: the span that owns it (so identical spans can share).
-        struct Span { int first; int need; int repTrack; };
-        std::vector<std::optional<Span>> owner (hasDevice ? (size_t) deviceChannels : 0);
+        std::vector<std::optional<SpanOwner>> owner (hasDevice ? (size_t) deviceChannels : 0);
+
+        auto place = [&owner, hasDevice] (int first, int need, int trackIndex) noexcept
+        {
+            if (! hasDevice)
+                return;
+
+            for (int i = 0; i < need; ++i)
+                if (first + i >= 0 && first + i < (int) owner.size())
+                    owner[(size_t) (first + i)] = SpanOwner { first, need, trackIndex };
+        };
 
         auto isFreeAt = [&owner, hasDevice] (int channel) noexcept
         {
@@ -199,38 +322,28 @@ namespace rrs
             {
                 const int first = request.requestedChannel;
 
-                if (! channelSpanFits (first, r.need, deviceChannels))
+                // ONE rule: the same span-occupancy check the write guard (RT-6)
+                // and the Channel menu (RT-8) use. `ownerNeed` picks the wording
+                // (a pair touching a neighbour vs a mono channel clash).
+                const auto check = checkSpanOccupancy (first, r.need, deviceChannels, owner);
+
+                if (check.conflict == SpanConflict::OffDevice)
                 {
                     r.error = InputGroupingError::ChannelOffDevice;
                 }
+                else if (check.conflict == SpanConflict::OwnedByOther)
+                {
+                    r.error = (r.need == 2 || check.ownerNeed == 2)
+                                  ? InputGroupingError::OccupiedNeighbour
+                                  : InputGroupingError::ChannelOccupied;
+                    r.ownerTrackIndex = check.ownerTrackIndex;
+                    r.conflictChannel = check.conflictChannel;
+                }
                 else
                 {
-                    for (int i = 0; i < r.need; ++i)
-                    {
-                        const auto& slot = owner[(size_t) (first + i)];
-
-                        if (! slot.has_value())
-                            continue;
-
-                        // Same span (same start + same length): sharing is allowed.
-                        if (slot->first == first && slot->need == r.need)
-                            continue;
-
-                        r.error = (r.need == 2 || slot->need == 2) ? InputGroupingError::OccupiedNeighbour
-                                                                  : InputGroupingError::ChannelOccupied;
-                        r.ownerTrackIndex = slot->repTrack;
-                        r.conflictChannel = first + i;
-                        break;
-                    }
-
-                    if (r.error == InputGroupingError::None)
-                    {
-                        for (int i = 0; i < r.need; ++i)
-                            owner[(size_t) (first + i)] = Span { first, r.need, request.trackIndex };
-
-                        r.firstChannel = first;
-                        r.placed = true;
-                    }
+                    place (first, r.need, request.trackIndex);
+                    r.firstChannel = first;
+                    r.placed = true;
                 }
             }
             else
@@ -262,9 +375,7 @@ namespace rrs
                 }
                 else
                 {
-                    for (int i = 0; i < r.need; ++i)
-                        owner[(size_t) (chosen + i)] = Span { chosen, r.need, request.trackIndex };
-
+                    place (chosen, r.need, request.trackIndex);
                     r.firstChannel = chosen;
                     r.placed = true;
                 }
@@ -344,18 +455,93 @@ namespace rrs
         return occupancy;
     }
 
-    /** Would switching `trackIndex` (currently owning `firstChannel`) to a stereo
-        pair on `(firstChannel, firstChannel + 1)` conflict? True when the pair
-        runs off the device, or the right channel is owned by a different track
-        (I6 — refuse rather than overwrite). */
-    inline bool wouldConflictOnSwitchToStereo (int trackIndex, int firstChannel, int deviceChannels,
-                                               const std::map<int, int>& occupancy) noexcept
-    {
-        // B3: overflow-safe span check (shared helper); a stereo pair needs 2.
-        if (! channelSpanFits (firstChannel, 2, deviceChannels))
-            return true;
+    //==========================================================================
+    // RT-8 — the Channel menu model.
 
-        const auto owner = occupancy.find (firstChannel + 1);
-        return owner != occupancy.end() && owner->second != trackIndex;
+    /** How a hardware channel appears in the Channel menu (RT-8 / I4). */
+    enum class ChannelAvailability
+    {
+        Free,       ///< no owner — take it.
+        Shared,     ///< owned by an identical span (RT-4) — take it (shares the device).
+        Used,       ///< owned by a different span — DISABLED in the menu, labelled
+                    ///< with the owner.
+        OffDevice   ///< the proposed span would not fit (e.g. a pair at the last
+                    ///< channel). Kept SELECTABLE in the menu (RT-2b deliberately
+                    ///< allows pinning an invalid channel so the reason is shown),
+                    ///< only hinted in the label.
+    };
+
+    /** One Channel-menu row. `ownerTrackIndex` is set for `Shared` / `Used`. */
+    struct ChannelMenuItem
+    {
+        int channel = 0;
+        ChannelAvailability availability = ChannelAvailability::Free;
+        int ownerTrackIndex = -1;
+    };
+
+    /** Builds the Channel-menu model for a track that would take a span of
+        `proposedNeed` channels starting at each listed channel. `otherSpans` are
+        the spans of the OTHER input tracks.
+
+        Every real device channel `0 .. deviceChannels - 1` is listed (I4). The mark
+        is the SAME decision the write guard uses (`checkSpanOccupancy`), so the menu
+        and `Session::canSetTrackInputMapping` can never disagree:
+          * `Shared`  — the span starting here is IDENTICAL to an owner's span
+                        (RT-4 sharing — selectable),
+          * `Used`    — the span would overlap a DIFFERENT span (disabled; owner set),
+          * `OffDevice` — the span does not fit the device (disabled; RT-2b keeps
+                        it selectable at write time, the menu only hints),
+          * `Free`    — no owner overlaps. */
+    inline std::vector<ChannelMenuItem> channelMenuModel (int proposedNeed, int deviceChannels,
+                                                          std::span<const SpanOwner> otherSpans)
+    {
+        const int need = juce::jmax (1, proposedNeed);
+        const auto occupancy = buildSpanOccupancy (otherSpans, deviceChannels);
+
+        std::vector<ChannelMenuItem> items;
+        items.reserve ((size_t) juce::jmax (0, deviceChannels));
+
+        for (int channel = 0; channel < deviceChannels; ++channel)
+        {
+            ChannelMenuItem item;
+            item.channel = channel;
+
+            const auto check = checkSpanOccupancy (channel, need, deviceChannels, occupancy);
+
+            switch (check.conflict)
+            {
+                case SpanConflict::OffDevice:
+                    item.availability = ChannelAvailability::OffDevice;
+                    break;
+
+                case SpanConflict::OwnedByOther:
+                    item.availability = ChannelAvailability::Used;
+                    item.ownerTrackIndex = check.ownerTrackIndex;
+                    break;
+
+                case SpanConflict::None:
+                default:
+                {
+                    // No conflict: shared only when this exact span is an owner's
+                    // own span (identical start + length), else free.
+                    const auto& slot = occupancy[(size_t) channel];
+
+                    if (slot.has_value() && slot->firstChannel == channel && slot->need == need)
+                    {
+                        item.availability = ChannelAvailability::Shared;
+                        item.ownerTrackIndex = slot->trackIndex;
+                    }
+                    else
+                    {
+                        item.availability = ChannelAvailability::Free;
+                    }
+                    break;
+                }
+            }
+
+            items.push_back (item);
+        }
+
+        return items;
     }
 }

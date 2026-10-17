@@ -33,6 +33,7 @@
 #include "ui/SidebarLayout.h"
 #include "studio/MeterCache.h"
 #include "studio/InputGrouping.h"
+#include "ui/InputMenuModel.h"
 
 #include <vector>
 
@@ -1831,10 +1832,354 @@ TEST_CASE ("input grouping: stereo is refused when a neighbour channel is taken"
 
     // The pure switch check agrees: switching a mono-on-1 track to stereo on 0
     // would take channel 1, owned by track 0.
-    const std::map<int, int> occ { { 1, 0 } };
-    CHECK (wouldConflictOnSwitchToStereo (1, 0, 4, occ));
-    CHECK_FALSE (wouldConflictOnSwitchToStereo (0, 0, 4, occ)); // owns channel 1 itself
-    CHECK (wouldConflictOnSwitchToStereo (0, 3, 4, occ));       // pair runs off a 4-ch device
+    const std::vector<SpanOwner> other { SpanOwner { 1, 1, 0 } };
+    CHECK (wouldConflictOnSwitchToStereo (0, 4, other));       // channel 1 owned by track 0
+    CHECK_FALSE (wouldConflictOnSwitchToStereo (2, 4, other)); // 2-3 is free
+    CHECK (wouldConflictOnSwitchToStereo (3, 4, other));       // pair runs off a 4-ch device
+
+    // RT-4: an IDENTICAL span shares — a second stereo pair on 0-1 is not a
+    // conflict with an existing 0-1 pair.
+    const std::vector<SpanOwner> otherPair { SpanOwner { 0, 2, 0 } };
+    CHECK_FALSE (wouldConflictOnSwitchToStereo (0, 4, otherPair));
+
+    // A different-length span on the same start IS a conflict (mono 0 vs pair 0-1).
+    const std::vector<SpanOwner> otherMono { SpanOwner { 0, 1, 0 } };
+    CHECK (wouldConflictOnSwitchToStereo (0, 4, otherMono));
+}
+
+//==============================================================================
+// RT-6: the span-aware occupancy check — sharing (RT-4) vs a real conflict.
+TEST_CASE ("input occupancy: a span is shared only when it is identical (RT-6)")
+{
+    using namespace rrs;
+
+    // Track 0 owns channel 1 (mono).
+    const std::vector<SpanOwner> other { SpanOwner { 1, 1, 0 } };
+
+    // Free channel (0) — no conflict.
+    {
+        const auto occ = buildSpanOccupancy (other, 4);
+        const auto r = checkSpanOccupancy (0, 1, 4, occ);
+        CHECK (r.conflict == SpanConflict::None);
+    }
+
+    // Same channel, same length (mono 1 vs mono 1) — sharing, not a conflict.
+    {
+        const auto occ = buildSpanOccupancy (other, 4);
+        const auto r = checkSpanOccupancy (1, 1, 4, occ);
+        CHECK (r.conflict == SpanConflict::None);
+    }
+
+    // Same start, DIFFERENT length (pair 1-2 vs mono 1) — conflict, owner named.
+    {
+        const auto occ = buildSpanOccupancy (other, 4);
+        const auto r = checkSpanOccupancy (1, 2, 4, occ);
+        CHECK (r.conflict == SpanConflict::OwnedByOther);
+        CHECK (r.conflictChannel == 1);
+        CHECK (r.ownerTrackIndex == 0);
+    }
+
+    // A pair whose right channel is owned (0-1 over a mono on 1) — conflict on 1.
+    {
+        const auto occ = buildSpanOccupancy (other, 4);
+        const auto r = checkSpanOccupancy (0, 2, 4, occ);
+        CHECK (r.conflict == SpanConflict::OwnedByOther);
+        CHECK (r.conflictChannel == 1);
+    }
+
+    // Off the device — its own outcome, never an owner.
+    {
+        const auto occ = buildSpanOccupancy (other, 4);
+        const auto r = checkSpanOccupancy (3, 2, 4, occ);
+        CHECK (r.conflict == SpanConflict::OffDevice);
+    }
+
+    // An unassigned track (zero-length span) is never a conflict.
+    {
+        const auto occ = buildSpanOccupancy (other, 4);
+        CHECK (checkSpanOccupancy (0, 0, 4, occ).conflict == SpanConflict::None);
+    }
+
+    // An identical stereo pair shares (both channels).
+    {
+        const std::vector<SpanOwner> pair { SpanOwner { 0, 2, 0 } };
+        const auto occ = buildSpanOccupancy (pair, 4);
+        CHECK (checkSpanOccupancy (0, 2, 4, occ).conflict == SpanConflict::None);
+    }
+}
+
+//==============================================================================
+// RT-6: the span of a mapping follows its layout (one source used by the menu and
+// the conflict check).
+TEST_CASE ("input mapping: the span follows the layout (RT-6)")
+{
+    using namespace rrs;
+
+    CHECK (mappingChannelSpan (InputMapping { 0, 1, InputLayout::None }, 4) == 0);
+    CHECK (mappingChannelSpan (InputMapping { 0, 1, InputLayout::Mono }, 4) == 1);
+    CHECK (mappingChannelSpan (InputMapping { 0, 2, InputLayout::Stereo }, 4) == 2);
+    CHECK (mappingChannelSpan (InputMapping { 1, 3, InputLayout::MultiChannel }, 4) == 3);
+    // Auto follows the device default (4 ch -> mono per channel).
+    CHECK (mappingChannelSpan (InputMapping { 0, 1, InputLayout::Auto }, 4) == 1);
+    CHECK (mappingChannelSpan (InputMapping { 0, 1, InputLayout::Auto }, 2) == 2);
+}
+
+//==============================================================================
+// RT-8: the Channel menu marks free / shared / used / off-device.
+TEST_CASE ("input occupancy: the channel menu marks free, shared, used and off-device (RT-8)")
+{
+    using namespace rrs;
+
+    // Track 0 (mono) owns channel 1; we build the menu for a MONO track.
+    const std::vector<SpanOwner> other { SpanOwner { 1, 1, 0 } };
+    const auto monoMenu = channelMenuModel (1, 4, other);
+    REQUIRE (monoMenu.size() == 4);
+
+    CHECK (monoMenu[0].availability == ChannelAvailability::Free);
+    CHECK (monoMenu[0].ownerTrackIndex == -1);
+    CHECK (monoMenu[1].availability == ChannelAvailability::Shared); // identical span
+    CHECK (monoMenu[1].ownerTrackIndex == 0);
+    CHECK (monoMenu[2].availability == ChannelAvailability::Free);
+    CHECK (monoMenu[3].availability == ChannelAvailability::Free);
+
+    // The same occupancy seen by a STEREO track: channel 1 is now a different span
+    // (used), and the last channel cannot start a pair (off-device).
+    const auto stereoMenu = channelMenuModel (2, 4, other);
+    REQUIRE (stereoMenu.size() == 4);
+    CHECK (stereoMenu[1].availability == ChannelAvailability::Used);
+    CHECK (stereoMenu[1].ownerTrackIndex == 0);
+    CHECK (stereoMenu[3].availability == ChannelAvailability::OffDevice);
+
+    // A stereo pair owner is shared only by an identical stereo pair.
+    const std::vector<SpanOwner> pair { SpanOwner { 0, 2, 0 } };
+    const auto pairMenu = channelMenuModel (2, 4, pair);
+    CHECK (pairMenu[0].availability == ChannelAvailability::Shared);
+    CHECK (pairMenu[1].availability == ChannelAvailability::Used);
+    CHECK (pairMenu[2].availability == ChannelAvailability::Free);
+    CHECK (pairMenu[3].availability == ChannelAvailability::OffDevice);
+}
+
+//==============================================================================
+// RT-6/RT-8: when a span is BOTH off-device and overlapping an owner, the
+// off-device outcome wins (RT-2b: an off-device pin is a valid, reported state,
+// never a "taken" clash).
+TEST_CASE ("input occupancy: off-device wins over an owner (RT-6)")
+{
+    using namespace rrs;
+
+    // Owner: mono on channel 3 (the last channel of a 4-ch device).
+    const std::vector<SpanOwner> other { SpanOwner { 3, 1, 0 } };
+    const auto occ = buildSpanOccupancy (other, 4);
+
+    // A stereo pair at 3 runs off the device AND touches the owner: off-device.
+    const auto check = checkSpanOccupancy (3, 2, 4, occ);
+    CHECK (check.conflict == SpanConflict::OffDevice);
+    CHECK (check.ownerTrackIndex == -1); // off-device blames no owner
+
+    // ... and the Channel menu says so: channel 3 (its pair runs off-device) and
+    // channel 2 (its pair would take the owner's channel 3) differ, while 1 is free.
+    const auto menu = channelMenuModel (2, 4, other);
+    CHECK (menu[1].availability == ChannelAvailability::Free);
+    CHECK (menu[2].availability == ChannelAvailability::Used);       // pair 2-3 takes ch 3
+    CHECK (menu[3].availability == ChannelAvailability::OffDevice);  // pair 3-4 off-device
+}
+
+//==============================================================================
+// B1 regression: the menu id decoder must never confuse a Layout id (200..203)
+// with a channel (100..199). This is the unit test whose absence let the bug ship.
+TEST_CASE ("input menu: ids decode to channels vs layouts and never cross over (B1)")
+{
+    using namespace rrs::input_menu;
+
+    // Channels: 100 + channel, up to (but not including) the layout base.
+    for (int channel = 0; channel < 8; ++channel)
+    {
+        const auto sel = decodeResult (channelItemBase + channel);
+        CHECK (sel.kind == MenuSelection::Kind::Channel);
+        CHECK (sel.channel == channel);
+    }
+
+    // The last addressable channel and the first layout id do not overlap.
+    CHECK (decodeResult (channelItemBase + 99).kind == MenuSelection::Kind::Channel);
+    CHECK (decodeResult (channelItemBase + 99).channel == 99);
+
+    // Layouts: each decodes to a Layout, never to a channel.
+    const std::pair<int, InputLayout> layouts[] {
+        { layoutAuto, InputLayout::Auto }, { layoutMono, InputLayout::Mono },
+        { layoutStereo, InputLayout::Stereo }, { layoutMulti, InputLayout::MultiChannel } };
+
+    for (const auto& [id, layout] : layouts)
+    {
+        const auto sel = decodeResult (id);
+        CHECK (sel.kind == MenuSelection::Kind::Layout);
+        CHECK (sel.layout == layout);
+        CHECK (sel.channel == -1);                 // the B1 symptom: 201 -> channel 101
+        CHECK_FALSE (sel.kind == MenuSelection::Kind::Channel);
+    }
+
+    // The exact ids from the bug report are layouts, not channels 101/102/103.
+    CHECK (decodeResult (201).layout == InputLayout::Mono);
+    CHECK (decodeResult (202).layout == InputLayout::Stereo);
+    CHECK (decodeResult (203).layout == InputLayout::MultiChannel);
+
+    // Dismissed / unknown ids decode to nothing.
+    CHECK_FALSE (decodeResult (0).isValid());
+    CHECK_FALSE (decodeResult (-1).isValid());
+    CHECK_FALSE (decodeResult (204).isValid());
+    CHECK_FALSE (decodeResult (99).isValid());
+}
+
+//==============================================================================
+// B1: applying a menu result changes the LAYOUT for a layout id and the CHANNEL
+// for a channel id — the same code path both popups use.
+TEST_CASE ("input menu: applying a result changes layout vs channel correctly (B1)")
+{
+    using namespace rrs;
+    using namespace rrs::input_menu;
+
+    const int numChannels = 4;
+
+    // A layout id must never touch the channel.
+    {
+        InputMapping m { 1, 1, InputLayout::Mono };
+        CHECK (applySelection (decodeResult (layoutStereo), m, numChannels));
+        CHECK (m.layout == InputLayout::Stereo);
+        CHECK (m.firstChannel == 1);       // unchanged (the B1 bug wrote 102)
+        CHECK (m.numChannels == 2);
+    }
+
+    const std::pair<int, InputLayout> otherLayouts[] {
+        { layoutAuto, InputLayout::Auto }, { layoutMono, InputLayout::Mono },
+        { layoutMulti, InputLayout::MultiChannel } };
+
+    for (const auto& [id, layout] : otherLayouts)
+    {
+        InputMapping m { 1, 1, InputLayout::Mono };
+        CHECK (applySelection (decodeResult (id), m, numChannels));
+        CHECK (m.layout == layout);
+        CHECK (m.firstChannel == 1);
+    }
+
+    // A channel id changes the channel (and assigns an unassigned track).
+    {
+        InputMapping m { 0, 1, InputLayout::None };
+        CHECK (applySelection (decodeResult (channelItemBase + 3), m, numChannels));
+        CHECK (m.firstChannel == 3);
+        CHECK (m.layout == InputLayout::Mono);   // RT-4: picking assigns
+        CHECK (m.numChannels == 1);
+    }
+
+    // A channel id keeps an already-set layout.
+    {
+        InputMapping m { 0, 2, InputLayout::Stereo };
+        CHECK (applySelection (decodeResult (channelItemBase + 1), m, numChannels));
+        CHECK (m.firstChannel == 1);
+        CHECK (m.layout == InputLayout::Stereo);
+        CHECK (m.numChannels == 2);
+    }
+
+    // Multi takes every remaining channel from `firstChannel`.
+    {
+        InputMapping m { 0, 1, InputLayout::Mono };
+        CHECK (applySelection (decodeResult (layoutMulti), m, numChannels));
+        CHECK (m.layout == InputLayout::MultiChannel);
+        CHECK (m.numChannels == numChannels);
+    }
+
+    // Nothing decodes -> nothing changes.
+    {
+        InputMapping m { 2, 1, InputLayout::Mono };
+        const auto before = m;
+        CHECK_FALSE (applySelection (decodeResult (0), m, numChannels));
+        CHECK (m == before);
+    }
+}
+
+//==============================================================================
+// RT-6: `probeLayoutAvailability` must not offer an unavailable layout and must
+// not hide an available one.
+TEST_CASE ("input menu: layout availability probe reflects the refusal rule (RT-6)")
+{
+    using namespace rrs;
+    using namespace rrs::input_menu;
+
+    const int numChannels = 4;
+    const InputMapping mono { 1, 1, InputLayout::Mono };
+
+    // Only Stereo is refused (its pair would take a channel owned by another
+    // track); everything else stays available.
+    const auto stereoBlocked = probeLayoutAvailability (
+        mono, numChannels,
+        [] (const InputMapping& probe) { return probe.layout != InputLayout::Stereo; });
+
+    CHECK (stereoBlocked.autoLayout);
+    CHECK (stereoBlocked.mono);
+    CHECK_FALSE (stereoBlocked.stereo);
+    CHECK (stereoBlocked.multi);
+
+    // The probe passes the RIGHT mapping for each layout (Auto keeps the channel,
+    // Stereo is a 2-channel pair, Multi spans to the device end).
+    std::vector<InputMapping> seen;
+
+    juce::ignoreUnused (probeLayoutAvailability (
+        mono, numChannels,
+        [&seen] (const InputMapping& probe) { seen.push_back (probe); return true; }));
+
+    REQUIRE (seen.size() == 4u);
+    CHECK (seen[0].layout == InputLayout::Auto);
+    CHECK (seen[0].firstChannel == 1);
+    CHECK (seen[1].layout == InputLayout::Mono);
+    CHECK (seen[1].numChannels == 1);
+    CHECK (seen[2].layout == InputLayout::Stereo);
+    CHECK (seen[2].numChannels == 2);
+    CHECK (seen[3].layout == InputLayout::MultiChannel);
+    CHECK (seen[3].numChannels == numChannels - 1);
+}
+
+//==============================================================================
+// M3 invariant: the planner and the standalone span occupancy give the SAME
+// verdict (free / shared / taken / off-device) for the same situation — the two
+// "sharing" implementations cannot silently drift.
+TEST_CASE ("input grouping: the planner agrees with checkSpanOccupancy (M3 invariant)")
+{
+    using namespace rrs;
+
+    // A pinned mono on channel 1 (track 0) and a pinned pair 0-1 (track 1).
+    const auto plannerVerdict = [ ] (int first, int need,
+                                     const std::vector<TrackInputRequest>& priorRequests,
+                                     int deviceChannels)
+    {
+        std::vector<TrackInputRequest> requests = priorRequests;
+        requests.push_back (TrackInputRequest { 99, need == 2 ? InputLayout::Stereo : InputLayout::Mono,
+                                                first, need });
+        const auto plan = planInputLayout (requests, deviceChannels);
+
+        for (const auto& t : plan.tracks)
+            if (t.trackIndex == 99)
+                return t.error;
+
+        return InputGroupingError::InvalidTrackIndex;
+    };
+
+    const std::vector<TrackInputRequest> prior { TrackInputRequest { 0, InputLayout::Mono, 1, 0 } };
+    const std::vector<SpanOwner> occ { SpanOwner { 1, 1, 0 } };
+    const auto occupancy = buildSpanOccupancy (occ, 4);
+
+    // Free: channel 0 (mono).
+    CHECK (plannerVerdict (0, 1, prior, 4) == InputGroupingError::None);
+    CHECK (checkSpanOccupancy (0, 1, 4, occupancy).conflict == SpanConflict::None);
+
+    // Shared: channel 1 (identical mono span).
+    CHECK (plannerVerdict (1, 1, prior, 4) == InputGroupingError::None);
+    CHECK (checkSpanOccupancy (1, 1, 4, occupancy).conflict == SpanConflict::None);
+
+    // Taken: channel 1 as a pair (different length).
+    CHECK (plannerVerdict (1, 2, prior, 4) == InputGroupingError::OccupiedNeighbour);
+    CHECK (checkSpanOccupancy (1, 2, 4, occupancy).conflict == SpanConflict::OwnedByOther);
+
+    // Off-device: a pair at channel 3.
+    CHECK (plannerVerdict (3, 2, prior, 4) == InputGroupingError::ChannelOffDevice);
+    CHECK (checkSpanOccupancy (3, 2, 4, occupancy).conflict == SpanConflict::OffDevice);
 }
 
 TEST_CASE ("input grouping: deterministic — the result does not depend on insertion order")

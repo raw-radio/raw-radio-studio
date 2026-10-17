@@ -188,12 +188,43 @@ allocated per **span**, so sharing tracks share one `WaveInputDevice`.
   tracks share one span the trim of the *representative* track wins — a second sharing track's trim
   has no effect. Per-track gain would need a per-track gain stage before the input node (a semantic
   change), so it is knowingly deferred.
-- **Channel-menu occupancy marking** (show which channels are taken/occupied) is **RT-8**; the menu
-  lists raw channels without marks for now.
+- **Channel-menu occupancy marking** — **delivered (RT-8)**: both popups (gutter + mixer) are built
+  from one occupancy source (`Session::getInputChannelMenu` → `rrs::input_menu::buildChannelMenu`),
+  listing every real device channel and marking it free / shared (identical span, RT-4) / used
+  (another span, disabled, named owner) / off-device (hinted). The mixer chips are unchanged — they
+  read the planner's per-track problem (`getTrackInputProblem`), which now shares the **one** span
+  rule with the menu (`checkSpanOccupancy`), so a mark and a chip can never disagree. Occupancy follows
+  the tracks' **saved (intended)** mappings, not only the applied layouts (documented + tested).
 - **`Stereo` on a device too small for a pair** degrades to a 2-channel centred `L == R` config in
   `mappedChannelsFor`. This is **unreachable via `configureTracks`** (the planner flags the span as
   off-device and the track gets no input/config), but is documented so the fallback is not mistaken
   for the RT-5 mono path.
+
+**Delivered (RT-6 / RT-8 / RT-9).**
+
+- **RT-6 — refuse `mono→stereo` over an occupied neighbour.** `Session::canSetTrackInputMapping`
+  rejects a **2-channel** span (a pair) whose channels are owned by a *different* span, with the
+  owner named (the wording comes from `describeInputProblem`, so the refusal and the per-track
+  problem read the same). `setTrackInputMapping` calls it **before** writing, so a refusal leaves the
+  mapping untouched (no silent overwrite). Two deliberate non-refusals: an identical span is shared
+  (RT-4), and a mono/multi span overlapping an owned channel stays writable so the planner reports it
+  as a per-track problem (RT-2b pin-invalid — that behaviour is preserved).
+- **RT-8 — the Channel menu.** One pure model (`rrs::channelMenuModel`) + one builder
+  (`src/ui/InputMenu.h`) used by both popups; the mark is the same `checkSpanOccupancy` decision as
+  the write guard, so the menu and the guard can never disagree. `Free` / `Shared "…"` (selectable) /
+  `Used "…"` (disabled, owner named) / off-device (hint). A `None` track still ticks nothing.
+  The **result decoding lives in `src/ui/InputMenuModel.h`** (`decodeResult` → `MenuSelection` →
+  `applySelection`): one decoder, one mapping update for both popups, with `static_assert`s keeping
+  the channel ids (100..199) and layout ids (200..203) disjoint — the B1 bug was a hand-rolled
+  `id >= channelItemBase` test that read a Layout id as a channel (`firstChannel = 101..103`).
+  The single span rule is `checkSpanOccupancy`: the planner (`planInputLayout`), the RT-6 guard and
+  the menu all decide through it (the M3 invariant test pins planner ↔ occupancy agreement).
+- **RT-9 — right-click track menu + any-track removal.** Right-click on a lane/gutter opens
+  *Remove track (Cmd/Ctrl+Delete)* + *Assign input* + *Layout*; the same removal is on the hotkey
+  **Cmd/Ctrl+Delete** (plain Delete stays "delete clip"; only Cmd+Z was taken on the command
+  modifier, so there is no clash) and on the existing action-row button — all through one
+  `MainComponent::deleteTrackAt`. Any track may be removed (middle, unarmed, …) except the last and
+  the one whose take is rolling (`Session::removeAudioTrack` guards `isTrackRecording`).
 
 ### Commit & review sequence
 
@@ -293,7 +324,9 @@ review** (recovery/import path). The rest are ordinary UI reviews.
   a valid configuration.
 - **Back-compat migration.** Opening a pre-change session (single `Auto` track) after the I5 default
   change — does the stored mapping migrate cleanly, or does it need a migration step?
-- **Layout-refusal surface (RT-6).** Status bar vs a modal for the mono→stereo refusal.
+- **Layout-refusal surface (RT-6) — RESOLVED.** The refusal is shown on the shared **status line**
+  (both popups) and the refused layout is greyed out in the Layout submenu with "— taken by another
+  track" (probed via `Session::canSetTrackInputMapping`), so the user sees the reason before choosing.
 - **LV2 packages.** Which LV2 test packages exist on Ubuntu 24.04, their names, and what the plugin
   browser actually lists (for the evidence screenshot).
 

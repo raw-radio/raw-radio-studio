@@ -5,6 +5,7 @@
 #include "BrandColours.h"
 #include "BrandFonts.h"
 #include "FaderTaper.h"
+#include "InputMenu.h"
 #include "MixerLayout.h"
 
 namespace rrs
@@ -693,64 +694,57 @@ namespace rrs
     //==============================================================================
     void MixerPanel::showInputMenu (int trackIndex)
     {
-        auto mapping = session.getTrackInputMapping (trackIndex);
-        const auto numChannels = juce::jmax (1, session.getNumInputChannels());
+        // Same menu as MainComponent::showLaneInputMenu, built from ONE occupancy
+        // source (Session::getInputChannelMenu) via the shared InputMenu builder
+        // (RT-8) — neither popup re-implements the marking rule.
+        const auto mapping = session.getTrackInputMapping (trackIndex);
+        const auto items = session.getInputChannelMenu (trackIndex);
 
-        juce::PopupMenu channelMenu;
-        const bool assigned = mapping.layout != InputLayout::None;
-
-        for (int ch = 0; ch < numChannels; ++ch)
-            channelMenu.addItem (100 + ch, "Input " + juce::String (ch + 1), true,
-                                 assigned && ch == mapping.firstChannel);
-
-        juce::PopupMenu layoutMenu;
-        layoutMenu.addItem (200, "Auto", true, mapping.layout == InputLayout::Auto);
-        layoutMenu.addItem (201, "Mono", true, mapping.layout == InputLayout::Mono);
-        layoutMenu.addItem (202, "Stereo", true, mapping.layout == InputLayout::Stereo);
-        layoutMenu.addItem (203, "Multi-channel", true, mapping.layout == InputLayout::MultiChannel);
+        auto availability = rrs::input_menu::probeLayoutAvailability (
+            mapping, juce::jmax (1, session.getNumInputChannels()),
+            [this, trackIndex] (const InputMapping& probe)
+            { return session.canSetTrackInputMapping (trackIndex, probe); });
 
         juce::PopupMenu menu;
         menu.addSectionHeader ("Input for " + session.getTrackName (trackIndex));
-        menu.addSubMenu ("Channel", channelMenu);
-        menu.addSubMenu ("Layout", layoutMenu);
+        menu.addSubMenu ("Channel", rrs::input_menu::buildChannelMenu (
+                                       items, mapping.firstChannel,
+                                       mapping.layout != InputLayout::None,
+                                       [this] (int index) { return session.getTrackName (index); }));
+        menu.addSubMenu ("Layout", rrs::input_menu::buildLayoutMenu (
+                                      mapping.layout, availability, "taken by another track"));
 
         juce::Component::SafePointer<MixerPanel> safe (this);
 
         menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this),
-                            [safe, trackIndex, numChannels] (int result)
+                            [safe, trackIndex] (int result)
                             {
                                 auto* self = safe.getComponent();
 
                                 if (self == nullptr || result == 0)
                                     return;
 
+                                const int numChannels = juce::jmax (1, self->session.getNumInputChannels());
                                 auto m = self->session.getTrackInputMapping (trackIndex);
 
-                                if (result >= 100 && result < 100 + numChannels)
+                                // ONE decoder + ONE apply (InputMenu.h) — the mixer
+                                // popup can no longer read a Layout id as a channel (B1).
+                                if (! rrs::input_menu::applySelection (rrs::input_menu::decodeResult (result),
+                                                                       m, numChannels))
+                                    return;
+
+                                if (! self->session.setTrackInputMapping (trackIndex, m))
                                 {
-                                    m.firstChannel = result - 100;
+                                    // RT-6: surface the refusal (a channel taken by
+                                    // another track) on the shared status line.
+                                    if (self->onStatus)
+                                        self->onStatus (self->session.getLastError(), true);
 
-                                    // RT-4 B1: picking a channel ASSIGNS an
-                                    // unassigned track (otherwise the layout stays
-                                    // `None` and the channel is dropped).
-                                    if (m.layout == InputLayout::None)
-                                        m.layout = InputLayout::Mono;
+                                    self->rebuildStrips();
+                                    self->repaint();
+                                    return;
                                 }
-                                else if (result == 200) m.layout = InputLayout::Auto;
-                                else if (result == 201) m.layout = InputLayout::Mono;
-                                else if (result == 202) m.layout = InputLayout::Stereo;
-                                else if (result == 203) m.layout = InputLayout::MultiChannel;
 
-                                // Keep the channel count coherent with the layout:
-                                // Multi uses every remaining hardware channel.
-                                if (m.layout == InputLayout::MultiChannel)
-                                    m.numChannels = juce::jmax (1, numChannels - m.firstChannel);
-                                else if (m.layout == InputLayout::Stereo)
-                                    m.numChannels = 2;
-                                else
-                                    m.numChannels = 1;
-
-                                self->session.setTrackInputMapping (trackIndex, m);
                                 self->rebuildStrips();
                                 self->repaint();
                             });

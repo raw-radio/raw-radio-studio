@@ -169,6 +169,47 @@ namespace rrs
         }
     }
 
+    /** The number of hardware channels a mapping occupies — its **span** (RT-1/
+        RT-6). This is the span Session uses for its occupancy rules (the RT-6
+        write guard and the RT-8 Channel menu, both through `InputGrouping.h`):
+
+          * `None`         -> 0 (unassigned: nothing is occupied),
+          * `Mono`         -> 1,
+          * `Stereo`       -> 2 (a pair),
+          * `MultiChannel` -> `numChannels` (>= 1),
+          * `Auto`         -> the device default (`defaultLayoutForDevice`).
+
+        NOTE: the planner (`InputGrouping.h`) derives the same span through
+        `planLayoutFor` + `channelsPerLayout` + the request's `needOverride` (a
+        MultiChannel track's `numChannels`); the two are kept in sync by the
+        "planner agrees with mappingChannelSpan" invariant test rather than by
+        sharing this function, because the planner must stay Tracktion-free of
+        `InputMapping`'s `numChannels` for the multi case.
+
+        Overflow-safe / total: an unknown device (0 channels) still yields a
+        concrete 1..N span, never 0 for an assigned layout. */
+    inline int mappingChannelSpan (const InputMapping& mapping, int deviceChannelCount) noexcept
+    {
+        switch (mapping.layout)
+        {
+            case InputLayout::None:
+                return 0;
+
+            case InputLayout::Mono:
+                return 1;
+
+            case InputLayout::Stereo:
+                return 2;
+
+            case InputLayout::MultiChannel:
+                return juce::jmax (1, mapping.numChannels);
+
+            case InputLayout::Auto:
+            default:
+                return defaultLayoutForDevice (deviceChannelCount) == InputLayout::Stereo ? 2 : 1;
+        }
+    }
+
     /** Stable string form of a layout (for persistence and UI). */
     inline juce::String inputLayoutToString (InputLayout layout)
     {

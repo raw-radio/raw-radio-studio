@@ -186,6 +186,16 @@ namespace rrs
         track_lane::LaneControl laneControlAt (int trackIndex, juce::Point<int> p) const;
         /** Opens the per-track input-assignment popup (same menu as MixerPanel). */
         void showLaneInputMenu (int trackIndex);
+        /** RT-9: opens the track context menu (Remove track + input assignment) for
+            a right-click on the lane/gutter. */
+        void showTrackContextMenu (int trackIndex);
+        /** RT-9: removes `trackIndex` (any track, not just the last) with a guard
+            against removing the track whose take is recording. Shared by the action
+            button, the context menu and the Cmd/Ctrl+Delete hotkey. */
+        void deleteTrackAt (int trackIndex);
+        /** Applies a decoded Input-menu result (channel or layout) to `trackIndex`,
+            surfacing an RT-6 refusal on the status line. */
+        void applyInputMenuResult (int trackIndex, int result);
         /** Handles a gutter click (arm/mute/solo/input, or select-track on the
             empty band). */
         void handleLaneControl (int trackIndex, track_lane::LaneControl);
